@@ -1,0 +1,284 @@
+
+=== hybrid_link_ ===
+[RUN] hybrid_link_delay_reorder_duplicate_preserves_bytes_and_endpoint
+[PASS] hybrid_link_delay_reorder_duplicate_preserves_bytes_and_endpoint
+[PASS] hybrid_link_burst_loss_and_retry_never_enqueue_rejected_attempts
+[RUN] hybrid_link_burst_loss_and_retry_never_enqueue_rejected_attempts
+[RUN] hybrid_link_capacity_is_fixed_and_duplicate_admission_is_atomic
+[PASS] hybrid_link_capacity_is_fixed_and_duplicate_admission_is_atomic
+[RUN] hybrid_link_invalid_bounds_and_later_rules_do_not_retime_queued_packets
+[PASS] hybrid_link_invalid_bounds_and_later_rules_do_not_retime_queued_packets
+4/4 tests passed
+
+=== hybrid_harness_network_ ===
+[RUN] hybrid_harness_network_exception_before_fixture_is_catchable
+[PASS] hybrid_harness_network_exception_before_fixture_is_catchable
+[RUN] hybrid_harness_network_producer_exception_joins_readers_and_fault_workers
+1794150751723871/281030029852704W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] hybrid_harness_network_producer_exception_joins_readers_and_fault_workers
+[RUN] hybrid_harness_network_partial_constructor_stops_worker_before_close
+1794150752372804/281030029852704W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] hybrid_harness_network_partial_constructor_stops_worker_before_close
+[RUN] hybrid_harness_network_reader_exception_reaches_runner_after_join
+1794150752374560/281030029852704W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":1,"produced":9,"retained_uc":1,"retained_mc":1,"uc_capacity_retries":0}
+[PASS] hybrid_harness_network_reader_exception_reaches_runner_after_join
+4/4 tests passed
+
+=== hybrid_soak_network_upper_profile_ctr (invalid duration; expected failure) ===
+[RUN] hybrid_soak_network_upper_profile_ctr
+[FAIL] hybrid_soak_network_upper_profile_ctr: ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS must be 4..300
+0/1 tests passed
+
+=== robotweax_srt_hybrid_network_tests ===
+Start testing: Nov 08 16:21 CET
+----------------------------------------------------------
+9/101 Testing: robotweax_srt_hybrid_network_tests
+9/101 Test: robotweax_srt_hybrid_network_tests
+Command: "<source>/build-linux-sanitized-clang/robotweax_srt_tests" "--include" "hybrid_network_"
+Directory: <source>/build-linux-sanitized-clang
+"robotweax_srt_hybrid_network_tests" start time: Nov 08 16:21 CET
+Output:
+----------------------------------------------------------
+[RUN] hybrid_network_asymmetric_impairment_preserves_integrated_lifecycle_plain_ctr_gcm
+1794151278438296/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151281377496/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151284134800/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_NETWORK] {"profile":0,"link":0,"messages":177,"aux_accepted":81,"aux_dropped":12,"aux_duplicates":24,"aux_retries":2,"aux_peak":4,"data_accepted":169,"data_dropped":12,"data_duplicates":31,"data_retries":6,"data_peak":6,"reordered":73,"max_lateness_us":2290}
+[HYBRID_NETWORK] {"profile":0,"link":1,"messages":177,"aux_accepted":180,"aux_dropped":16,"aux_duplicates":41,"aux_retries":6,"aux_peak":3,"data_accepted":0,"data_dropped":0,"data_duplicates":0,"data_retries":0,"data_peak":0,"reordered":1,"max_lateness_us":1688}
+[HYBRID_NETWORK] {"profile":0,"link":2,"messages":177,"aux_accepted":0,"aux_dropped":0,"aux_duplicates":0,"aux_retries":0,"aux_peak":0,"data_accepted":136,"data_dropped":11,"data_duplicates":41,"data_retries":4,"data_peak":3,"reordered":77,"max_lateness_us":1704}
+[HYBRID_NETWORK] {"profile":1,"link":0,"messages":177,"aux_accepted":86,"aux_dropped":13,"aux_duplicates":24,"aux_retries":3,"aux_peak":4,"data_accepted":169,"data_dropped":12,"data_duplicates":31,"data_retries":6,"data_peak":6,"reordered":77,"max_lateness_us":1853}
+[HYBRID_NETWORK] {"profile":1,"link":1,"messages":177,"aux_accepted":168,"aux_dropped":15,"aux_duplicates":39,"aux_retries":5,"aux_peak":3,"data_accepted":0,"data_dropped":0,"data_duplicates":0,"data_retries":0,"data_peak":0,"reordered":2,"max_lateness_us":2187}
+[HYBRID_NETWORK] {"profile":1,"link":2,"messages":177,"aux_accepted":0,"aux_dropped":0,"aux_duplicates":0,"aux_retries":0,"aux_peak":0,"data_accepted":136,"data_dropped":11,"data_duplicates":41,"data_retries":4,"data_peak":4,"reordered":77,"max_lateness_us":2918}
+[HYBRID_NETWORK] {"profile":2,"link":0,"messages":177,"aux_accepted":82,"aux_dropped":12,"aux_duplicates":24,"aux_retries":2,"aux_peak":4,"data_accepted":171,"data_dropped":11,"data_duplicates":32,"data_retries":6,"data_peak":7,"reordered":78,"max_lateness_us":2776}
+[HYBRID_NETWORK] {"profile":2,"link":1,"messages":177,"aux_accepted":166,"aux_dropped":15,"aux_duplicates":38,"aux_retries":5,"aux_peak":3,"data_accepted":0,"data_dropped":0,"data_duplicates":0,"data_retries":0,"data_peak":0,"reordered":2,"max_lateness_us":2628}
+[HYBRID_NETWORK] {"profile":2,"link":2,"messages":177,"aux_accepted":0,"aux_dropped":0,"aux_duplicates":0,"aux_retries":0,"aux_peak":0,"data_accepted":136,"data_dropped":11,"data_duplicates":41,"data_retries":4,"data_peak":3,"reordered":77,"max_lateness_us":2252}
+[PASS] hybrid_network_asymmetric_impairment_preserves_integrated_lifecycle_plain_ctr_gcm
+[RUN] hybrid_network_delayed_policy_replies_cannot_revive_closed_startup
+1794151286902830/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] hybrid_network_delayed_policy_replies_cannot_revive_closed_startup
+[RUN] hybrid_network_original_connect_deadline_survives_delayed_exchange
+1794151287280348/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151287402462/268673892573344W:connection: connection setup failed socket=687884273 peer=127.0.0.1:50790 peer_socket=141796327 reason=16 name=TIMEOUT wire=1016
+[PASS] hybrid_network_original_connect_deadline_survives_delayed_exchange
+[RUN] hybrid_network_multi_receiver_control_loss_does_not_stall_healthy_peers_plain_ctr_gcm
+1794151287772486/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151290478800/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151293290260/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_MULTI] {"scenario":0,"profile":0,"source_messages":168,"received_messages":504,"data_receivers":3,"healthy_control_checks":1280,"isolated_aux_drops":12,"bypassed_aux":47,"rejoin_failures":2,"uc_members":2}
+[HYBRID_MULTI] {"scenario":0,"profile":1,"source_messages":168,"received_messages":504,"data_receivers":3,"healthy_control_checks":1280,"isolated_aux_drops":13,"bypassed_aux":48,"rejoin_failures":2,"uc_members":2}
+[HYBRID_MULTI] {"scenario":0,"profile":2,"source_messages":168,"received_messages":504,"data_receivers":3,"healthy_control_checks":1280,"isolated_aux_drops":13,"bypassed_aux":50,"rejoin_failures":2,"uc_members":2}
+[PASS] hybrid_network_multi_receiver_control_loss_does_not_stall_healthy_peers_plain_ctr_gcm
+[RUN] hybrid_network_multi_receiver_stale_control_retains_quota_until_real_return_plain_ctr_gcm
+1794151296044669/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151297115001/268673901027488W:connection: connection setup failed socket=205111214 peer=127.0.0.1:45636 peer_socket=401175281 reason=15 name=GROUP wire=1015
+1794151297931253/268673892573344W:connection: connection setup failed socket=557291361 peer=127.0.0.1:45636 peer_socket=382878113 reason=15 name=GROUP wire=1015
+1794151298290057/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151299487585/268673892573344W:connection: connection setup failed socket=539173369 peer=127.0.0.1:58544 peer_socket=61043447 reason=15 name=GROUP wire=1015
+1794151300302108/268673901027488W:connection: connection setup failed socket=430079018 peer=127.0.0.1:58544 peer_socket=634385232 reason=15 name=GROUP wire=1015
+1794151300680870/268673985138720W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151301817703/268673901027488W:connection: connection setup failed socket=610948696 peer=127.0.0.1:52947 peer_socket=867592032 reason=15 name=GROUP wire=1015
+1794151302641467/268673892573344W:connection: connection setup failed socket=297888991 peer=127.0.0.1:52947 peer_socket=664255632 reason=15 name=GROUP wire=1015
+[HYBRID_MULTI] {"scenario":1,"profile":0,"source_messages":88,"received_messages":392,"data_receivers":5,"healthy_control_checks":1640,"isolated_aux_drops":20,"bypassed_aux":99,"rejected_callers":2,"late_origin":48,"uc_members":4,"uc_reservations":4}
+[HYBRID_MULTI] {"scenario":1,"profile":1,"source_messages":88,"received_messages":392,"data_receivers":5,"healthy_control_checks":1640,"isolated_aux_drops":21,"bypassed_aux":106,"rejected_callers":2,"late_origin":48,"uc_members":4,"uc_reservations":4}
+[HYBRID_MULTI] {"scenario":1,"profile":2,"source_messages":88,"received_messages":392,"data_receivers":5,"healthy_control_checks":1640,"isolated_aux_drops":18,"bypassed_aux":101,"rejected_callers":2,"late_origin":48,"uc_members":4,"uc_reservations":4}
+[PASS] hybrid_network_multi_receiver_stale_control_retains_quota_until_real_return_plain_ctr_gcm
+5/5 tests passed
+<end of output>
+Test time =  24.68 sec
+----------------------------------------------------------
+Test Passed.
+"robotweax_srt_hybrid_network_tests" end time: Nov 08 16:21 CET
+"robotweax_srt_hybrid_network_tests" time elapsed: 00:00:24
+----------------------------------------------------------
+
+End testing: Nov 08 16:21 CET
+
+fault-injection =  24.68 sec*proc
+
+hybrid =  24.68 sec*proc
+
+integration =  24.68 sec*proc
+
+network =  24.68 sec*proc
+
+
+=== robotweax_srt_hybrid_key_timing_tests ===
+Start testing: Nov 08 16:21 CET
+----------------------------------------------------------
+10/101 Testing: robotweax_srt_hybrid_key_timing_tests
+10/101 Test: robotweax_srt_hybrid_key_timing_tests
+Command: "<source>/build-linux-sanitized-clang/robotweax_srt_tests" "--include" "hybrid_key_network_"
+Directory: <source>/build-linux-sanitized-clang
+"robotweax_srt_hybrid_key_timing_tests" start time: Nov 08 16:21 CET
+Output:
+----------------------------------------------------------
+[RUN] hybrid_key_network_delayed_reordered_requests_preserve_rotation_and_rejoin_ctr_gcm
+1794151303252718/278921008951328W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151306095379/278921008951328W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_KEY] {"scenario":0,"profile":1,"messages":112,"request_material_changes":3,"response_material_changes":4,"request_duplicates":3,"response_drops":1,"request_reordered":3,"request_replays":1,"response_replays":0,"held_responses":0}
+[HYBRID_KEY] {"scenario":0,"profile":2,"messages":112,"request_material_changes":3,"response_material_changes":4,"request_duplicates":3,"response_drops":1,"request_reordered":3,"request_replays":1,"response_replays":0,"held_responses":0}
+[PASS] hybrid_key_network_delayed_reordered_requests_preserve_rotation_and_rejoin_ctr_gcm
+[RUN] hybrid_key_network_old_response_cannot_acknowledge_pending_rotation_ctr_gcm
+1794151308939750/278921008951328W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151310804494/278921008951328W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_KEY] {"scenario":1,"profile":1,"messages":96,"request_material_changes":3,"response_material_changes":3,"request_duplicates":0,"response_drops":0,"request_reordered":0,"request_replays":0,"response_replays":1,"held_responses":13}
+[HYBRID_KEY] {"scenario":1,"profile":2,"messages":96,"request_material_changes":3,"response_material_changes":3,"request_duplicates":0,"response_drops":0,"request_reordered":0,"request_replays":0,"response_replays":1,"held_responses":13}
+[PASS] hybrid_key_network_old_response_cannot_acknowledge_pending_rotation_ctr_gcm
+[RUN] hybrid_key_network_multi_receiver_pending_response_preserves_healthy_uc_mc_ctr_gcm
+1794151312659526/278921008951328W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151315104541/278921008951328W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_KEY_MULTI] {"scenario":0,"profile":1,"source_messages":96,"received_messages":288,"data_receivers":3,"late_origin":0,"held_responses":60,"response_replays":1,"selected_request_duplicates":34,"bypassed_key_packets":6,"healthy_control_checks":1059}
+[HYBRID_KEY_MULTI] {"scenario":0,"profile":2,"source_messages":96,"received_messages":288,"data_receivers":3,"late_origin":0,"held_responses":60,"response_replays":1,"selected_request_duplicates":34,"bypassed_key_packets":6,"healthy_control_checks":1059}
+[PASS] hybrid_key_network_multi_receiver_pending_response_preserves_healthy_uc_mc_ctr_gcm
+[RUN] hybrid_key_network_multi_receiver_late_admission_during_pending_rotation_ctr_gcm
+1794151317520445/278921008951328W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151319943221/278921008951328W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_KEY_MULTI] {"scenario":1,"profile":1,"source_messages":96,"received_messages":230,"data_receivers":3,"late_origin":58,"held_responses":92,"response_replays":0,"selected_request_duplicates":50,"bypassed_key_packets":6,"healthy_control_checks":795}
+[HYBRID_KEY_MULTI] {"scenario":1,"profile":2,"source_messages":96,"received_messages":230,"data_receivers":3,"late_origin":58,"held_responses":88,"response_replays":0,"selected_request_duplicates":50,"bypassed_key_packets":6,"healthy_control_checks":795}
+[PASS] hybrid_key_network_multi_receiver_late_admission_during_pending_rotation_ctr_gcm
+4/4 tests passed
+<end of output>
+Test time =  19.24 sec
+----------------------------------------------------------
+Test Passed.
+"robotweax_srt_hybrid_key_timing_tests" end time: Nov 08 16:22 CET
+"robotweax_srt_hybrid_key_timing_tests" time elapsed: 00:00:19
+----------------------------------------------------------
+
+End testing: Nov 08 16:22 CET
+
+fault-injection =  19.24 sec*proc
+
+hybrid =  19.24 sec*proc
+
+integration =  19.24 sec*proc
+
+key-management =  19.24 sec*proc
+
+network =  19.24 sec*proc
+
+
+=== robotweax_srt_hybrid_load_tests ===
+Start testing: Nov 08 16:22 CET
+----------------------------------------------------------
+11/101 Testing: robotweax_srt_hybrid_load_tests
+11/101 Test: robotweax_srt_hybrid_load_tests
+Command: "<source>/build-linux-sanitized-clang/robotweax_srt_tests" "--include" "hybrid_load_network_"
+Directory: <source>/build-linux-sanitized-clang
+"robotweax_srt_hybrid_load_tests" start time: Nov 08 16:22 CET
+Output:
+----------------------------------------------------------
+[RUN] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr
+1794151322636016/275628927758368W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151325720718/275628927758368W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151327884209/275628927758368W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_LOAD] {"row":0,"profile":1,"target_pps":100,"actual_pps":99,"pacer_resets":0,"payload_bytes":1316,"loaded_messages":160,"messages_per_receiver":176,"data_receivers":2,"data_delay_max_us":10000,"km_request_max_us":16000,"km_response_max_us":8000,"min_announcement_lead_us":79313,"request_budget_margin_us":67112,"ack_budget_margin_us":52374,"key_switches":5,"fallback_us":135328,"rejoin_us":155980,"return_us":262594,"uc_queue_peak":10,"mc_queue_peak":4,"uc_capacity_retries":0}
+[HYBRID_LOAD] {"row":1,"profile":1,"target_pps":250,"actual_pps":249,"pacer_resets":0,"payload_bytes":1316,"loaded_messages":160,"messages_per_receiver":176,"data_receivers":2,"data_delay_max_us":25000,"km_request_max_us":16000,"km_response_max_us":16000,"min_announcement_lead_us":31808,"request_budget_margin_us":29724,"ack_budget_margin_us":-2551,"key_switches":5,"fallback_us":146752,"rejoin_us":167689,"return_us":268808,"uc_queue_peak":17,"mc_queue_peak":9,"uc_capacity_retries":0}
+[HYBRID_LOAD] {"row":2,"profile":1,"target_pps":500,"actual_pps":499,"pacer_resets":0,"payload_bytes":1316,"loaded_messages":160,"messages_per_receiver":176,"data_receivers":2,"data_delay_max_us":50000,"km_request_max_us":20000,"km_response_max_us":20000,"min_announcement_lead_us":15480,"request_budget_margin_us":24323,"ack_budget_margin_us":-26839,"key_switches":5,"fallback_us":168184,"rejoin_us":188791,"return_us":287632,"uc_queue_peak":64,"mc_queue_peak":25,"uc_capacity_retries":0}
+[PASS] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr
+[RUN] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm
+1794151329769723/275628927758368W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151332864164/275628927758368W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794151335043582/275628927758368W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_LOAD] {"row":0,"profile":2,"target_pps":100,"actual_pps":99,"pacer_resets":0,"payload_bytes":1316,"loaded_messages":160,"messages_per_receiver":176,"data_receivers":2,"data_delay_max_us":10000,"km_request_max_us":16000,"km_response_max_us":8000,"min_announcement_lead_us":78307,"request_budget_margin_us":65851,"ack_budget_margin_us":50775,"key_switches":5,"fallback_us":136833,"rejoin_us":157526,"return_us":261614,"uc_queue_peak":10,"mc_queue_peak":4,"uc_capacity_retries":0}
+[HYBRID_LOAD] {"row":1,"profile":2,"target_pps":250,"actual_pps":249,"pacer_resets":0,"payload_bytes":1316,"loaded_messages":160,"messages_per_receiver":176,"data_receivers":2,"data_delay_max_us":25000,"km_request_max_us":16000,"km_response_max_us":16000,"min_announcement_lead_us":31223,"request_budget_margin_us":28864,"ack_budget_margin_us":-4211,"key_switches":5,"fallback_us":153267,"rejoin_us":173709,"return_us":271756,"uc_queue_peak":17,"mc_queue_peak":9,"uc_capacity_retries":0}
+[HYBRID_LOAD] {"row":2,"profile":2,"target_pps":500,"actual_pps":499,"pacer_resets":0,"payload_bytes":1316,"loaded_messages":160,"messages_per_receiver":176,"data_receivers":2,"data_delay_max_us":50000,"km_request_max_us":20000,"km_response_max_us":20000,"min_announcement_lead_us":15218,"request_budget_margin_us":24176,"ack_budget_margin_us":-27001,"key_switches":5,"fallback_us":171944,"rejoin_us":193002,"return_us":294071,"uc_queue_peak":64,"mc_queue_peak":25,"uc_capacity_retries":0}
+[PASS] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm
+2/2 tests passed
+<end of output>
+Test time =  14.41 sec
+----------------------------------------------------------
+Test Passed.
+"robotweax_srt_hybrid_load_tests" end time: Nov 08 16:22 CET
+"robotweax_srt_hybrid_load_tests" time elapsed: 00:00:14
+----------------------------------------------------------
+
+End testing: Nov 08 16:22 CET
+
+fault-injection =  14.41 sec*proc
+
+hybrid =  14.41 sec*proc
+
+integration =  14.41 sec*proc
+
+load =  14.41 sec*proc
+
+network =  14.41 sec*proc
+
+
+=== robotweax_srt_hybrid_soak_tests ===
+Start testing: Nov 08 16:22 CET
+----------------------------------------------------------
+12/101 Testing: robotweax_srt_hybrid_soak_tests
+12/101 Test: robotweax_srt_hybrid_soak_tests
+Command: "<source>/build-linux-sanitized-clang/robotweax_srt_tests" "--include" "hybrid_soak_network_"
+Directory: <source>/build-linux-sanitized-clang
+"robotweax_srt_hybrid_soak_tests" start time: Nov 08 16:22 CET
+Output:
+----------------------------------------------------------
+[RUN] hybrid_soak_network_upper_profile_ctr
+1794151337171341/258987920388128W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":1,"produced":9,"retained_uc":1,"retained_mc":1,"uc_capacity_retries":0}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":2,"produced":134,"retained_uc":24,"retained_mc":33,"uc_capacity_retries":4}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":3,"produced":259,"retained_uc":27,"retained_mc":39,"uc_capacity_retries":4}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":4,"produced":384,"retained_uc":24,"retained_mc":45,"uc_capacity_retries":7}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":5,"produced":509,"retained_uc":27,"retained_mc":34,"uc_capacity_retries":7}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":6,"produced":634,"retained_uc":26,"retained_mc":40,"uc_capacity_retries":7}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":7,"produced":759,"retained_uc":27,"retained_mc":46,"uc_capacity_retries":7}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":8,"produced":884,"retained_uc":22,"retained_mc":35,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":9,"produced":1008,"retained_uc":0,"retained_mc":0,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":10,"produced":1017,"retained_uc":1,"retained_mc":1,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":11,"produced":1142,"retained_uc":28,"retained_mc":30,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":12,"produced":1267,"retained_uc":29,"retained_mc":27,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":13,"produced":1392,"retained_uc":26,"retained_mc":33,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":14,"produced":1517,"retained_uc":23,"retained_mc":39,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":15,"produced":1642,"retained_uc":28,"retained_mc":45,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":16,"produced":1767,"retained_uc":23,"retained_mc":34,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":17,"produced":1892,"retained_uc":30,"retained_mc":30,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":18,"produced":2016,"retained_uc":0,"retained_mc":0,"uc_capacity_retries":15}
+[HYBRID_SOAK] {"profile":1,"seconds":4,"loaded_messages":2000,"loaded_us":4011154,"actual_pps":498,"payload_bytes":1316,"messages_per_receiver":2016,"data_receivers":2,"key_switches":62,"km_material_changes":63,"samples":18,"pacer_resets":1,"retained_peak_uc":30,"retained_peak_mc":46,"retained_final_uc":0,"retained_final_mc":0,"uc_queue_peak":64,"mc_queue_peak":25,"uc_capacity_retries":15,"fallback_us":154727,"rejoin_us":176572,"return_us":277441}
+[PASS] hybrid_soak_network_upper_profile_ctr
+[RUN] hybrid_soak_network_upper_profile_gcm
+1794151342698338/258987920388128W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":1,"produced":9,"retained_uc":1,"retained_mc":1,"uc_capacity_retries":0}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":2,"produced":134,"retained_uc":19,"retained_mc":33,"uc_capacity_retries":7}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":3,"produced":259,"retained_uc":31,"retained_mc":39,"uc_capacity_retries":7}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":4,"produced":384,"retained_uc":28,"retained_mc":28,"uc_capacity_retries":7}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":5,"produced":509,"retained_uc":29,"retained_mc":34,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":6,"produced":634,"retained_uc":28,"retained_mc":40,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":7,"produced":759,"retained_uc":18,"retained_mc":46,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":8,"produced":884,"retained_uc":30,"retained_mc":35,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":9,"produced":1008,"retained_uc":0,"retained_mc":0,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":10,"produced":1017,"retained_uc":1,"retained_mc":1,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":11,"produced":1142,"retained_uc":30,"retained_mc":38,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":12,"produced":1267,"retained_uc":27,"retained_mc":44,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":13,"produced":1392,"retained_uc":33,"retained_mc":33,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":14,"produced":1517,"retained_uc":27,"retained_mc":39,"uc_capacity_retries":11}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":15,"produced":1642,"retained_uc":28,"retained_mc":30,"uc_capacity_retries":12}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":16,"produced":1767,"retained_uc":31,"retained_mc":34,"uc_capacity_retries":14}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":17,"produced":1892,"retained_uc":30,"retained_mc":40,"uc_capacity_retries":14}
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":18,"produced":2016,"retained_uc":0,"retained_mc":0,"uc_capacity_retries":14}
+[HYBRID_SOAK] {"profile":2,"seconds":4,"loaded_messages":2000,"loaded_us":4000295,"actual_pps":499,"payload_bytes":1316,"messages_per_receiver":2016,"data_receivers":2,"key_switches":62,"km_material_changes":63,"samples":18,"pacer_resets":0,"retained_peak_uc":33,"retained_peak_mc":46,"retained_final_uc":0,"retained_final_mc":0,"uc_queue_peak":64,"mc_queue_peak":25,"uc_capacity_retries":14,"fallback_us":162863,"rejoin_us":183241,"return_us":299256}
+[PASS] hybrid_soak_network_upper_profile_gcm
+2/2 tests passed
+<end of output>
+Test time =  11.15 sec
+----------------------------------------------------------
+Test Passed.
+"robotweax_srt_hybrid_soak_tests" end time: Nov 08 16:22 CET
+"robotweax_srt_hybrid_soak_tests" time elapsed: 00:00:11
+----------------------------------------------------------
+
+End testing: Nov 08 16:22 CET
+
+fault-injection =  11.15 sec*proc
+
+hybrid =  11.15 sec*proc
+
+integration =  11.15 sec*proc
+
+network =  11.15 sec*proc
+
+soak =  11.15 sec*proc
+

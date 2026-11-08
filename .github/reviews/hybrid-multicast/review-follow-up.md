@@ -17,8 +17,10 @@ Code commit: `e710d4e6f9ab027483e399f222c8cef7837c8d5d`.
   84/84 gates with AEAD/HC/ACP1 OFF and ordinary test/tool/benchmark defaults.
 - BL-2 reproduced from the old Win32 MSVC C4244/C2220 log. The explicit cast is
   after a minimum bounded by `config.maximum_unicast_members` (`size_t`), so no
-  value is truncated even on Win32. Budget/coordinator tests pass. **Native
-  Win32/MSVC after-fix validation is pending hosted CI, not a local pass.**
+  value is truncated even on Win32. Budget/coordinator tests pass. Hosted CI at `18b4595` now passes native Win32/x64 builds and selected
+  provider tests, plus shared x64 Debug/Release jobs; see
+  [Windows evidence](records/review-harness-windows-ci.json). ARM64 is cross-build
+  evidence only. This is not full native Windows hybrid qualification.
 - Enabled Release and sanitizer builds each pass 9 budget + 7 wire-budget + 23
   coordinator + 6 investigation cases. The original GCM fixture still runs
   under AEAD ON. No transport deadline, warning policy or test assertion changed.
@@ -38,7 +40,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | ID | Current state | Next verification / acceptance |
 | --- | --- | --- |
 | BL-1 | Fixed in source; local true-default build and 84 gates pass | Inspect fresh hosted default-build jobs |
-| BL-2 | Bounded cast applied; local tests pass; native Win32 pending | MSVC `/WX` Win32 and x64 builds/execution |
+| BL-2 | Fixed; hosted Win32/x64 builds and selected provider tests pass at 18b4595 | Broader Windows hybrid failures remain BL-3/BL-4/BL-5; no local Windows claim |
 | BL-3 | Open: instrumented aggregate/native gate durations | Partition growing suites or justify outer suite budgets without widening protocol deadlines |
 | BL-4 | Open: Windows `srt-live-transmit -version` hang | Native debugger/thread evidence and same-base comparison |
 | BL-5 | Open: Windows quota-wait assertion depends on host pacing | Guarantee saturation by construction or isolate rate invariant from injected wait coverage |
@@ -70,17 +72,42 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | S-3 | Open: pre-auth queue starvation/overflow | Bounded adversarial queue model and explicitly chosen availability contract |
 | S-4 | Open: storage assertions/version/credential-strength documentation | Add meaningful static bounds and precise supported-version/entropy limits |
 
-## Harness and evidence work next
+## Harness follow-up
 
-- Reproduce failure-to-`terminate`; identify the actual exception/noexcept path,
-  rather than removing noexcept declarations speculatively.
-- Stop/join fault injection workers and clear their hooks before closing their
-  underlying sockets. Verify forced-failure cleanup under GCC `-Og`/`-O1`.
-- Label each soak wait. Capture receiver drop deadlines and group membership
-  state so a late repair can be separated from L-3 or a race.
+Code: `64591511d588416f55123a05bd598c3ef510c412`. [Commands, identities, before/after controls and
+native results](records/review-harness.json) are separate from historical
+qualification. The invalid-duration exception happens before fault-worker
+creation: teardown cannot be its sole cause. A packet-pool-only change on the
+same clean baseline/flags restores normal GCC Og/O1 exception reporting.
+No noexcept declaration or sanitizer instrumentation was removed. This is a
+storage-layout-dependent observation; compiler-defect and historical DATA-loss
+causality remain unproved.
+
+Fault cleanup is registered before configuration can fail and runs before the
+first owned socket closes. Key and normal callbacks are published after worker
+creation succeeds. Four new regressions force failure before construction,
+during partial construction, on the producer with active readers/workers, and
+inside a reader; cleanup audits check joined workers and a still-open listener.
+The new serial harness gate has its own 30-second budget. Multicast dispatch
+also runs serial because it shares the fixed loopback group/port. Soak/setup
+waits are labelled; DATA diagnostics include membership epoch and control state.
+The original 200 ms proof/playout, fault model and recovery limits are retained.
+
+Repository-default CTest passes 84/84 and Python 854/854. Native validation is
+narrower than full requalification; inspect successes and preserved failures
+in the record. Hosted build-fix evidence resolves the Win32 compilation blocker,
+not the full Windows hybrid profile. GCC O0 and outstanding canonical DATA,
+suite timing, automation and source/binary attestation findings remain open.
+
+## Remaining harness and evidence work
+
+- Use normal failure reports and membership/control diagnostics to investigate
+  remaining GCC DATA/proof failures. Add packet arrival/repair/playout timing
+  before attributing a missing canonical sequence to lateness, L-3 or a race.
 - A changed-latency scratch experiment may help diagnose a deadline; it cannot
   count as passing the original 200 ms qualification envelope.
-- Fix fixed-port test serialization, aggregate coverage/time budgets, missing
+- Fixed-port dispatch/hybrid gates are serial. Still fix aggregate coverage/time
+  budgets, missing
   native automatic-controller/transition tests and the validator's binary
   binding. Preserve original failed logs and genuine repository-default scope.
 

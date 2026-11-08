@@ -1,0 +1,1472 @@
+{
+  "source_commit": "64591511d588416f55123a05bd598c3ef510c412",
+  "embedded_source_binary_binding": false,
+  "scope": "Builds incrementally rebuilt at clean committed source. Fixed sanitizer instrumentation and original 200 ms packet/proof limits. No long-profile or whole-platform requalification implied.",
+  "configurations": {
+    "gcc-og": {
+      "binary_sha256": "247d53510bc7db3d5a6d5fd0ee721aa648d1c9e3be1e437e3d2b2b9b82bf73ec",
+      "cache_sha256": "83fd5c38a2a2f9a89efa4a949c3b8e1e2e29109e3fc068772eff08dba371a89d",
+      "flags": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g -Og",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "ENABLE_AEAD_API_PREVIEW": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+      },
+      "source_clean": true,
+      "gates": [
+        {
+          "selection": "hybrid_link_",
+          "invalid_seconds": false,
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-og-hybrid_link.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "3b8686db5f1b4a8ccf16c8e3991858ba07d9c7422ab3c1bd3cd66a06986a864e",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "selection": "hybrid_harness_network_",
+          "invalid_seconds": false,
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-og-hybrid_harness_network.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "c6b65690b50f355d95e3b7fd7468e4ef27ab620b7dc1fac03769e3f780b662d9",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "selection": "hybrid_soak_network_upper_profile_ctr",
+          "invalid_seconds": true,
+          "returncode": 1,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-og-hybrid_soak_network_upper_profile_ctr-invalid.log",
+          "summaries": [
+            "0/1 tests passed"
+          ],
+          "original_log_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+          "outer_timeout": false,
+          "failure_lines": [
+            "[FAIL] hybrid_soak_network_upper_profile_ctr: ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS must be 4..300"
+          ]
+        },
+        {
+          "gate": "robotweax_srt_hybrid_network_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-og",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_network_tests$"
+          ],
+          "returncode": 8,
+          "expected_result": false,
+          "log": "/tmp/pr387-harness-gcc-og-hybrid_network-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-og-hybrid_network-last.log",
+          "summaries": [],
+          "original_log_sha256": "4b9678e7265d63ba9cd28d1172ddabd4fa0bc83d99797ecc103a1622c5e3b226",
+          "original_detail_sha256": "c9480e616678fbad82cf08a395d225fdd14422ac24148a5b102b5fd496ba1ec8",
+          "outer_timeout": true,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_key_timing_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-og",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_key_timing_tests$"
+          ],
+          "returncode": 8,
+          "expected_result": false,
+          "log": "/tmp/pr387-harness-gcc-og-hybrid_key_timing-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-og-hybrid_key_timing-last.log",
+          "summaries": [
+            "2/4 tests passed"
+          ],
+          "original_log_sha256": "9c765081f2836fed281f5f66399651cf26540f90fb7ae0a053ed5a8dca20f423",
+          "original_detail_sha256": "20b06da0fc79694e99b2208c9b259b94645a3c25ce92cd462a2229cb54284819",
+          "outer_timeout": false,
+          "failure_lines": [
+            "[FAIL] hybrid_key_network_multi_receiver_pending_response_preserves_healthy_uc_mc_ctr_gcm: multi control peer=0 next=9 fresh=0 closed=0 mode=1 revision=1",
+            "[FAIL] hybrid_key_network_multi_receiver_late_admission_during_pending_rotation_ctr_gcm: multi control peer=0 next=57 fresh=0 closed=0 mode=1 revision=1"
+          ]
+        },
+        {
+          "gate": "robotweax_srt_hybrid_load_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-og",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_load_tests$"
+          ],
+          "returncode": 8,
+          "expected_result": false,
+          "log": "/tmp/pr387-harness-gcc-og-hybrid_load-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-og-hybrid_load-last.log",
+          "summaries": [
+            "0/2 tests passed"
+          ],
+          "original_log_sha256": "8bd1738c9ec7974375da8faf7987260f98b12394c7d043e62c0f68068406dd48",
+          "original_detail_sha256": "ad6e4fadfcc1e3083c3f14f4bc19c1955b9c9c4ff12d6c362a26876ff9d00270",
+          "outer_timeout": false,
+          "failure_lines": [
+            "[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr: multi control peer=1 next=34 fresh=0 closed=0 mode=0 revision=3",
+            "[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm: multi control peer=1 next=52 fresh=0 closed=0 mode=0 revision=3"
+          ]
+        },
+        {
+          "gate": "robotweax_srt_hybrid_soak_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-og",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_soak_tests$"
+          ],
+          "returncode": 8,
+          "expected_result": false,
+          "log": "/tmp/pr387-harness-gcc-og-hybrid_soak-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-og-hybrid_soak-last.log",
+          "summaries": [
+            "0/2 tests passed"
+          ],
+          "original_log_sha256": "ee9fe3e74a72842a1265b652887ed9ee01a64f59c9ee2c3258bbaf614eb0534d",
+          "original_detail_sha256": "58561691a5d58c92c83da252ec030b99bc954c17106a88bb25d58a31d796f862",
+          "outer_timeout": false,
+          "failure_lines": [
+            "[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=28 received=708392494602484801 bytes=1316 canonical=0 offered=88 unique=35 dropped=0 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=0",
+            "[HYBRID_SOAK_FAILURE] crypto=1 peer=0 expected=33 received=34 bytes=1316 canonical=1 offered=88 unique=37 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=0",
+            "[FAIL] hybrid_soak_network_upper_profile_ctr: soak DATA crypto=1 peer=0 expected=33 bytes=1316",
+            "[HYBRID_SOAK_FAILURE] crypto=2 peer=0 expected=30 received=31 bytes=1316 canonical=1 offered=56 unique=31 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=0",
+            "[HYBRID_SOAK_FAILURE] crypto=2 peer=1 expected=16 received=17 bytes=1316 canonical=1 offered=56 unique=17 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=0",
+            "[FAIL] hybrid_soak_network_upper_profile_gcm: soak DATA crypto=2 peer=0 expected=30 bytes=1316"
+          ]
+        }
+      ],
+      "native_summary": {
+        "passed": 9,
+        "selected_by_filter": 17,
+        "started": 16
+      },
+      "native_failure_lines": [
+        "[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=28 received=708392494602484801 bytes=1316 canonical=0 offered=88 unique=35 dropped=0 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=0",
+        "[HYBRID_SOAK_FAILURE] crypto=1 peer=0 expected=33 received=34 bytes=1316 canonical=1 offered=88 unique=37 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=0",
+        "[FAIL] hybrid_soak_network_upper_profile_ctr: soak DATA crypto=1 peer=0 expected=33 bytes=1316",
+        "[HYBRID_SOAK_FAILURE] crypto=2 peer=0 expected=30 received=31 bytes=1316 canonical=1 offered=56 unique=31 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=0",
+        "[HYBRID_SOAK_FAILURE] crypto=2 peer=1 expected=16 received=17 bytes=1316 canonical=1 offered=56 unique=17 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=0",
+        "[FAIL] hybrid_soak_network_upper_profile_gcm: soak DATA crypto=2 peer=0 expected=30 bytes=1316"
+      ]
+    },
+    "gcc-o1": {
+      "binary_sha256": "da3088df80c5c39229baddbb65f01c155e4b735ce61e343f7a8423759ad8c077",
+      "cache_sha256": "dc0db18e3aaa2bf02bd93a6c4e7f5eaceae0499901e3e8fc81a5f112d5601710",
+      "flags": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "ENABLE_AEAD_API_PREVIEW": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+      },
+      "source_clean": true,
+      "gates": [
+        {
+          "selection": "hybrid_link_",
+          "invalid_seconds": false,
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-o1-hybrid_link.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "3b8686db5f1b4a8ccf16c8e3991858ba07d9c7422ab3c1bd3cd66a06986a864e",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "selection": "hybrid_harness_network_",
+          "invalid_seconds": false,
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-o1-hybrid_harness_network.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "11d0787358d384bf9ac13c2ea3935adae60e2181f603afb99f4c443c7430e723",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "selection": "hybrid_soak_network_upper_profile_ctr",
+          "invalid_seconds": true,
+          "returncode": 1,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-o1-hybrid_soak_network_upper_profile_ctr-invalid.log",
+          "summaries": [
+            "0/1 tests passed"
+          ],
+          "original_log_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+          "outer_timeout": false,
+          "failure_lines": [
+            "[FAIL] hybrid_soak_network_upper_profile_ctr: ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS must be 4..300"
+          ]
+        },
+        {
+          "gate": "robotweax_srt_hybrid_network_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-o1",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_network_tests$"
+          ],
+          "returncode": 8,
+          "expected_result": false,
+          "log": "/tmp/pr387-harness-gcc-o1-hybrid_network-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-o1-hybrid_network-last.log",
+          "summaries": [],
+          "original_log_sha256": "c86cd8fac32224aa20dba295d05a5da92c9c6056a960836f1fb906b5c1c9d588",
+          "original_detail_sha256": "3f1b734551982aca7469bdf173f76193d9fe25d3ab86355b466d0e2028cc868c",
+          "outer_timeout": true,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_key_timing_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-o1",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_key_timing_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-o1-hybrid_key_timing-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-o1-hybrid_key_timing-last.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "cd70b14d905f73e797f0b1ff918861a2ed5ec80a24aed834aa6cb77088d01cde",
+          "original_detail_sha256": "b72074968a863d48f47658055a0597c3201bd7180766966b3b0fa5d95566e2ca",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_load_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-o1",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_load_tests$"
+          ],
+          "returncode": 8,
+          "expected_result": false,
+          "log": "/tmp/pr387-harness-gcc-o1-hybrid_load-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-o1-hybrid_load-last.log",
+          "summaries": [
+            "0/2 tests passed"
+          ],
+          "original_log_sha256": "945ebc2ba37e81b89f58e7a9dc25677caa8f165b1c65b81610b0561114e581ae",
+          "original_detail_sha256": "03307d664cf97f8435205db2285ef556e190633b91815550a336ec237d4bb6b1",
+          "outer_timeout": false,
+          "failure_lines": [
+            "[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr: load DATA row=2 crypto=1 position=30 bytes=1316",
+            "[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm: load DATA row=2 crypto=2 position=58 bytes=1316"
+          ]
+        },
+        {
+          "gate": "robotweax_srt_hybrid_soak_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-o1",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_soak_tests$"
+          ],
+          "returncode": 8,
+          "expected_result": false,
+          "log": "/tmp/pr387-harness-gcc-o1-hybrid_soak-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-o1-hybrid_soak-last.log",
+          "summaries": [
+            "0/2 tests passed"
+          ],
+          "original_log_sha256": "a84f08c678b2c223b98cd7c5fc45d8f629bf83ab3fb5b6facdcba83af6662ba9",
+          "original_detail_sha256": "4604f62dd24877ec6d7a0cc76c52b61173bf70e58859d6f5be393342e58dd28b",
+          "outer_timeout": false,
+          "failure_lines": [
+            "[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=82 received=83 bytes=1316 canonical=1 offered=120 unique=85 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=1",
+            "[HYBRID_SOAK_FAILURE] crypto=1 peer=0 expected=119 received=120 bytes=1316 canonical=1 offered=121 unique=120 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=1",
+            "[FAIL] hybrid_soak_network_upper_profile_ctr: soak DATA crypto=1 peer=0 expected=119 bytes=1316",
+            "[HYBRID_SOAK_FAILURE] crypto=2 peer=1 expected=28 received=32 bytes=1316 canonical=1 offered=88 unique=38 dropped=18 undecryptable=14 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=1",
+            "[HYBRID_SOAK_FAILURE] crypto=2 peer=0 expected=30 received=32 bytes=1316 canonical=1 offered=88 unique=81 dropped=13 undecryptable=11 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=1",
+            "[FAIL] hybrid_soak_network_upper_profile_gcm: soak DATA crypto=2 peer=0 expected=30 bytes=1316"
+          ]
+        }
+      ],
+      "native_summary": {
+        "passed": 12,
+        "selected_by_filter": 17,
+        "started": 17
+      },
+      "native_failure_lines": [
+        "[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=82 received=83 bytes=1316 canonical=1 offered=120 unique=85 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=1",
+        "[HYBRID_SOAK_FAILURE] crypto=1 peer=0 expected=119 received=120 bytes=1316 canonical=1 offered=121 unique=120 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=1",
+        "[FAIL] hybrid_soak_network_upper_profile_ctr: soak DATA crypto=1 peer=0 expected=119 bytes=1316",
+        "[HYBRID_SOAK_FAILURE] crypto=2 peer=1 expected=28 received=32 bytes=1316 canonical=1 offered=88 unique=38 dropped=18 undecryptable=14 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=1",
+        "[HYBRID_SOAK_FAILURE] crypto=2 peer=0 expected=30 received=32 bytes=1316 canonical=1 offered=88 unique=81 dropped=13 undecryptable=11 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=1",
+        "[FAIL] hybrid_soak_network_upper_profile_gcm: soak DATA crypto=2 peer=0 expected=30 bytes=1316"
+      ]
+    },
+    "llvm-o1": {
+      "binary_sha256": "ee2216fff39be88fe88691ca100067e08d4bce61db2d7fcd4a045dc500d4afb0",
+      "cache_sha256": "5bafb39d0dba9c509b0c9aa3018b9dae06587a867234c1e6c1a83eec9313a60a",
+      "flags": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "<lab>/llvm-toolchain/clang++",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "ENABLE_AEAD_API_PREVIEW": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+      },
+      "source_clean": true,
+      "gates": [
+        {
+          "selection": "hybrid_link_",
+          "invalid_seconds": false,
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-llvm-o1-hybrid_link.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "3b8686db5f1b4a8ccf16c8e3991858ba07d9c7422ab3c1bd3cd66a06986a864e",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "selection": "hybrid_harness_network_",
+          "invalid_seconds": false,
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-llvm-o1-hybrid_harness_network.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "4e723b13c028f6930e93b9f5180a72e1f50e74360c0fa8c8ae61d2a388395365",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "selection": "hybrid_soak_network_upper_profile_ctr",
+          "invalid_seconds": true,
+          "returncode": 1,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-llvm-o1-hybrid_soak_network_upper_profile_ctr-invalid.log",
+          "summaries": [
+            "0/1 tests passed"
+          ],
+          "original_log_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+          "outer_timeout": false,
+          "failure_lines": [
+            "[FAIL] hybrid_soak_network_upper_profile_ctr: ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS must be 4..300"
+          ]
+        },
+        {
+          "gate": "robotweax_srt_hybrid_network_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-clang",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_network_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-llvm-o1-hybrid_network-ctest.log",
+          "detail": "/tmp/pr387-harness-llvm-o1-hybrid_network-last.log",
+          "summaries": [
+            "5/5 tests passed"
+          ],
+          "original_log_sha256": "cd99a82ccee7c4d71fdcf9897544ef956d5ca2ce531e3cc2818ead6f8f96a276",
+          "original_detail_sha256": "2b5fde01ee1c999876ec05729e90460a6b2f14e9311d34cc3805c0e4c9b8d0fb",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_key_timing_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-clang",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_key_timing_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-llvm-o1-hybrid_key_timing-ctest.log",
+          "detail": "/tmp/pr387-harness-llvm-o1-hybrid_key_timing-last.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "8771e47720fd87308ef93a55f5ef204ad4f43c00b6af719eae662a8637dbdd16",
+          "original_detail_sha256": "5fc8c581e296a37ac198d1f6ee37b467bb0fd956b368cf5605040bc27539ec37",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_load_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-clang",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_load_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-llvm-o1-hybrid_load-ctest.log",
+          "detail": "/tmp/pr387-harness-llvm-o1-hybrid_load-last.log",
+          "summaries": [
+            "2/2 tests passed"
+          ],
+          "original_log_sha256": "15dd0d42a74dd618549074b889089bda588e654adf0c98e861e89f503082da7b",
+          "original_detail_sha256": "23d1c2b13cb4616af222bf3fcf1360b2f2c904aaa7afb472142371471f862453",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_soak_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-sanitized-clang",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_soak_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-llvm-o1-hybrid_soak-ctest.log",
+          "detail": "/tmp/pr387-harness-llvm-o1-hybrid_soak-last.log",
+          "summaries": [
+            "2/2 tests passed"
+          ],
+          "original_log_sha256": "4234b9c85564f018475c1ffc5bab066cb9873bbdcc45a5fb0399f2e057b78a7f",
+          "original_detail_sha256": "f5eef928952c43c1a8fb66e147ec576eca51db7906f7301535edfdb52d5b813d",
+          "outer_timeout": false,
+          "failure_lines": []
+        }
+      ],
+      "native_summary": {
+        "passed": 17,
+        "selected_by_filter": 17,
+        "started": 17
+      },
+      "four_second_metrics": [
+        {
+          "profile": 1,
+          "seconds": 4,
+          "loaded_messages": 2000,
+          "loaded_us": 4011154,
+          "actual_pps": 498,
+          "payload_bytes": 1316,
+          "messages_per_receiver": 2016,
+          "data_receivers": 2,
+          "key_switches": 62,
+          "km_material_changes": 63,
+          "samples": 18,
+          "pacer_resets": 1,
+          "retained_peak_uc": 30,
+          "retained_peak_mc": 46,
+          "retained_final_uc": 0,
+          "retained_final_mc": 0,
+          "uc_queue_peak": 64,
+          "mc_queue_peak": 25,
+          "uc_capacity_retries": 15,
+          "fallback_us": 154727,
+          "rejoin_us": 176572,
+          "return_us": 277441
+        },
+        {
+          "profile": 2,
+          "seconds": 4,
+          "loaded_messages": 2000,
+          "loaded_us": 4000295,
+          "actual_pps": 499,
+          "payload_bytes": 1316,
+          "messages_per_receiver": 2016,
+          "data_receivers": 2,
+          "key_switches": 62,
+          "km_material_changes": 63,
+          "samples": 18,
+          "pacer_resets": 0,
+          "retained_peak_uc": 33,
+          "retained_peak_mc": 46,
+          "retained_final_uc": 0,
+          "retained_final_mc": 0,
+          "uc_queue_peak": 64,
+          "mc_queue_peak": 25,
+          "uc_capacity_retries": 14,
+          "fallback_us": 162863,
+          "rejoin_us": 183241,
+          "return_us": 299256
+        }
+      ]
+    },
+    "gcc-release": {
+      "binary_sha256": "4f95682e7fccb14b2b795054a4c910f931a0fa0bd8285a569ac0a0bc9be1787a",
+      "cache_sha256": "90ffd50803c1d552dbc2737d901c744f5600648a2ff77b5b4ef6dd4dd56c84ec",
+      "flags": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+        "CMAKE_CXX_FLAGS": "",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "ENABLE_AEAD_API_PREVIEW": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+      },
+      "source_clean": true,
+      "gates": [
+        {
+          "selection": "hybrid_link_",
+          "invalid_seconds": false,
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-release-hybrid_link.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "1788f406abd905968914a0f65fd08cde0681851bea883e6d7e95005fd87f35d0",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "selection": "hybrid_harness_network_",
+          "invalid_seconds": false,
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-release-hybrid_harness_network.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "f396c471141e2c652413c9d82c2220200515776e87a3c8995e59c6bbd95eeca7",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "selection": "hybrid_soak_network_upper_profile_ctr",
+          "invalid_seconds": true,
+          "returncode": 1,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-release-hybrid_soak_network_upper_profile_ctr-invalid.log",
+          "summaries": [
+            "0/1 tests passed"
+          ],
+          "original_log_sha256": "fd82977e2cb96ac208035acf93d340f1695db5896f3d4b54f82813db1d02e1eb",
+          "outer_timeout": false,
+          "failure_lines": [
+            "[FAIL] hybrid_soak_network_upper_profile_ctr: ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS must be 4..300"
+          ]
+        },
+        {
+          "gate": "robotweax_srt_multicast_dispatch_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-release",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_multicast_dispatch_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-release-multicast_dispatch-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-release-multicast_dispatch-last.log",
+          "summaries": [
+            "77/77 tests passed"
+          ],
+          "original_log_sha256": "d05434a98607b6abf46ecf9f13b4a9d00d528db04d8bd29ac0ce859b594d62ab",
+          "original_detail_sha256": "5fe0552e222a978cd823920c00e44d8401d27ce541b1283392cae663d04c13c1",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_network_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-release",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_network_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-release-hybrid_network-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-release-hybrid_network-last.log",
+          "summaries": [
+            "5/5 tests passed"
+          ],
+          "original_log_sha256": "80895f37e5abc3bb9a59773289d91e18fa03027fd40d162519086dea5d4990df",
+          "original_detail_sha256": "23dde500759ed936b59f935d5e101c320286dca44c65d1846c033390c1c6a9eb",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_key_timing_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-release",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_key_timing_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-release-hybrid_key_timing-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-release-hybrid_key_timing-last.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "8cc8b26bbbf3b40064d11af6284467e12226f60a64b64fc61b206952d5d45bd7",
+          "original_detail_sha256": "2fcf8e4bf42877049cd26896ca03f9e55dcfecfde9bc08f7aa573346274f3b09",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_load_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-release",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_load_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-release-hybrid_load-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-release-hybrid_load-last.log",
+          "summaries": [
+            "2/2 tests passed"
+          ],
+          "original_log_sha256": "bebfc672b5bc5faf4b168beaf4825ff69d94c752da229c1a4773f5d30843d6ca",
+          "original_detail_sha256": "804c6f64b891cb8914d7048ec47047125a372b76bb552be083f434cab7ef4822",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_soak_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-linux-release",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_soak_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-gcc-release-hybrid_soak-ctest.log",
+          "detail": "/tmp/pr387-harness-gcc-release-hybrid_soak-last.log",
+          "summaries": [
+            "2/2 tests passed"
+          ],
+          "original_log_sha256": "2bbc290c21cb8600c9cccaba42b485b9593cbdcb08c91fbfab1357ef69d1c0c0",
+          "original_detail_sha256": "b8ec7007e911f83a894330e9eeb544cf81285444520d85521d90f69feacf02f8",
+          "outer_timeout": false,
+          "failure_lines": []
+        }
+      ],
+      "native_summary": {
+        "passed": 94,
+        "selected_by_filter": 94,
+        "started": 94
+      },
+      "four_second_metrics": [
+        {
+          "profile": 1,
+          "seconds": 4,
+          "loaded_messages": 2000,
+          "loaded_us": 4000341,
+          "actual_pps": 499,
+          "payload_bytes": 1316,
+          "messages_per_receiver": 2016,
+          "data_receivers": 2,
+          "key_switches": 62,
+          "km_material_changes": 63,
+          "samples": 18,
+          "pacer_resets": 0,
+          "retained_peak_uc": 35,
+          "retained_peak_mc": 46,
+          "retained_final_uc": 0,
+          "retained_final_mc": 0,
+          "uc_queue_peak": 64,
+          "mc_queue_peak": 25,
+          "uc_capacity_retries": 21,
+          "fallback_us": 156616,
+          "rejoin_us": 177322,
+          "return_us": 285431
+        },
+        {
+          "profile": 2,
+          "seconds": 4,
+          "loaded_messages": 2000,
+          "loaded_us": 4000222,
+          "actual_pps": 499,
+          "payload_bytes": 1316,
+          "messages_per_receiver": 2016,
+          "data_receivers": 2,
+          "key_switches": 62,
+          "km_material_changes": 63,
+          "samples": 18,
+          "pacer_resets": 0,
+          "retained_peak_uc": 39,
+          "retained_peak_mc": 45,
+          "retained_final_uc": 0,
+          "retained_final_mc": 0,
+          "uc_queue_peak": 64,
+          "mc_queue_peak": 25,
+          "uc_capacity_retries": 8,
+          "fallback_us": 155756,
+          "rejoin_us": 177802,
+          "return_us": 280546
+        }
+      ]
+    },
+    "mac-release": {
+      "binary_sha256": "3c21b395060632428677b830277c4df21d0cae2383736acfb6aad526d57c0227",
+      "cache_sha256": "c675533ba24933c841c1da1d2faffe15ddd6cd2615764b29a28477fd7ab9a4e9",
+      "flags": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+        "CMAKE_CXX_FLAGS": "",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "ENABLE_AEAD_API_PREVIEW": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+      },
+      "source_clean": true,
+      "gates": [
+        {
+          "gate": "robotweax_srt_multicast_dispatch_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-hybrid-control",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_multicast_dispatch_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-release-multicast_dispatch-ctest.log",
+          "detail": "/tmp/pr387-harness-mac-release-multicast_dispatch-last.log",
+          "summaries": [
+            "77/77 tests passed"
+          ],
+          "original_log_sha256": "2d004e5de6123a8f36f10206ccb1d3e49b21a8ced938a6682a85b5d50d262d25",
+          "original_detail_sha256": "3afed45198304590ded0a89459b4d87d0a76fe8ef45b69937a3582b615b334d9",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_network_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-hybrid-control",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_network_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-release-hybrid_network-ctest.log",
+          "detail": "/tmp/pr387-harness-mac-release-hybrid_network-last.log",
+          "summaries": [
+            "5/5 tests passed"
+          ],
+          "original_log_sha256": "da14370dfa57b91cf873b7b02411f8bfa3382a9a0aeb32f558d8b6fdc00a7bd9",
+          "original_detail_sha256": "58ed80e3e79f661975a9d749c93c53d0a9671d088b114993175195dd6ca16074",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_key_timing_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-hybrid-control",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_key_timing_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-release-hybrid_key_timing-ctest.log",
+          "detail": "/tmp/pr387-harness-mac-release-hybrid_key_timing-last.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "90248a61cbc959e569673a6506ff12762134bf55de16edec5059f924d0f75c6c",
+          "original_detail_sha256": "1b369dba04c558571653dbf117c99699d683304d04131dab9439715270a6adfd",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_load_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-hybrid-control",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_load_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-release-hybrid_load-ctest.log",
+          "detail": "/tmp/pr387-harness-mac-release-hybrid_load-last.log",
+          "summaries": [
+            "2/2 tests passed"
+          ],
+          "original_log_sha256": "7ca1ea7400075c75fb6a3f6dae21f5f9a0ade3c4283381f53c0371a166205aec",
+          "original_detail_sha256": "593aaa75fce6ddc52bba9f9b5259a2fa31b04a8f684ad6366c7ac694851280f1",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_soak_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-hybrid-control",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_soak_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-release-hybrid_soak-ctest.log",
+          "detail": "/tmp/pr387-harness-mac-release-hybrid_soak-last.log",
+          "summaries": [
+            "2/2 tests passed"
+          ],
+          "original_log_sha256": "a45bde0ce49d7940789e26e6d2b31ed5400147832d9f1ec7b4760c982cfa60d0",
+          "original_detail_sha256": "ceb70dacba438375f35975eeffed53d0ee1b5ae26c8287a66c091ae7d173caa8",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_harness_tests",
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-release-hybrid_harness-last.log",
+          "detail": "/tmp/pr387-harness-mac-release-harness-native-last.log",
+          "original_log_sha256": "e9b32a625c6789ba10d43814acb1cdb1785715dce8f8aed6c04afc66a1c2e7f2",
+          "original_detail_sha256": "426a81f8373d232932cfbe6d64cd40c0fc9eab73146e33a43447cadc1d21a2c2",
+          "outer_timeout": false,
+          "failure_lines": []
+        }
+      ],
+      "native_summary": {
+        "passed": 94,
+        "selected_by_filter": 94,
+        "started": 94
+      },
+      "four_second_metrics": [
+        {
+          "profile": 1,
+          "seconds": 4,
+          "loaded_messages": 2000,
+          "loaded_us": 4001118,
+          "actual_pps": 499,
+          "payload_bytes": 1316,
+          "messages_per_receiver": 2016,
+          "data_receivers": 2,
+          "key_switches": 62,
+          "km_material_changes": 63,
+          "samples": 18,
+          "pacer_resets": 0,
+          "retained_peak_uc": 30,
+          "retained_peak_mc": 51,
+          "retained_final_uc": 0,
+          "retained_final_mc": 0,
+          "uc_queue_peak": 64,
+          "mc_queue_peak": 25,
+          "uc_capacity_retries": 30,
+          "fallback_us": 167787,
+          "rejoin_us": 190364,
+          "return_us": 290941
+        },
+        {
+          "profile": 2,
+          "seconds": 4,
+          "loaded_messages": 2000,
+          "loaded_us": 4001271,
+          "actual_pps": 499,
+          "payload_bytes": 1316,
+          "messages_per_receiver": 2016,
+          "data_receivers": 2,
+          "key_switches": 62,
+          "km_material_changes": 63,
+          "samples": 18,
+          "pacer_resets": 0,
+          "retained_peak_uc": 33,
+          "retained_peak_mc": 45,
+          "retained_final_uc": 0,
+          "retained_final_mc": 0,
+          "uc_queue_peak": 64,
+          "mc_queue_peak": 25,
+          "uc_capacity_retries": 29,
+          "fallback_us": 158531,
+          "rejoin_us": 182469,
+          "return_us": 286001
+        }
+      ]
+    },
+    "mac-sanitized": {
+      "binary_sha256": "dfd5e165197e83f6ffd40c741d590533d2643f7c82cd2d869aebf250849f1823",
+      "cache_sha256": "bf1b3d6503fde1139c004cb011a6e40e0e8e6be88e3fb61524be61f8879c3b9d",
+      "flags": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "ENABLE_AEAD_API_PREVIEW": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+      },
+      "source_clean": true,
+      "gates": [
+        {
+          "gate": "robotweax_srt_multicast_dispatch_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-hybrid-control-sanitized",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_multicast_dispatch_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-sanitized-multicast_dispatch-ctest.log",
+          "detail": "/tmp/pr387-harness-mac-sanitized-multicast_dispatch-last.log",
+          "summaries": [
+            "77/77 tests passed"
+          ],
+          "original_log_sha256": "f60d675655ff175925c2523c0d9763c066bb841caf8d6cd58cff90d706c83f39",
+          "original_detail_sha256": "5daeacf93deae469918b1f70360562178f08664412c9ea28499655e0fdf633b0",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_network_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-hybrid-control-sanitized",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_network_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-sanitized-hybrid_network-ctest.log",
+          "detail": "/tmp/pr387-harness-mac-sanitized-hybrid_network-last.log",
+          "summaries": [
+            "5/5 tests passed"
+          ],
+          "original_log_sha256": "a0fd517f2e4421b7a93e5ffb335248a1a48685a3c5975adcf972325064d3faaa",
+          "original_detail_sha256": "bc3b3b7b5c2c838f6ee83b11f39b348a4b0b9ea3a93b7f05408f29e77eae41a1",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_key_timing_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-hybrid-control-sanitized",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_key_timing_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-sanitized-hybrid_key_timing-ctest.log",
+          "detail": "/tmp/pr387-harness-mac-sanitized-hybrid_key_timing-last.log",
+          "summaries": [
+            "4/4 tests passed"
+          ],
+          "original_log_sha256": "4ddf0a44c048460b316f2944c0a6cdb77c118fd845373016da1cba14d7ef6aa3",
+          "original_detail_sha256": "626c833524837cd96f784343fe252af8bebbf15c9c46242555658a0ba50d6b02",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_load_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-hybrid-control-sanitized",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_load_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-sanitized-hybrid_load-ctest.log",
+          "detail": "/tmp/pr387-harness-mac-sanitized-hybrid_load-last.log",
+          "summaries": [
+            "2/2 tests passed"
+          ],
+          "original_log_sha256": "273d3f8a4710bc55b6e05da24b06f4f380ab7fde0a1c761b1d2d9eeed02ad78c",
+          "original_detail_sha256": "e2f6287710d76770b19ee0e2439119cc43a98a640ccf46bbe487710fdc0582bc",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_soak_tests",
+          "command": [
+            "ctest",
+            "--test-dir",
+            "build-hybrid-control-sanitized",
+            "--output-on-failure",
+            "-j1",
+            "-R",
+            "^robotweax_srt_hybrid_soak_tests$"
+          ],
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-sanitized-hybrid_soak-ctest.log",
+          "detail": "/tmp/pr387-harness-mac-sanitized-hybrid_soak-last.log",
+          "summaries": [
+            "2/2 tests passed"
+          ],
+          "original_log_sha256": "c3737604614a6ac6b63bd97192fe577c3a6fd7ea845683b044007809779011e8",
+          "original_detail_sha256": "3aadffba2303f91d11ecd8e877e27cda4a3b703bb7cfdaa2bad9f5053eb9f046",
+          "outer_timeout": false,
+          "failure_lines": []
+        },
+        {
+          "gate": "robotweax_srt_hybrid_harness_tests",
+          "returncode": 0,
+          "expected_result": true,
+          "log": "/tmp/pr387-harness-mac-sanitized-hybrid_harness-last.log",
+          "detail": "/tmp/pr387-harness-mac-sanitized-harness-native-last.log",
+          "original_log_sha256": "d51a7c4a89db3e71bd4f2dd8039930b4be2f83b0664ca2bbfe6515afb5c2d389",
+          "original_detail_sha256": "0983843475e12159931451a58efeda6e43fcc2265cfaa098a8c11ff9df288203",
+          "outer_timeout": false,
+          "failure_lines": []
+        }
+      ],
+      "native_summary": {
+        "passed": 94,
+        "selected_by_filter": 94,
+        "started": 94
+      },
+      "four_second_metrics": [
+        {
+          "profile": 1,
+          "seconds": 4,
+          "loaded_messages": 2000,
+          "loaded_us": 4001447,
+          "actual_pps": 499,
+          "payload_bytes": 1316,
+          "messages_per_receiver": 2016,
+          "data_receivers": 2,
+          "key_switches": 62,
+          "km_material_changes": 63,
+          "samples": 18,
+          "pacer_resets": 0,
+          "retained_peak_uc": 30,
+          "retained_peak_mc": 40,
+          "retained_final_uc": 0,
+          "retained_final_mc": 0,
+          "uc_queue_peak": 64,
+          "mc_queue_peak": 25,
+          "uc_capacity_retries": 11,
+          "fallback_us": 172252,
+          "rejoin_us": 192565,
+          "return_us": 302115
+        },
+        {
+          "profile": 2,
+          "seconds": 4,
+          "loaded_messages": 2000,
+          "loaded_us": 4000395,
+          "actual_pps": 499,
+          "payload_bytes": 1316,
+          "messages_per_receiver": 2016,
+          "data_receivers": 2,
+          "key_switches": 62,
+          "km_material_changes": 63,
+          "samples": 18,
+          "pacer_resets": 0,
+          "retained_peak_uc": 30,
+          "retained_peak_mc": 45,
+          "retained_final_uc": 0,
+          "retained_final_mc": 0,
+          "uc_queue_peak": 64,
+          "mc_queue_peak": 25,
+          "uc_capacity_retries": 32,
+          "fallback_us": 170527,
+          "rejoin_us": 192705,
+          "return_us": 298184
+        }
+      ]
+    }
+  },
+  "license": "MIT",
+  "status": "targeted harness review follow-up; feature remains draft/unqualified as a whole",
+  "prechecks": {
+    "source_commit": "64591511d588416f55123a05bd598c3ef510c412",
+    "results": [
+      {
+        "command": [
+          "./build-review-default/robotweax_srt_tests",
+          "--include",
+          "hybrid_link_"
+        ],
+        "returncode": 0,
+        "log": "/tmp/pr387-harness-build-review-default-queue.log",
+        "log_sha256": "f8734d36c6f5c5b123fc41b7c62b6e6e94068d980afd95e194eb86cd81de6433"
+      },
+      {
+        "command": [
+          "./build-hybrid-control/robotweax_srt_tests",
+          "--include",
+          "hybrid_link_"
+        ],
+        "returncode": 0,
+        "log": "/tmp/pr387-harness-build-hybrid-control-queue.log",
+        "log_sha256": "f8734d36c6f5c5b123fc41b7c62b6e6e94068d980afd95e194eb86cd81de6433"
+      },
+      {
+        "command": [
+          "./build-hybrid-control-sanitized/robotweax_srt_tests",
+          "--include",
+          "hybrid_link_"
+        ],
+        "returncode": 0,
+        "log": "/tmp/pr387-harness-build-hybrid-control-sanitized-queue.log",
+        "log_sha256": "f8734d36c6f5c5b123fc41b7c62b6e6e94068d980afd95e194eb86cd81de6433"
+      },
+      {
+        "command": [
+          "./tools/python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "interop/tests",
+          "-p",
+          "test_*.py"
+        ],
+        "returncode": 0,
+        "log": "/tmp/pr387-harness-python.log",
+        "log_sha256": "13497496e1d0551fea42eed295d503080e5b932093f11990cec3138a64160c62"
+      },
+      {
+        "command": [
+          "ctest",
+          "--test-dir",
+          "build-review-default",
+          "--output-on-failure",
+          "-j1"
+        ],
+        "returncode": 0,
+        "log": "/tmp/pr387-harness-default-ctest.log",
+        "log_sha256": "0f7926408655c5f0e8e7d22045913411ea6dcdf2e674ba899739c3fc25af77ab"
+      }
+    ]
+  },
+  "sanitizer_options": {
+    "host": {
+      "ASAN_OPTIONS": null,
+      "UBSAN_OPTIONS": null,
+      "LSAN_OPTIONS": null
+    },
+    "guest": {
+      "ASAN_OPTIONS": null,
+      "UBSAN_OPTIONS": null,
+      "LSAN_OPTIONS": null
+    }
+  },
+  "complete_build_flags": {
+    "mac-release": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "OFF",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FUZZERS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING": "OFF"
+    },
+    "mac-sanitized": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "ON",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FUZZERS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING": "OFF"
+    },
+    "mac-default": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "OFF",
+      "ENABLE_MAXREXMITBW": "OFF",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FUZZERS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "ON",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING": "OFF"
+    },
+    "gcc-og": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g -Og",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "ON",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FUZZERS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING": "OFF"
+    },
+    "gcc-o1": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "ON",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FUZZERS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING": "OFF"
+    },
+    "llvm-o1": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "CMAKE_CXX_COMPILER": "<lab>/llvm-toolchain/clang++",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "ON",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FUZZERS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING": "OFF"
+    },
+    "gcc-release": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "OFF",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FILTER_CONTRACTS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_FUZZERS": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING": "OFF"
+    }
+  },
+  "clean_before": {
+    "og": {
+      "identity": "18b459500682593d5fb06ee9dba307497bb34f8e\nf7c7fe813ed22d73c12394e00caeee9fc991a8b93150087cecfa06c712a5301d  build-linux-sanitized-og/robotweax_srt_tests\n83fd5c38a2a2f9a89efa4a949c3b8e1e2e29109e3fc068772eff08dba371a89d  build-linux-sanitized-og/CMakeCache.txt\n",
+      "returncode": 255
+    },
+    "o1": {
+      "identity": "18b459500682593d5fb06ee9dba307497bb34f8e\na770cff23e2a366c42dfb0f7c0172a7c5c0babf4c9ad9e20679ba11428580ed4  build-linux-sanitized-o1/robotweax_srt_tests\ndc0db18e3aaa2bf02bd93a6c4e7f5eaceae0499901e3e8fc81a5f112d5601710  build-linux-sanitized-o1/CMakeCache.txt\n",
+      "returncode": 1
+    }
+  },
+  "pool_only_control": {
+    "og": {
+      "identity": "18b459500682593d5fb06ee9dba307497bb34f8e\n M tests/hybrid_fault_link.hpp\nc4b148b5ac4d9c7d49c0e7ce44f3ace834605f7cbccf7ff253a0cc4318c5f4d7  build-linux-sanitized-og/robotweax_srt_tests\n83fd5c38a2a2f9a89efa4a949c3b8e1e2e29109e3fc068772eff08dba371a89d  build-linux-sanitized-og/CMakeCache.txt\n",
+      "returncode": 1
+    },
+    "o1": {
+      "identity": "18b459500682593d5fb06ee9dba307497bb34f8e\n M tests/hybrid_fault_link.hpp\naa8b9223a388c40beaf329fa0294bc7eb0fd20f4b891b6561b5d7883c4e583fe  build-linux-sanitized-o1/robotweax_srt_tests\ndc0db18e3aaa2bf02bd93a6c4e7f5eaceae0499901e3e8fc81a5f112d5601710  build-linux-sanitized-o1/CMakeCache.txt\n",
+      "returncode": 1
+    }
+  },
+  "pool_only_patch": "review-harness-pool-only.patch",
+  "long_gcc_controls": {
+    "gcc-og": {
+      "status": "not run",
+      "reason": "Current strict four-second load/soak gate failed; preserve first failure instead of treating a new run as a retry."
+    },
+    "gcc-o1": {
+      "status": "not run",
+      "reason": "Current strict four-second load/soak gate failed; preserve first failure instead of treating a new run as a retry."
+    }
+  },
+  "queue_size_diagnostic": "old_queue_bytes=99920 new_queue_bytes=88 packet_bytes=1560 fixed_capacity=64",
+  "queue_size_scope": "sizeof measured on macOS ARM64, not a whole-process memory claim. Each pool still contains 64 x 1560-byte packets; storage is allocated once before hooks.",
+  "causality": "The original invalid-duration exception precedes construction of the soak fixture and all fault threads. On clean 18b, GCC Og terminates and O1 faults inside ASan. Changing only fixed packet pool storage, same flags, returns the normal FAIL and 0/1 summary in both. This isolates a storage-layout-dependent unwinding failure, not proof of a compiler defect or the cause of historical DATA loss.",
+  "cleanup": "Peers registers fault cleanup before potentially throwing configuration. Hooks are cleared and fault workers stopped/joined before first socket close, including partial construction. Worker callbacks are published after successful thread construction. Reader RAII joins on producer/thread-creation errors; captured reader exceptions propagate after join.",
+  "unchanged_limits": "64 packets/queue, 1500-byte datagrams, 200 ms playout/proof, 3 s outer predicate wait, original faults/rate/crypto/recovery limits; full ASan/UBSan with default options. No library code modified.",
+  "negative_controls": "The invalid-duration case must exit 1 with a normal FAIL and 0/1 summary. It is an expected failure, not a successful native profile.",
+  "windows_build_evidence": "review-harness-windows-ci.json",
+  "repository_default": {
+    "source_commit": "64591511d588416f55123a05bd598c3ef510c412",
+    "build": "build-review-default",
+    "build_was_incremental": true,
+    "ctest_gates_passed": 84,
+    "general_cpp_passed": 1225,
+    "python_cases_passed": 854,
+    "binary_sha256": "d7ce8e9ccf73eb8c28ef2d2c20eb34c2bb82fa33cfbea73160d1efc36a36969a",
+    "cache_sha256": "982ba257df4fdc42cb4a925a38fd9774e60bf2855ffc9c60448777c76f58c1ad",
+    "skip_records": [
+      "srt_compat_bind_acquire_reuseport_routes_distinct_ipv4_channels: Linux SO_REUSEPORT distribution test",
+      "srt_compat_bind_acquire_reuseport_routes_distinct_ipv6_channels: Linux SO_REUSEPORT distribution test",
+      "srt_compat_bind_acquire_reuseaddr_does_not_allow_distinct_channels: Linux adopted endpoint conflict test",
+      "srt_compat_bind_acquire_reuseport_rejects_duplicate_native_socket: Linux native socket identity test",
+      "srt_compat_bind_acquire_reuseport_rejects_outgoing_ipv4_group: Linux reuseport caller restriction test",
+      "srt_compat_bind_acquire_reuseport_rejects_outgoing_ipv6_group: Linux reuseport caller restriction test",
+      "srt_compat_bind_acquire_single_reuseport_socket_retains_caller_support: Linux single reuseport caller compatibility test",
+      "srt_compat_bind_acquire_reuseport_rejects_group_after_caller_setup: Linux caller/adoption ordering test"
+    ]
+  },
+  "baseline_flags_binding": "Og/O1 baseline and pool-only controls have the exact cache hashes captured again with the current source, so the recorded compiler flags match those controls."
+}

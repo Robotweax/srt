@@ -1,0 +1,3 @@
+[RUN] hybrid_soak_network_upper_profile_ctr
+[FAIL] hybrid_soak_network_upper_profile_ctr: ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS must be 4..300
+0/1 tests passed

@@ -296,11 +296,11 @@
     }
   },
   "merge_blockers": [
-    "Outstanding full review findings tracked in review-follow-up.md; this batch addresses only BL-1 and the BL-2 source conversion.",
-    "BL-2 native Win32 verification pending; BL-3 timeouts, BL-4 Windows application hang, BL-5 platform-dependent assertion and BL-6 source/binary evidence binding remain open.",
+    "Outstanding full review findings tracked in review-follow-up.md; build and harness follow-ups are limited to their recorded scope.",
     "Canonical DATA L-1/L-2/L-3, default-path interception T-1 and automation H-1/H-2 need investigation/regression coverage.",
-    "Fix failure-safe harness teardown/exception reporting before deciding GCC sanitizer root cause; do not weaken the original fault/deadline envelope.",
-    "Independent review findings have not been resolved/sign-off obtained; no merge/release/default enablement."
+    "Independent review findings have not been resolved/sign-off obtained; no merge/release/default enablement.",
+    "BL-3 suite budgets, BL-4 Windows app hang, BL-5 pacing-dependent assertion and BL-6 source/binary attestation remain open.",
+    "Harness unwinding negative controls fixed; preserved GCC canonical DATA/proof failures still need timing evidence, and GCC O0 has not been revalidated."
   ],
   "limits": [
     "Second OS/kernel/libstdc++ path on same ARM64 physical machine only. No Windows,x86,separate hardware,physical UC/MC separation,WAN,arbitrary network conditions or production scale qualification.",
@@ -311,7 +311,7 @@
     "Public C ABI/options/provisioning unchanged; HC/ACP1 default OFF. Primary coordinated Source still rejects primary SESSIONAUTH/ACP1. Runtime KM remains ordinary unauthenticated passphrase control. Shared credentials/no-forward-secrecy/provisional-registry/socket-ID and explicit host loss/source recovery/provisioning limits remain.",
     "Project incomplete. Branch published for independent review in draft PR #387; no merge, release or default enablement."
   ],
-  "next": "Complete native Windows verification and remaining build/integration blockers; fix failure-safe harness, then canonical DATA/default isolation and automation findings in review order.",
+  "next": "Use reliable failure reporting to diagnose remaining DATA/proof failures; partition instrumented suites (BL-3), make Windows quota coverage deterministic (BL-5), enforce artifact identity (BL-6), then canonical DATA/default isolation/automatic-controller regressions.",
   "evidence_note": "Full local archive is not published. Curated qualifications, all four long native logs, CTest gate logs, selected sanitizer names/audit, selected CMake settings and original failure logs are included here. Paths and failure memory addresses are redacted. Original binary/cache/log hashes identify unredacted local artifacts; SHA256SUMS and provenance.json identify the published versions.",
   "full_local_archive_manifest_sha256": "58f6b471317ef3b37cc7a625be3481da8da56e6f3f672c0ef218c682dbb97fa9",
   "publication": {
@@ -322,11 +322,11 @@
   },
   "historical_qualification_checkout": "997cfe2438eab1b0e9bdac2c797a7be7daf31c11",
   "historical_scope": "Controlled two-receiver IPv4 loopback; local Ubuntu24.04.4 ARM64 Lima VM on same physical host as macOS ARM64. Same30s/profile CTR/GCM upper fault model on Release and sanitizer builds. Linux sanitizer final configuration explicitly LLVM18 Debug -g -O1, ASan/UBSan with normal default options.",
-  "current_scope": "Review batch BL-1/BL-2 at e710d4e6f9ab027483e399f222c8cef7837c8d5d: actual repository-default macOS Release 84 gates, plus45 selected enabled Release and45 enabled sanitizer cases; native Windows validation pending. Historical native profiles do not qualify this updated head.",
+  "current_scope": "Harness-only source follow-up at 64591511d588416f55123a05bd598c3ef510c412; actual default 84 gates plus focused native/negative-control evidence in records/review-harness.json. Historical full/long results do not qualify the new head.",
   "review": {
     "url": "https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185",
     "reviewed_head": "4af9c86cc86bd915fb67bda22463bbd0ec068a05",
-    "status": "Full technical review received; first build-fix batch implemented, remaining findings open.",
+    "status": "Build blockers fixed and harness reporting/cleanup addressed; remaining numbered findings and native qualification gaps open.",
     "tracking": "review-follow-up.md"
   },
   "post_review_validation": {
@@ -339,12 +339,24 @@
     "tools": true,
     "benchmarks": true,
     "focused_cases_per_enabled_configuration": 45,
-    "windows_native_after_fix": "pending hosted CI; no local Windows execution claimed",
+    "windows_native_after_fix": "Hosted native Win32/x64 builds/provider tests and shared x64 Debug/Release succeeded at 18b4595; see records/review-harness-windows-ci.json; no local Windows execution.",
     "binary_commit_binding": "not embedded/enforced; qualification tool gap remains open"
   },
   "qualification_binding": {
     "historical_record_commit_semantics": "reported source checkout only",
     "binary_identity": "binary/cache/log SHA256 are recorded; stale-binary-to-new-checkout mismatch is not rejected by the current driver",
     "remaining_work": "BL-6: enforce build/source identity in qualification tooling and test stale-binary rejection."
+  },
+  "post_review_harness": {
+    "source_commit": "64591511d588416f55123a05bd598c3ef510c412",
+    "record": "records/review-harness.json",
+    "default_gates": 84,
+    "python_cases": 854,
+    "four_new_unique_failure_cases": true,
+    "windows_compile_blocker": "Hosted Win32/x64 verification at 18b4595; native hybrid Windows qualification still open.",
+    "gcc_long_controls": {
+      "gcc-og": "not run",
+      "gcc-o1": "not run"
+    }
   }
 }

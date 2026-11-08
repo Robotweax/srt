@@ -4,7 +4,8 @@
 **Draft review only.** The feature is not merge-ready or production-qualified.
 The [complete technical review](https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185) found additional build, Windows,
 canonical DATA and automation issues. [Current follow-up](review-follow-up.md)
-tracks every finding; this batch addresses only the first two build blockers.
+tracks every finding; follow-up fixes build blockers and harness reporting/cleanup.
+Other protocol, automation and integration findings remain open.
 
 ## Baseline and evidence identity
 
@@ -107,8 +108,63 @@ six investigation cases, without selected skips or sanitizer findings.
 See [the new record](records/review-build-fixes.json), [full CTest output](logs/review-repository-default-ctest.log)
 and [regression before the guard](failures/review-bl1-default-before.log).
 
-The Win32 narrowing was verified in the old MSVC CI log; **native after-fix
-Windows validation remains pending**. No native Windows x64/Win32 execution was performed on this macOS host. No Windows pass is invented, and BL-3/BL-4/BL-5 remain open.
+The Win32 narrowing was verified in the old MSVC log. New hosted BCrypt CI
+at `18b4595` passes native Win32/x64 builds and selected provider tests plus
+shared x64 Debug/Release checks; [job evidence](records/review-harness-windows-ci.json).
+ARM64 is cross-build evidence only. No native Windows execution was performed
+on this macOS host. BL-3/BL-4/BL-5 and full Windows hybrid qualification remain open.
+
+## Post-review harness fixes
+
+At `64591511d588416f55123a05bd598c3ef510c412`, fixed packet pools move
+from automatic storage to one bounded heap allocation per queue. Capacity, packet bytes and allocation-free
+enqueue/take are unchanged. Each queue object falls from 99,920 to 88 bytes on
+macOS ARM64; the ten inline soak pools previously occupied nearly 1 MiB of
+stack. This is a fixture layout change, not a production resource-bound change.
+
+A clean baseline reproduces GCC Og terminate and GCC O1 ASan SEGV with an
+invalid duration **before the fixture exists**. A pool-only control with identical
+compiler/sanitizer flags restores a normal FAIL/0-of-1 result in both. This
+establishes a layout-dependent unwinding failure; it does not establish a
+compiler defect or explain the historical canonical DATA drop.
+
+Cleanup is registered before constructor configuration can install a worker.
+It clears hooks and joins workers before first socket close, including partial
+construction. Reader RAII covers producer/thread-creation failures and propagates
+captured reader exceptions after join. Four forced-failure cases audit cleanup.
+Send hooks are published only after thread creation succeeds. The harness and
+multicast partitions run serial; existing gate/protocol deadlines are unchanged.
+Soak/setup wait messages identify their stage and DATA failures print membership
+and control state. Original failed logs are preserved.
+
+Repository-default CTest again passes **84/84**, Python **854/854**, and the four
+queue cases pass in each selected build. Native results (counts exclude negative
+invalid-duration controls and pure queue cases):
+
+| Build | Native passes / partition cases | Result |
+| --- | ---: | --- |
+| gcc-og | 9/17 | failure retained |
+| gcc-o1 | 12/17 | failure retained |
+| llvm-o1 | 17/17 | pass |
+| gcc-release | 94/94 | pass |
+| mac-release | 94/94 | pass |
+| mac-sanitized | 94/94 | pass |
+
+A timed-out partition may not start every case; started counts and all failures
+are recorded separately. These are focused gates at the new source, not a fresh
+full 716-case or whole-platform qualification. [The harness record](records/review-harness.json)
+contains exact commands, flags, binary/cache/log hashes, strict four-second
+metrics, failures and any separately attempted GCC 30-second profiles. The
+qualification driver still lacks enforced binary/source binding (BL-6).
+
+Current GCC failures remain material. Both sanitizer configurations time out the
+30-second network partition. Og also loses control freshness in key/load cases.
+Both fail the unchanged four-second DATA profiles; O1 CTR shows canonical later
+messages after receiver drops, while O1 GCM also reports undecryptable packets.
+One Og CTR mismatch is noncanonical with an undecryptable count of zero. These
+observations do not establish lateness as the sole cause; packet/repair/playout
+and KM activation evidence is still needed. No 30-second GCC run replaces these
+failed smoke gates, and O0 has not been revalidated.
 
 ## Historical results and limits
 

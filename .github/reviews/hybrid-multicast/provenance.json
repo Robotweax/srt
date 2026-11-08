@@ -224,5 +224,91 @@
     }
   ],
   "review_source": "https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185",
-  "review_followup_redactions": "Absolute paths plus trailing whitespace trimming for repository diff hygiene. Original artifact hashes are preserved; outcomes, counts and diagnostics are unchanged."
+  "review_followup_redactions": "Absolute paths plus trailing whitespace trimming for repository diff hygiene. Original artifact hashes are preserved; outcomes, counts and diagnostics are unchanged.",
+  "harness_followup_files": [
+    {
+      "source_artifact": "pr387-harness-clean-baseline-og-invalid.log",
+      "published_file": "failures/review-harness-before-og.log",
+      "original_sha256": "21637f8d9dfe2131a30ab5446b480a12d16a9a6be8db7d6836835e153812d19a",
+      "published_sha256": "21637f8d9dfe2131a30ab5446b480a12d16a9a6be8db7d6836835e153812d19a",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-harness-pool-only-og-invalid.log",
+      "published_file": "logs/review-harness-pool-only-og.log",
+      "original_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+      "published_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-harness-clean-baseline-o1-invalid.log",
+      "published_file": "failures/review-harness-before-o1.log",
+      "original_sha256": "30c1ffca676dd6946fba98315e5ec597c092e10af45f919fa2eccb2bd94f31ef",
+      "published_sha256": "a73963b14cea736b7f538a94a1780cb00fbc65486252eaa796e06f69d09424c8",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-harness-pool-only-o1-invalid.log",
+      "published_file": "logs/review-harness-pool-only-o1.log",
+      "original_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+      "published_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-harness-pool-only.patch",
+      "published_file": "records/review-harness-pool-only.patch",
+      "original_sha256": "c822a702f1d4375514527aecdbcd18db8c451de5820efa1abec041ea2ceb6583",
+      "published_sha256": "172f54186d761680ba10b69b28bc253ec6da78e578bfaab74a44d5267fda0673",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-harness-default-ctest.log",
+      "published_file": "logs/review-harness-repository-default.log",
+      "original_sha256": "0f7926408655c5f0e8e7d22045913411ea6dcdf2e674ba899739c3fc25af77ab",
+      "published_sha256": "1d309caa48ebd896fae2eefed7fc6d8195ceddcb0870cdf3add93e7bfca3863f",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-gcc-og.log",
+      "original_sha256": "0c085c2105adf12eec5593a54bb514d1f015b3763472ceaf283e83071d096f8a",
+      "published_sha256": "40c08b1f898fc6932d77eff0fe195a9bb11e2e043bf347c522846eae31ee34cb",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-gcc-o1.log",
+      "original_sha256": "50e2cd864f6d5d240727a527d21b0370e711cf2ef1d4fffa0004b23d0ea7afce",
+      "published_sha256": "03ea678cb614b2dbe608d6dd9b22f3b7f7058c7f4219d89e353b653c7ae43f91",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-llvm-o1.log",
+      "original_sha256": "2d373735099286cc7b9f789a30f67598bb8e486c2a8f071c984752a911bd812e",
+      "published_sha256": "c6b6b189b7c5ad201c6e54f10c1986707a83b63722a4cb10a6d7a4e430a7e817",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-gcc-release.log",
+      "original_sha256": "119821bcffc1e41d5eaa5a14cbc8b7c8e52c995719f6fb1b834e409a5700655c",
+      "published_sha256": "87e033871e632b3b4db662246bf69357b0fce36071bfa589ac59f18df1166701",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-mac-release.log",
+      "original_sha256": "c03f580f7799210f52cbeb24d4178c4b4408d6fb4245830396b41ea780596045",
+      "published_sha256": "8fcfa5925da76b25e60b5896e2160fb9c8f4dabb17d88a5285e3cc6d2da7249e",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-mac-sanitized.log",
+      "original_sha256": "0e6468ef80e6c6433005336396e166fd352b0f54213fddc3b289d1616a2d78b8",
+      "published_sha256": "c758ea61a131c44b524af1c942a7ec02b4a2dc8fdd469547519e73d109496314",
+      "redacted_or_trimmed": true
+    }
+  ]
 }
