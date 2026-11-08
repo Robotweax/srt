@@ -82,5 +82,35 @@
     "original_cache_sha256": "5bafb39d0dba9c509b0c9aa3018b9dae06587a867234c1e6c1a83eec9313a60a",
     "compiler": "Ubuntu Clang 18.1.3",
     "note": "Selected values only; generate a fresh cache when reproducing."
+  },
+  "mac-hybrid-off-aead-on-historical": {
+    "settings": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_CXX_FLAGS": "",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "OFF"
+    },
+    "original_cache_sha256": "59243af75cf809c2110da594332784320bd8b67b4fa4be310ae43d556a131f7f",
+    "scope": "Historical 91-gate log mac-default-ctest.log; NOT repository-default. Original filename retained."
+  },
+  "mac-repository-default-after-review": {
+    "settings": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "OFF",
+      "ENABLE_MAXREXMITBW": "OFF",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "OFF"
+    },
+    "source_commit": "e710d4e6f9ab027483e399f222c8cef7837c8d5d",
+    "record": "records/review-build-fixes.json",
+    "cache_sha256": "982ba257df4fdc42cb4a925a38fd9774e60bf2855ffc9c60448777c76f58c1ad"
   }
 }

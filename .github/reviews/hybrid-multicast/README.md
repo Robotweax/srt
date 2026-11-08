@@ -2,17 +2,22 @@
 # Hybrid multicast independent review
 
 **Draft review only.** The feature is not merge-ready or production-qualified.
-The next engineering task is diagnosis of the Linux GCC sanitizer failures.
+The [complete technical review](https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185) found additional build, Windows,
+canonical DATA and automation issues. [Current follow-up](review-follow-up.md)
+tracks every finding; this batch addresses only the first two build blockers.
 
 ## Baseline and evidence identity
 
 The branch starts at `v0.3.2`, commit
 `e45d0edd346e5c427d85e4c3b1ac605c81a23397`. The annotated tag object's SHA
 `235cbdb6c0b0d1950b3e74d623ffc21108bf3ef1` is not the release commit.
-Latest code qualification is at
-`997cfe2438eab1b0e9bdac2c797a7be7daf31c11`; subsequent documentation/review-packet
-commits change documentation/evidence only. GitHub CI on the pushed branch is
-new evidence and must be assessed separately from these local results.
+Historical native records report checkout
+`997cfe2438eab1b0e9bdac2c797a7be7daf31c11`. The current driver records the source
+checkout and a binary SHA, but **does not enforce that the binary was built from
+that checkout** (BL-6). Historical records remain evidence for the recorded
+binary, not a machine-attested current-source qualification. Build fixes at
+`e710d4e6f9ab027483e399f222c8cef7837c8d5d` have separate validation below.
+GitHub CI is new evidence and must be assessed separately.
 
 ## Implemented behavior and reading order
 
@@ -56,7 +61,7 @@ internal automatic fallback API.
 
 ## Review questions and merge blockers
 
-- **Highest priority:** why do GCC sanitizer variants skip canonical DATA and
+- **Failure-safe harness and GCC diagnosis:** why do GCC sanitizer variants skip canonical DATA and
   why does the `-O1` failure fault inside ASan while unwinding? Separate packet
   send/arrival/retransmission/playout timing from fixture cleanup, runtime
   lifetime and compiler/runtime behavior. Preserve the existing comparisons,
@@ -88,18 +93,40 @@ The existing API boundary is pinned to Haivision SRT v1.5.7 commit
 [public API compatibility](../../../docs/api-compatibility.md).
 Native hybrid auth v7 is not activated as an ordinary socket handshake profile.
 
-## Results and limits
+## Post-review build fixes
+
+At `e710d4e6f`, BL-1 guards the investigation fixture's GCM socket option with
+`ENABLE_AEAD_API_PREVIEW`. BL-2 explicitly converts only after clamping the
+recipient limit to its `size_t` configuration bound.
+
+A fresh Release build with repository feature defaults (AEAD, HC, ACP1 and
+MAXREXMITBW OFF; tests/tools/benchmarks ON) passes **84/84 CTest gates** on
+macOS ARM64, including 1,225 general C++ and 854 Python cases. Enabled Release
+and Debug sanitizer configurations each pass 39 budget/coordinator cases and
+six investigation cases, without selected skips or sanitizer findings.
+See [the new record](records/review-build-fixes.json), [full CTest output](logs/review-repository-default-ctest.log)
+and [regression before the guard](failures/review-bl1-default-before.log).
+
+The Win32 narrowing was verified in the old MSVC CI log; **native after-fix
+Windows validation remains pending**. No native Windows x64/Win32 execution was performed on this macOS host. No Windows pass is invented, and BL-3/BL-4/BL-5 remain open.
+
+## Historical results and limits
+
+The original packet's misleading "default" label is corrected below. Every
+original local build had AEAD preview ON; the 91-gate build disabled hybrid
+control/ACP1, not AEAD. Original file names, records and logs are preserved for
+provenance; they do not requalify the updated head.
 
 | Configuration | Full Release gates | Selected sanitizer cases | Strict soak |
 | --- | ---: | ---: | --- |
-| macOS ARM64, default Release | 91 passed | — | feature disabled |
+| macOS ARM64, hybrid/ACP1 OFF, **AEAD ON** Release | 91 passed | — | not repository-default |
 | macOS ARM64, opted-in Release / Clang sanitizer Debug | 99 passed | 716 passed | CTR/GCM, 30 loaded seconds each per build |
 | Ubuntu 24.04.4 ARM64 VM, GCC 13 Release | 100 passed | — | CTR/GCM, 30 loaded seconds each |
 | Same Linux VM, LLVM 18.1.3 sanitizer Debug `-g -O1` | — | 716 passed | CTR/GCM, 30 loaded seconds each |
 | Linux GCC 13 sanitizer Debug `-O0`, `-Og`, `-O1` | — | 626 focused/runtime cases passed per configuration | **failed/unqualified native profiles** |
 
 Full CTest includes 854 Python cases per Release suite. General C++ gate:
-macOS 1,231 default / 1,388 enabled; Linux 1,388/1,389 with one native IPv6
+macOS 1,231 hybrid-off/AEAD-on / 1,388 hybrid-enabled; Linux 1,388/1,389 with one native IPv6
 multicast skip (`ENETUNREACH`, ifindex 1). macOS has eight expected Linux-only
 reuseport/adoption skips. The new clock regression runs in the dedicated
 runtime gate. Selected sanitizer sets have 626 focused/runtime + 90 native
@@ -141,6 +168,19 @@ unwinding. Instrumentation/scheduling overhead is an inference, not a proven
 root cause. LLVM passing does not resolve either GCC failure.
 
 ## Reproduction
+
+First verify the actual feature-default configuration in a fresh directory:
+
+```sh
+cmake -S . -B build-review-default -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-review-default --parallel 4
+ctest --test-dir build-review-default --output-on-failure -j1
+```
+
+The opt-in profiles below are separate from that default build. The current
+soak driver's source/binary binding defect remains open; use a fresh build and
+retain build logs and binary hashes. Do not interpret a checkout stamp as an
+embedded binary revision.
 
 Use a fresh checkout/build directory and OpenSSL 3, CMake, Ninja, Python 3.10+
 with repository test dependencies, GCC 13 for Release or Clang 18 for Linux
@@ -200,7 +240,8 @@ No CI result is promised by the archived local successes.
 - [Four clean long-run qualification records](records/) and [their native logs](logs/).
 - Three full CTest console logs, [selected sanitizer names](focused-test-names.json)
   and [the sanitizer diagnostic audit](sanitizer-log-audit.json).
-- [Original failures](failures/), [original/published hashes](provenance.json)
+- [Original failures](failures/), [recovered failed-build settings](failure-build-settings.json),
+  [original/published hashes](provenance.json)
   and [published-file checksums](SHA256SUMS).
 
 The 580-entry full local evidence archive remains outside Git. This curated
@@ -208,7 +249,10 @@ packet includes the essential successes, failures, counts, scopes and replay
 commands. Absolute paths and failure memory addresses are redacted; metrics,
 IDs, outcomes and original artifact hashes are unchanged. Original binary,
 cache and log hashes refer to unredacted local artifacts, not the redacted
-published logs. `provenance.json` maps those hashes; `SHA256SUMS` verifies the
+published logs. Failed-build flags are recovered only from caches whose hashes
+match the original records. The canonical-drop diagnostic omitted source/binary
+identity; it remains diagnostic-only with that missing provenance stated, not
+retroactively manufactured. `provenance.json` maps those hashes; `SHA256SUMS` verifies the
 published files. CMake settings are selected values for fresh configuration,
 not caches to restore. Source material and this packet are under the
 [repository MIT license](../../../LICENSE).

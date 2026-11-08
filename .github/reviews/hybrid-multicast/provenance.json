@@ -143,5 +143,86 @@
       "published_sha256": "ed96ee86f2da433e5556aeed1bd50c882ada4e547efd1b99f113296e4720b843",
       "redacted": false
     }
-  ]
+  ],
+  "review_followup_files": [
+    {
+      "source_artifact": "pr387-default-before-build.log",
+      "published_file": "failures/review-bl1-default-before.log",
+      "original_sha256": "05dad840662b57e0e88396c4f9bc9161f74468aeda9273264e7ce65c90fff5a6",
+      "published_sha256": "ebd923043fb1e9696285b9e57ed17b2aa676ece3a0f7ae817be3c0b38667361d",
+      "redacted": true
+    },
+    {
+      "source_artifact": "pr387-win32-before.log",
+      "published_file": "failures/review-bl2-win32-before.log",
+      "original_sha256": "7a7eb06c58f402eee7b5d67523823a909866a2f2e9250d237e4d71b0a63b0e61",
+      "published_sha256": "247f6cca673f1531ddf36c25cd632a351a74b9218220df0383592dbf1284ac82",
+      "redacted": true
+    },
+    {
+      "source_artifact": "pr387-build-fixes-default-ctest.log",
+      "published_file": "logs/review-repository-default-ctest.log",
+      "original_sha256": "6d352afa70ae8ed02145358aa9901aef714f650d15a33b6363e7214fc127aeb6",
+      "published_sha256": "76387e0fa57490d5133b063c8d94d3c94b4772332ab46b985bf798bf4c4132f3",
+      "redacted": true
+    },
+    {
+      "source_artifact": "pr387-build-fixes-enabled-compat_group_budget.log",
+      "published_file": "logs/review-enabled-compat_group_budget.log",
+      "original_sha256": "b67b2658f318efddd01466344c4e0abd6edf34a7ca6d76d71ba55a9aa4a92e52",
+      "published_sha256": "b67b2658f318efddd01466344c4e0abd6edf34a7ca6d76d71ba55a9aa4a92e52",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-enabled-compat_group_wire_budget.log",
+      "published_file": "logs/review-enabled-compat_group_wire_budget.log",
+      "original_sha256": "270e85f8b9437ede61add36abb1d00b3891ac182bbaf6d6ea5bfa53758e8cc15",
+      "published_sha256": "270e85f8b9437ede61add36abb1d00b3891ac182bbaf6d6ea5bfa53758e8cc15",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-enabled-compat_group_coordinator.log",
+      "published_file": "logs/review-enabled-compat_group_coordinator.log",
+      "original_sha256": "3402425633b23881d9d71219419471b1a36faa05c57ee61c46db6d36640b9bf3",
+      "published_sha256": "3402425633b23881d9d71219419471b1a36faa05c57ee61c46db6d36640b9bf3",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-enabled-investigation_hybrid.log",
+      "published_file": "logs/review-enabled-investigation_hybrid.log",
+      "original_sha256": "7c2da24abb4629193969c6cb0a8361435d2ccff60aed283bd6d5b777223370e5",
+      "published_sha256": "7c2da24abb4629193969c6cb0a8361435d2ccff60aed283bd6d5b777223370e5",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-sanitized-compat_group_budget.log",
+      "published_file": "logs/review-sanitized-compat_group_budget.log",
+      "original_sha256": "b67b2658f318efddd01466344c4e0abd6edf34a7ca6d76d71ba55a9aa4a92e52",
+      "published_sha256": "b67b2658f318efddd01466344c4e0abd6edf34a7ca6d76d71ba55a9aa4a92e52",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-sanitized-compat_group_wire_budget.log",
+      "published_file": "logs/review-sanitized-compat_group_wire_budget.log",
+      "original_sha256": "270e85f8b9437ede61add36abb1d00b3891ac182bbaf6d6ea5bfa53758e8cc15",
+      "published_sha256": "270e85f8b9437ede61add36abb1d00b3891ac182bbaf6d6ea5bfa53758e8cc15",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-sanitized-compat_group_coordinator.log",
+      "published_file": "logs/review-sanitized-compat_group_coordinator.log",
+      "original_sha256": "3402425633b23881d9d71219419471b1a36faa05c57ee61c46db6d36640b9bf3",
+      "published_sha256": "3402425633b23881d9d71219419471b1a36faa05c57ee61c46db6d36640b9bf3",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-sanitized-investigation_hybrid.log",
+      "published_file": "logs/review-sanitized-investigation_hybrid.log",
+      "original_sha256": "4648219531afcabecb2791ed29ebd03145f7e96082490746cacf1a1ab597edaf",
+      "published_sha256": "4648219531afcabecb2791ed29ebd03145f7e96082490746cacf1a1ab597edaf",
+      "redacted": false
+    }
+  ],
+  "review_source": "https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185",
+  "review_followup_redactions": "Absolute paths plus trailing whitespace trimming for repository diff hygiene. Original artifact hashes are preserved; outcomes, counts and diagnostics are unchanged."
 }

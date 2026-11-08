@@ -7,15 +7,11 @@
     "annotated_tag_object": "235cbdb6c0b0d1950b3e74d623ffc21108bf3ef1",
     "commit": "e45d0edd346e5c427d85e4c3b1ac605c81a23397"
   },
-  "qualified_source_commit": "997cfe2438eab1b0e9bdac2c797a7be7daf31c11",
   "documentation_commit": "de62cd32ad320deed84411608cb67920b2d0b24e",
-  "review_packet_note": "This commit adds review documentation/evidence only. All qualified source and tests are at the code commit above; subsequent changes are documentation or this packet. New GitHub CI results are separate from the archived local qualification.",
-  "scope": "Controlled two-receiver IPv4 loopback; local Ubuntu24.04.4 ARM64 Lima VM on same physical host as macOS ARM64. Same30s/profile CTR/GCM upper fault model on Release and sanitizer builds. Linux sanitizer final configuration explicitly LLVM18 Debug -g -O1, ASan/UBSan with normal default options.",
+  "review_packet_note": "Original records/logs/hashes are preserved. Their commit fields identify the checkout reported by the tool, not an embedded/verified binary revision. New build-fix validation is separate; source/binary binding remains BL-6.",
   "validation": {
-    "mac_default_gates": 91,
     "mac_enabled_gates": 99,
     "linux_enabled_gates": 100,
-    "mac_default_general_cpp": 1231,
     "mac_enabled_general_cpp": 1388,
     "linux_general_cpp_passed": 1388,
     "linux_general_cpp_selected": 1389,
@@ -56,7 +52,10 @@
     "registration_validator_tests": 5,
     "current_incremental_build_warnings": 0,
     "known_earlier_linux_release_test_helper_warning": 1,
-    "worktree": "clean"
+    "worktree": "clean",
+    "mac_hybrid_off_aead_on_gates": 91,
+    "mac_hybrid_off_aead_on_general_cpp": 1231,
+    "historical_configuration_note": "The old mac-default file names are retained for provenance. That configuration had AEAD ON; no original packet build was repository-default."
   },
   "long_results": {
     "configurations": 4,
@@ -297,9 +296,11 @@
     }
   },
   "merge_blockers": [
-    "Independent concurrency/lifetime, transport/protocol and security review/sign-off remains outstanding.",
-    "Linux GCC Debug sanitizer O0/Og/O1 native profiles remain unqualified: receiver drops/proof failure; O1 ASan error-unwinding SEGV requires diagnosis. LLVM success is not resolution of GCC failure.",
-    "Explicit decision on experimental API/wire/security/qualification boundaries before merge or release; no production readiness/default-enable claim."
+    "Outstanding full review findings tracked in review-follow-up.md; this batch addresses only BL-1 and the BL-2 source conversion.",
+    "BL-2 native Win32 verification pending; BL-3 timeouts, BL-4 Windows application hang, BL-5 platform-dependent assertion and BL-6 source/binary evidence binding remain open.",
+    "Canonical DATA L-1/L-2/L-3, default-path interception T-1 and automation H-1/H-2 need investigation/regression coverage.",
+    "Fix failure-safe harness teardown/exception reporting before deciding GCC sanitizer root cause; do not weaken the original fault/deadline envelope.",
+    "Independent review findings have not been resolved/sign-off obtained; no merge/release/default enablement."
   ],
   "limits": [
     "Second OS/kernel/libstdc++ path on same ARM64 physical machine only. No Windows,x86,separate hardware,physical UC/MC separation,WAN,arbitrary network conditions or production scale qualification.",
@@ -310,7 +311,7 @@
     "Public C ABI/options/provisioning unchanged; HC/ACP1 default OFF. Primary coordinated Source still rejects primary SESSIONAUTH/ACP1. Runtime KM remains ordinary unauthenticated passphrase control. Shared credentials/no-forward-secrecy/provisional-registry/socket-ID and explicit host loss/source recovery/provisioning limits remain.",
     "Project incomplete. Branch published for independent review in draft PR #387; no merge, release or default enablement."
   ],
-  "next": "Investigate Linux GCC O0/Og/O1 proof and receiver-drop failures using runtime timing evidence before expanding duration/receiver count; retain explicit qualified compiler/configuration scope.",
+  "next": "Complete native Windows verification and remaining build/integration blockers; fix failure-safe harness, then canonical DATA/default isolation and automation findings in review order.",
   "evidence_note": "Full local archive is not published. Curated qualifications, all four long native logs, CTest gate logs, selected sanitizer names/audit, selected CMake settings and original failure logs are included here. Paths and failure memory addresses are redacted. Original binary/cache/log hashes identify unredacted local artifacts; SHA256SUMS and provenance.json identify the published versions.",
   "full_local_archive_manifest_sha256": "58f6b471317ef3b37cc7a625be3481da8da56e6f3f672c0ef218c682dbb97fa9",
   "publication": {
@@ -318,5 +319,32 @@
     "url": "https://github.com/Robotweax/srt/pull/387",
     "status": "draft for independent review",
     "ci": "New GitHub evidence; inspect current PR checks separately from archived local runs."
+  },
+  "historical_qualification_checkout": "997cfe2438eab1b0e9bdac2c797a7be7daf31c11",
+  "historical_scope": "Controlled two-receiver IPv4 loopback; local Ubuntu24.04.4 ARM64 Lima VM on same physical host as macOS ARM64. Same30s/profile CTR/GCM upper fault model on Release and sanitizer builds. Linux sanitizer final configuration explicitly LLVM18 Debug -g -O1, ASan/UBSan with normal default options.",
+  "current_scope": "Review batch BL-1/BL-2 at e710d4e6f9ab027483e399f222c8cef7837c8d5d: actual repository-default macOS Release 84 gates, plus45 selected enabled Release and45 enabled sanitizer cases; native Windows validation pending. Historical native profiles do not qualify this updated head.",
+  "review": {
+    "url": "https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185",
+    "reviewed_head": "4af9c86cc86bd915fb67bda22463bbd0ec068a05",
+    "status": "Full technical review received; first build-fix batch implemented, remaining findings open.",
+    "tracking": "review-follow-up.md"
+  },
+  "post_review_validation": {
+    "source_commit": "e710d4e6f9ab027483e399f222c8cef7837c8d5d",
+    "record": "records/review-build-fixes.json",
+    "repository_default_mac_release_gates": 84,
+    "aead_preview": false,
+    "hybrid_control": false,
+    "acp1": false,
+    "tools": true,
+    "benchmarks": true,
+    "focused_cases_per_enabled_configuration": 45,
+    "windows_native_after_fix": "pending hosted CI; no local Windows execution claimed",
+    "binary_commit_binding": "not embedded/enforced; qualification tool gap remains open"
+  },
+  "qualification_binding": {
+    "historical_record_commit_semantics": "reported source checkout only",
+    "binary_identity": "binary/cache/log SHA256 are recorded; stale-binary-to-new-checkout mismatch is not rejected by the current driver",
+    "remaining_work": "BL-6: enforce build/source identity in qualification tooling and test stale-binary rejection."
   }
 }
