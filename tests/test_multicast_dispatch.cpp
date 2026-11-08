@@ -5841,8 +5841,13 @@ struct HybridMultiScenario {
     {
         for (auto index : monitored) {
             const auto r = peers[index].owner->receiver()->snapshot();
-            REQUIRE(r.fresh);
-            REQUIRE(!r.closed);
+            if (!r.fresh || r.closed)
+                throw std::runtime_error("multi control peer="
+                    + std::to_string(index) + " next=" + std::to_string(next)
+                    + " fresh=" + std::to_string(r.fresh)
+                    + " closed=" + std::to_string(r.closed)
+                    + " mode=" + std::to_string(static_cast<unsigned>(r.mode))
+                    + " revision=" + std::to_string(r.revision));
             REQUIRE_EQ(srt_getsockstate(peers[index].id), SRTS_CONNECTED);
             ++healthy_checks;
         }
@@ -6086,16 +6091,20 @@ namespace {
 struct HybridKeyFaultLink {
     using Queue = HybridFaultLink::Queue;
     HybridFaultLink& normal;
+    const std::optional<IpEndpoint> selected_peer;
     mutable std::mutex mutex;
     Queue queue;
     Queue::Rules rules;
     std::optional<Queue::Packet> first, latest;
     bool holding = false;
     unsigned materials = 0, held = 0;
-    std::atomic<unsigned> reordered = 0, io_errors = 0, replays = 0;
+    std::atomic<unsigned> reordered = 0, io_errors = 0, replays = 0,
+                          bypassed = 0;
     std::jthread worker;
-    explicit HybridKeyFaultLink(HybridFaultLink& link, Queue::Rules r)
+    explicit HybridKeyFaultLink(HybridFaultLink& link, Queue::Rules r,
+        std::optional<IpEndpoint> selected = {})
         : normal(link)
+        , selected_peer(selected)
         , rules(r)
     {
         REQUIRE(normal.channel);
@@ -6137,6 +6146,10 @@ struct HybridKeyFaultLink {
             || (p.packet.control.subtype != key_material_request_subtype
                 && p.packet.control.subtype != key_material_response_subtype))
             return HybridFaultLink::send(bytes, peer, &self.normal);
+        if (self.selected_peer && peer != *self.selected_peer) {
+            ++self.bypassed;
+            return HybridFaultLink::send(bytes, peer, &self.normal);
+        }
         if (bytes.size() > Queue::datagram_capacity)
             return {.error = Error::io_error};
         std::lock_guard lock(self.mutex);
@@ -6235,6 +6248,7 @@ struct HybridKeyScenario : HybridMultiScenario {
             REQUIRE_EQ(
                 stream->send(next), static_cast<int>(message(next).size()));
             ++next;
+            monitor();
             std::this_thread::sleep_for(std::chrono::milliseconds {10});
         }
         if (drain)
@@ -6242,18 +6256,26 @@ struct HybridKeyScenario : HybridMultiScenario {
         net.source.payload_rules(uc_saved);
         net.multicast.payload_rules(mc_saved);
     }
-    std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> sender_runtime()
+    std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> sender_runtime(
+        std::size_t index = 0)
     {
+        const auto target = endpoint(peers[index].id);
         const auto group = GroupRegistry::instance().find(stream->sender);
-        SRTSOCKET child;
+        std::vector<SRTSOCKET> children;
         {
             std::lock_guard lock(group->mutex);
-            REQUIRE_EQ(group->members.size(), 1U);
-            child = group->members.front().public_data.id;
+            for (const auto& member : group->members)
+                children.push_back(member.public_data.id);
         }
-        const auto socket = SocketRegistry::instance().find(child);
-        std::lock_guard lock(socket->mutex);
-        return socket->runtime;
+        for (auto child : children) {
+            const auto socket = SocketRegistry::instance().find(child);
+            if (!socket)
+                continue;
+            std::lock_guard lock(socket->mutex);
+            if (socket->peer_endpoint == target)
+                return socket->runtime;
+        }
+        throw std::runtime_error("missing key timing sender member");
     }
     void unicast()
     {
@@ -6292,6 +6314,60 @@ struct HybridKeyScenario : HybridMultiScenario {
             static_cast<unsigned long long>(responses.stats().dropped),
             requests.reordered.load(), requests.replays.load(),
             responses.replays.load(), responses.held_count());
+    }
+    void received_all()
+    {
+        hybrid_network_wait([&] {
+            return std::ranges::all_of(peers, [&](const auto& peer) {
+                return hybrid_runtime(peer.id)
+                           ->statistics(false, false)
+                           .total.received_unique.packets
+                    == static_cast<std::uint64_t>(next) - peer.first;
+            });
+        });
+    }
+    void record_multi(unsigned scenario, HybridKeyFaultLink& requests,
+        HybridKeyFaultLink& responses, std::uint64_t late_origin = 0)
+    {
+        requests.check();
+        responses.check();
+        REQUIRE_EQ(peers.size(), 3U);
+        REQUIRE_EQ(stream->actor()->snapshot().unicast_members, 2U);
+        REQUIRE(!stream->actor()->snapshot().failed);
+        REQUIRE(requests.bypassed.load() > 0);
+        REQUIRE(requests.stats().duplicates > 0);
+        REQUIRE(responses.held_count() > 0);
+        REQUIRE(healthy_checks > 0);
+        std::uint64_t received = 0;
+        for (std::size_t i = 0; i < peers.size(); ++i) {
+            const auto& peer = peers[i];
+            REQUIRE_EQ(peer.read_next, static_cast<std::uint64_t>(next));
+            REQUIRE_EQ(hybrid_runtime(peer.id)
+                           ->statistics(false, false)
+                           .total.received_unique.packets,
+                static_cast<std::uint64_t>(next) - peer.first);
+            REQUIRE_EQ(
+                sender_runtime(i)->sender_crypto_state(), CryptoState::secured);
+            received += peer.read_next - peer.first;
+        }
+        monitor();
+        for (auto* link : {&net.source, &net.caller, &net.multicast}) {
+            REQUIRE_EQ(link->io_errors.load(), 0U);
+            REQUIRE_EQ(link->stats().overflows, 0U);
+            REQUIRE_EQ(link->stats(true).overflows, 0U);
+        }
+        std::fprintf(stdout,
+            "[HYBRID_KEY_MULTI] {\"scenario\":%u,\"profile\":%u,"
+            "\"source_messages\":%d,\"received_messages\":%llu,"
+            "\"data_receivers\":3,\"late_origin\":%llu,"
+            "\"held_responses\":%u,\"response_replays\":%u,"
+            "\"selected_request_duplicates\":%llu,"
+            "\"bypassed_key_packets\":%u,\"healthy_control_checks\":%u}\n",
+            scenario, mode, next, static_cast<unsigned long long>(received),
+            static_cast<unsigned long long>(late_origin),
+            responses.held_count(), responses.replays.load(),
+            static_cast<unsigned long long>(requests.stats().duplicates),
+            requests.bypassed.load(), healthy_checks);
     }
 };
 }
@@ -6389,6 +6465,149 @@ TEST(
         f.paced(96 - f.next);
         REQUIRE_EQ(f.next, 96);
         f.record(1, requests, responses);
+    }
+}
+
+TEST(
+    hybrid_key_network_multi_receiver_pending_response_preserves_healthy_uc_mc_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 1; mode <= 2; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        HybridKeyScenario f(mode);
+        // Isolate KM timing from independent auxiliary-loss expiry. Commits
+        // remain dropped, but correlated status queries can refresh normally.
+        f.net.source.rules({}, f.net.source.payload_rules());
+        f.net.caller.rules({}, {});
+        f.add();
+        f.add();
+        REQUIRE(wait_for_members(f.stream->sender, 3, true));
+        f.multicast(2);
+        f.monitored = {0, 1, 2};
+        HybridKeyFaultLink requests(
+            f.net.source, {2'000, 18'000, 0, 1}, f.endpoint(f.peers[0].id));
+        HybridKeyFaultLink responses(f.net.caller, {1'000});
+        auto selected = f.sender_runtime();
+        const auto healthy_uc = hybrid_runtime(f.peers[1].id),
+                   healthy_mc = hybrid_runtime(f.peers[2].id);
+        const auto uc_state = f.peers[1].owner->receiver()->snapshot(),
+                   mc_state = f.peers[2].owner->receiver()->snapshot();
+        const auto uc_epoch =
+                       f.peers[1].owner->membership()->snapshot().route_epoch,
+                   mc_epoch =
+                       f.peers[2].owner->membership()->snapshot().route_epoch;
+        f.paced(32);
+        hybrid_network_wait([&] {
+            return responses.material_changes() == 1
+                && responses.stats().queued == 0
+                && selected->sender_crypto_state() == CryptoState::secured;
+        });
+        responses.hold();
+        while (responses.material_changes() < 2 && f.next < 64)
+            f.paced(1, false);
+        REQUIRE_EQ(responses.material_changes(), 2U);
+        f.paced(68 - f.next, false);
+        f.received_all();
+        f.read_all(); // All peers consume new-key DATA before matching KMRSP.
+        REQUIRE_EQ(selected->sender_crypto_state(), CryptoState::securing);
+        REQUIRE(f.key_ready(f.peers[1].id));
+        REQUIRE(f.key_ready(f.peers[2].id));
+        const auto attempts = requests.stats().attempts;
+        responses.replay_first();
+        hybrid_network_wait([&] {
+            return requests.stats().attempts >= attempts + 2;
+        });
+        REQUIRE_EQ(selected->sender_crypto_state(), CryptoState::securing);
+        REQUIRE_EQ(f.peers[1].owner->receiver()->snapshot().revision,
+            uc_state.revision);
+        REQUIRE_EQ(f.peers[2].owner->receiver()->snapshot().revision,
+            mc_state.revision);
+        REQUIRE_EQ(
+            f.peers[1].owner->receiver()->snapshot().mode, hn::Mode::unicast);
+        REQUIRE_EQ(
+            f.peers[2].owner->receiver()->snapshot().mode, hn::Mode::multicast);
+        REQUIRE_EQ(
+            f.peers[1].owner->membership()->snapshot().route_epoch, uc_epoch);
+        REQUIRE_EQ(
+            f.peers[2].owner->membership()->snapshot().route_epoch, mc_epoch);
+        REQUIRE_EQ(hybrid_runtime(f.peers[1].id), healthy_uc);
+        REQUIRE_EQ(hybrid_runtime(f.peers[2].id), healthy_mc);
+        responses.release();
+        hybrid_network_wait([&] {
+            return selected->sender_crypto_state() == CryptoState::secured;
+        });
+        f.paced(28);
+        f.record_multi(0, requests, responses);
+    }
+}
+TEST(
+    hybrid_key_network_multi_receiver_late_admission_during_pending_rotation_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 1; mode <= 2; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        HybridKeyScenario f(mode);
+        // Isolate KM timing from independent auxiliary-loss expiry. Commits
+        // remain dropped, but correlated status queries can refresh normally.
+        f.net.source.rules({}, f.net.source.payload_rules());
+        f.net.caller.rules({}, {});
+        f.add();
+        REQUIRE(wait_for_members(f.stream->sender, 2, true));
+        f.multicast(1);
+        f.monitored = {0, 1};
+        HybridKeyFaultLink requests(
+            f.net.source, {2'000, 18'000, 0, 1}, f.endpoint(f.peers[0].id));
+        HybridKeyFaultLink responses(f.net.caller, {1'000});
+        auto selected = f.sender_runtime();
+        const auto healthy = hybrid_runtime(f.peers[1].id);
+        const auto healthy_state = f.peers[1].owner->receiver()->snapshot();
+        const auto epoch =
+            f.peers[1].owner->membership()->snapshot().route_epoch;
+        f.paced(32);
+        hybrid_network_wait([&] {
+            return responses.material_changes() == 1
+                && responses.stats().queued == 0
+                && selected->sender_crypto_state() == CryptoState::secured;
+        });
+        responses.hold();
+        while (responses.material_changes() < 2 && f.next < 64)
+            f.paced(1, false);
+        REQUIRE_EQ(responses.material_changes(), 2U);
+        REQUIRE_EQ(selected->sender_crypto_state(), CryptoState::securing);
+        const auto origin = static_cast<std::uint64_t>(f.next);
+        REQUIRE(origin >= 40 && origin < 64);
+        f.add(); // New native handshake/root and confirmed UC, without KM hold.
+        f.monitored = {0, 1, 2};
+        REQUIRE_EQ(f.peers[2].first, origin);
+        REQUIRE_EQ(selected->sender_crypto_state(), CryptoState::securing);
+        REQUIRE(f.key_ready(f.peers[2].id));
+        REQUIRE_EQ(
+            f.peers[2].owner->receiver()->snapshot().mode, hn::Mode::unicast);
+        f.paced(68 - f.next, false);
+        f.received_all();
+        f.read_all();
+        REQUIRE_EQ(selected->sender_crypto_state(), CryptoState::securing);
+        REQUIRE(f.key_ready(f.peers[1].id));
+        REQUIRE(f.key_ready(f.peers[2].id));
+        REQUIRE_EQ(hybrid_runtime(f.peers[1].id), healthy);
+        REQUIRE_EQ(f.peers[1].owner->receiver()->snapshot().revision,
+            healthy_state.revision);
+        REQUIRE_EQ(
+            f.peers[1].owner->receiver()->snapshot().mode, hn::Mode::multicast);
+        REQUIRE_EQ(
+            f.peers[1].owner->membership()->snapshot().route_epoch, epoch);
+        responses.release();
+        hybrid_network_wait([&] {
+            return selected->sender_crypto_state() == CryptoState::secured;
+        });
+        f.paced(28);
+        f.record_multi(1, requests, responses, origin);
     }
 }
 #endif

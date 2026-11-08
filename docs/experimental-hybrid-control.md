@@ -1711,10 +1711,77 @@ proof-before-playout requirements are unchanged.
 Runtime KM control remains the ordinary passphrase-based unauthenticated path;
 these replay checks exercise bounded duplicate histories and matching pending
 responses, not hostile-peer authentication or arbitrary-age replay protection.
-They do not qualify keys arriving after their usable DATA horizon, initial KM
-loss, multi-receiver KM contention, sustained overload, physical/WAN paths,
+Those single-receiver cases do not qualify keys arriving after their usable
+DATA horizon, initial KM loss, multi-receiver KM contention, sustained overload,
+physical/WAN paths,
 other platforms or uninterrupted playback. Shared-credential, no-forward-secrecy
 and primary coordinated-source SESSIONAUTH/ACP1 restrictions still apply.
+
+### Multiple receivers during bounded key-message delay
+
+The same serial key-timing gate adds two cases selected by
+`--include hybrid_key_network_multi_receiver`. Together with the two preceding
+cases, the gate retains its 30-second aggregate budget. Both new cases use CTR
+and GCM with three native DATA receivers and two committed UC members. They
+exercise selective KM response delay and late admission at modest offered load;
+they are not a general key-distribution contention or member-scale qualification.
+
+The source KM wrapper optionally selects one immutable receiver endpoint.
+Runtime KM for other endpoints bypasses that wrapper unchanged and is counted;
+only the selected peer enters its fixed queue/captures. Its requests alternate
+modeled 20ms/2ms delays and duplicate every accepted request. The selected Caller
+has a separate response wrapper, initially delayed 1ms, then explicitly held
+across one key switch. Only the latest held response is retained. Other Callers
+receive normal KM, including the late Caller's initial handshake. Original bytes,
+UDP endpoints, group keys, admission rules and crypto implementation are unchanged.
+
+These new cases keep all commit replies dropped, but apply no additional
+impairment to other auxiliary control, so correlated status queries can maintain
+fresh confirmations.
+The earlier combined-loss network cases retain their separate auxiliary fault
+patterns. An initial attempt with that global periodic auxiliary-loss pattern
+observed a UC confirmation expire at DATA position 37, before response holding
+began; it is outside the isolation claim here. Freshness assertions remain active
+for every receiver, and operation/confirmation deadlines are unchanged. DATA
+retains the earlier delay/loss/duplication/reordering/retry model, 10ms producer
+pacing, two un-dropped tail witnesses and exact proof before application playout.
+
+The first case starts two UC receivers and one confirmed MC receiver. After
+acknowledging the selected peer's first rotation, it holds the next matching
+response. All three receivers must receive and read DATA through position 67
+while that source member remains `securing`; both healthy source members must
+be `secured`. Replaying an older acknowledged response leaves the selected
+rotation pending through at least two more KM attempts. Healthy UC/MC runtime
+identities, policy revisions/modes and membership epochs stay unchanged. Releasing
+the matching response restores `secured`, then all three receive through position
+95: 288 canonical application deliveries per profile.
+
+The second case starts one UC receiver and one confirmed MC receiver. While the
+UC member's next response is held and its sender remains `securing`, a fresh
+Caller joins at the current observed stream position, between 40 and 63. It
+completes its own handshake/root, confirmed UC admission, real membership join
+and sender key readiness. Both old receivers and the newcomer then receive and
+read through position 67 before the selected response is released. The healthy
+MC receiver retains its runtime, revision, mode and route epoch; the newcomer
+is `secured` across the DATA key switch. After the release, originals consume
+0..95 and the newcomer consumes its actual origin through 95. The delivery total
+is `288 - late_origin`; no historical DATA is invented for the new receiver.
+
+`HYBRID_KEY_MULTI` JSON records identify scenario/profile, source/received counts,
+three DATA receivers, observed late origin, held replies, historical response
+replays, selected-request duplicates, bypassed KM and healthy-control checks.
+All healthy links require zero I/O errors and queue overflows, every receiver
+requires exact canonical reads and unique packet counts, and all three sender
+key states finish `secured`. Grants remain 10 seconds. No production, public C
+ABI, wire, capability, provisioning, scheduler or quota change is introduced.
+
+This is controlled Darwin IPv4 loopback evidence for three authorized receivers
+and one pending KM generation at a time. It does not cover simultaneous delayed
+KM for many members, prolonged delay beyond the usable key horizon, combined
+auxiliary-loss stress in these new cases, arbitrary-age replay, hostile-peer
+isolation, sustained overload, physical/WAN paths, other platforms or uninterrupted
+playback. Ordinary unauthenticated runtime KM and the earlier credential,
+forward-secrecy and primary SESSIONAUTH/ACP1 restrictions retain their limits.
 
 ## Control body
 
