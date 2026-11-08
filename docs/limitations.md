@@ -79,6 +79,18 @@ both histories is indistinguishable from a fresh announcement and can install
 an old key and disrupt reception. Recovery at the next rotation is not guaranteed. See
 [Encryption and key rotation](encryption.md) for the bounded rollback rules.
 
+Delayed DATA that arrives after the announcement replacing its key selector is
+routed by accepted sequence position. If a receiver accepts nothing of an
+entire companion generation, the first packets of the replacement generation
+are ambiguous with late packets of the retired generation. AES-GCM resolves
+this by verifying the tag against the generations the position rules still
+allow; AES-CTR cannot and applies a documented policy until one
+companion-generation packet is accepted or the companion generation is itself
+retired, so the packets routed before that, at most one key generation, can
+decrypt to wrong bytes without an error. A retired generation is never used once the frontier has advanced half
+the sequence space past its retirement; the receiver relies on the sender
+rotating keys within that distance, as the default refresh rate does.
+
 Control packets, including KM, ACK, NAK, DROPREQ and KEEPALIVE, are not
 authenticated by the protocol. AES-CTR provides payload confidentiality only;
 AES-GCM additionally authenticates protected DATA packets. GCM authentication

@@ -614,6 +614,10 @@ public:
         std::span<const std::byte> plaintext, std::span<std::byte> ciphertext,
         std::span<std::byte> authentication_tag, EncryptionKey& key) noexcept;
 
+    // Accepts at most maximum_data_payload_size ciphertext bytes. On failure,
+    // preserves both input spans, including exact/partial destination overlap,
+    // and erases destination bytes outside them. On success, writes only the
+    // ciphertext-sized prefix of the destination.
     [[nodiscard]] Error open(const DataHeader& header,
         std::span<const std::byte> ciphertext,
         std::span<const std::byte> authentication_tag,
@@ -712,6 +716,25 @@ private:
         ReceivePositionBounds accepted {};
         bool sequence_ceiling_known = false;
         std::int64_t sequence_ceiling_position = 0;
+        // Receive position at retirement, or the first known frontier for a
+        // generation retired before any DATA was accepted. The generation is
+        // eligible only while this anchor is within half the sequence space
+        // of the frontier; unlike the ceiling it never bounds other
+        // generations.
+        bool lifetime_anchor_known = false;
+        std::int64_t lifetime_anchor_position = 0;
+        // Installation batch of this generation's key. Generations of both
+        // selectors are ordered by batch: a generation installed earlier
+        // than a companion generation lies entirely below its accepted
+        // positions, one installed later entirely above them.
+        std::uint64_t install_batch = 0;
+        // Installation batch of the companion selector's current key when
+        // this generation was retired. While that companion generation is
+        // still current, a packet above the frontier that could belong to
+        // either this generation or its replacement is more likely a late
+        // packet of this generation; once the companion is retired as well,
+        // the replacement is preferred.
+        std::uint64_t companion_batch_at_retirement = 0;
         // A rotation retires a generation while the companion selector
         // carries the generation that follows it; packets of the retired
         // generation may then still arrive above the frontier. Without such
@@ -743,6 +766,12 @@ private:
         // False when several retained generations remain possible and the
         // slot was chosen by policy; such acceptances never record bounds.
         bool unique = false;
+        // The other still-possible generations, newest first. Authenticated
+        // reception may verify a tag against them in order; CTR never does.
+        std::array<KeySlot*, receive_key_history_capacity> alternatives {};
+        std::array<ReceivePositionBounds*, receive_key_history_capacity>
+            alternative_accepted {};
+        std::size_t alternative_count = 0;
     };
 
     [[nodiscard]] Error validate_configuration() const noexcept;
@@ -786,6 +815,7 @@ private:
         EncryptionKey key, SequenceNumber sequence) noexcept;
     void commit_accepted_receive_position(
         const ReceiveSelection& selection, SequenceNumber sequence) noexcept;
+    void pin_unanchored_retirements() noexcept;
     void note_authenticated_receive_sequence(SequenceNumber sequence) noexcept;
     [[nodiscard]] const KeySlot* transmit_slot(
         EncryptionKey key) const noexcept;
@@ -801,7 +831,7 @@ private:
         std::size_t& history_size,
         std::span<const std::byte> material) noexcept;
     void remember_receive_key(ReceiveKeyHistory& history, KeySlot& slot,
-        bool open_above_ceiling) noexcept;
+        bool open_above_ceiling, std::uint64_t companion_batch) noexcept;
     // True when this exact key already served the selector and was retired
     // by a later announcement: a replayed old KMREQ, never a fresh key.
     [[nodiscard]] bool is_retired_receive_key(EncryptionKey key_selection,

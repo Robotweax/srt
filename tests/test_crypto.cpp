@@ -2426,8 +2426,11 @@ struct GenerationOrderFixture {
         std::array<std::byte, srt_gcm_authentication_tag_size> tag {};
     };
 
-    explicit GenerationOrderFixture(bool gcm, bool selector_less_notes = false)
+    explicit GenerationOrderFixture(bool gcm, bool selector_less_notes = false,
+        SequenceNumber base = SequenceNumber {100}, bool in_place = false,
+        CryptoProvider* receiver_provider = nullptr)
         : gcm_ {gcm}, selector_less_notes_ {selector_less_notes}
+        , in_place_ {in_place}, base_ {base}
         , configuration_ {
               .passphrase = "generation order fixture",
               .mode = gcm ? CryptoMode::aes_gcm : CryptoMode::aes_ctr,
@@ -2436,7 +2439,10 @@ struct GenerationOrderFixture {
               .refresh_rate_packets = 32,
               .preannouncement_packets = 8,
           }
-        , sender {configuration_}, receiver {configuration_}
+        , sender {configuration_}
+        , receiver {configuration_,
+              receiver_provider != nullptr ? *receiver_provider
+                                           : default_crypto_provider()}
     {
         REQUIRE_EQ(sender.start_initiator(), Error::none);
         REQUIRE_EQ(
@@ -2455,15 +2461,16 @@ struct GenerationOrderFixture {
         REQUIRE_EQ(sender.prepare_rotation(), Error::none);
         if (!sender.pending_key_material().empty()) {
             ++exchanges;
-            REQUIRE_EQ(receiver.accept_key_material(
-                           sender.pending_key_material(), false),
-                Error::none);
+            const auto announcement = sender.pending_key_material();
+            last_announcement.assign(announcement.begin(), announcement.end());
+            REQUIRE_EQ(
+                receiver.accept_key_material(announcement, false), Error::none);
             REQUIRE_EQ(sender.acknowledge_key_material(
                            receiver.key_material_response(), false),
                 Error::none);
         }
         Packet packet;
-        packet.header.sequence = SequenceNumber {100U + position};
+        packet.header.sequence = base_.advanced(position);
         packet.header.message_number = position + 1U;
         packet.header.encryption_key = sender.active_sender_key();
         for (unsigned index = 0; index < packet.plaintext.size(); ++index) {
@@ -2490,13 +2497,24 @@ struct GenerationOrderFixture {
     // session the way the transport reports an accepted CTR sequence.
     [[nodiscard]] Error receive(const Packet& packet)
     {
+        // In-place reception decrypts the packet's own buffer, as a
+        // transport that reuses the datagram storage does.
         std::array<std::byte, 32> output {};
+        if (in_place_) {
+            output = packet.ciphertext;
+        }
+        const std::span<const std::byte> input = in_place_
+            ? std::span<const std::byte> {output}
+            : std::span<const std::byte> {packet.ciphertext};
         const Error error = gcm_
-            ? receiver.open(
-                  packet.header, packet.ciphertext, packet.tag, output)
+            ? receiver.open(packet.header, input, packet.tag, output)
             : receiver.decrypt(packet.header.encryption_key,
-                  packet.header.sequence, packet.ciphertext, output);
+                  packet.header.sequence, input, output);
         if (error != Error::none) {
+            if (in_place_) {
+                // A rejected in-place attempt must keep the ciphertext.
+                REQUIRE_EQ(output, packet.ciphertext);
+            }
             return error;
         }
         if (output != packet.plaintext) {
@@ -2520,13 +2538,111 @@ struct GenerationOrderFixture {
         }
     }
 
+    // Delivers the most recent announcement again, as a duplicated or
+    // retransmitted KMREQ does.
+    void redeliver_last_announcement()
+    {
+        REQUIRE(!last_announcement.empty());
+        REQUIRE_EQ(receiver.accept_key_material(last_announcement, false),
+            Error::none);
+    }
+
     bool gcm_;
     bool selector_less_notes_;
+    bool in_place_;
+    SequenceNumber base_;
     CryptoConfiguration configuration_;
     CryptoSession sender;
     CryptoSession receiver;
+    std::vector<std::byte> last_announcement;
     unsigned exchanges = 0;
     unsigned next_position_ = 0;
+};
+
+// Wraps the default provider to count authenticated opens and, on request,
+// to fail them after writing tentative output, as a provider may.
+class ObservedOpenProvider final : public CryptoProvider {
+    class Cipher final : public AuthenticatedPayloadCipher {
+    public:
+        Cipher(std::unique_ptr<AuthenticatedPayloadCipher> cipher,
+            ObservedOpenProvider& owner)
+            : cipher_(std::move(cipher))
+            , owner_(owner)
+        {
+        }
+        Error seal(std::span<const std::byte> iv,
+            std::span<const std::byte> aad, std::span<const std::byte> input,
+            std::span<std::byte> output,
+            std::span<std::byte> tag) noexcept override
+        {
+            return cipher_->seal(iv, aad, input, output, tag);
+        }
+        Error open(std::span<const std::byte> iv,
+            std::span<const std::byte> aad, std::span<const std::byte> input,
+            std::span<const std::byte> tag,
+            std::span<std::byte> output) noexcept override
+        {
+            ++owner_.opens;
+            if (owner_.fail_open) {
+                std::fill(output.begin(), output.end(), std::byte {0x7b});
+                return Error::cryptographic_failure;
+            }
+            return cipher_->open(iv, aad, input, tag, output);
+        }
+
+    private:
+        std::unique_ptr<AuthenticatedPayloadCipher> cipher_;
+        ObservedOpenProvider& owner_;
+    };
+    CryptoProvider& delegate_ = default_crypto_provider();
+
+public:
+    unsigned opens = 0;
+    bool fail_open = false;
+    Error random_bytes(std::span<std::byte> out) noexcept override
+    {
+        return delegate_.random_bytes(out);
+    }
+    Error pbkdf2_hmac_sha1(std::span<const std::byte> p,
+        std::span<const std::byte> s, std::uint32_t n,
+        std::span<std::byte> out) noexcept override
+    {
+        return delegate_.pbkdf2_hmac_sha1(p, s, n, out);
+    }
+    Error wrap_key(std::span<const std::byte> k, std::span<const std::byte> in,
+        std::span<std::byte> out, std::size_t& n) noexcept override
+    {
+        return delegate_.wrap_key(k, in, out, n);
+    }
+    Error unwrap_key(std::span<const std::byte> k,
+        std::span<const std::byte> in, std::span<std::byte> out,
+        std::size_t& n) noexcept override
+    {
+        return delegate_.unwrap_key(k, in, out, n);
+    }
+    Error make_aes_ctr_cipher(std::span<const std::byte> k,
+        std::unique_ptr<PayloadCipher>& out) noexcept override
+    {
+        return delegate_.make_aes_ctr_cipher(k, out);
+    }
+    bool supports_aes_gcm() const noexcept override
+    {
+        return delegate_.supports_aes_gcm();
+    }
+    Error make_aes_gcm_cipher(std::span<const std::byte> k,
+        std::unique_ptr<AuthenticatedPayloadCipher>& out) noexcept override
+    {
+        std::unique_ptr<AuthenticatedPayloadCipher> cipher;
+        const auto result = delegate_.make_aes_gcm_cipher(k, cipher);
+        if (result == Error::none) {
+            out = std::make_unique<Cipher>(std::move(cipher), *this);
+        }
+        return result;
+    }
+    void secure_erase(std::span<std::byte> out) noexcept override
+    {
+        delegate_.secure_erase(out);
+    }
 };
 
 void verify_lagging_frontier_repair(bool gcm, bool selector_less_notes)
@@ -2608,7 +2724,200 @@ void verify_ordered_and_advanced_controls(bool gcm)
     }
 }
 
+// Twelve generations of 32 positions: each selector is reused six times.
+// The last five packets of every generation are held back until the
+// announcement that replaces their selector has been accepted, so every
+// generation delivers stragglers across its own replacement, optionally
+// across the 31-bit rollover and into the packet's own buffer.
+void verify_repeated_reuse(bool gcm, SequenceNumber base, bool in_place)
+{
+    GenerationOrderFixture fixture {gcm, false, base, in_place};
+    std::vector<GenerationOrderFixture::Packet> held;
+    std::vector<GenerationOrderFixture::Packet> delivered;
+    for (unsigned position = 0; position < 12U * 32U; ++position) {
+        auto packet = fixture.send(position);
+        if (position % 32U == 24U && position >= 56U) {
+            // The announcement replacing the previous generation's selector
+            // was just accepted; its stragglers now arrive, newest first.
+            std::vector<GenerationOrderFixture::Packet> still_held;
+            for (auto it = held.rbegin(); it != held.rend(); ++it) {
+                if (it->header.message_number <= position - 24U - 31U + 32U) {
+                    REQUIRE_EQ(fixture.receive(*it), Error::none);
+                    delivered.push_back(*it);
+                } else {
+                    still_held.push_back(*it);
+                }
+            }
+            held.assign(still_held.rbegin(), still_held.rend());
+        }
+        if (position % 32U >= 27U) {
+            held.push_back(packet);
+        } else {
+            REQUIRE_EQ(fixture.receive(packet), Error::none);
+            delivered.push_back(packet);
+        }
+    }
+    REQUIRE_EQ(fixture.exchanges, 12U);
+    // A packet relabeled with the companion selector inside that
+    // companion's accepted range is rejected before any decryption.
+    for (const std::size_t index : {std::size_t {40}, std::size_t {300}}) {
+        auto relabeled = delivered[index];
+        relabeled.header.encryption_key =
+            relabeled.header.encryption_key == EncryptionKey::even
+            ? EncryptionKey::odd
+            : EncryptionKey::even;
+        REQUIRE_EQ(fixture.receive(relabeled), Error::cryptographic_failure);
+    }
+}
+
+// Trusted receive progress through most of the sequence space, reported the
+// way the transport reports accepted sequences. A generation retired before
+// that progress must not decrypt a packet whose finite sequence is reused.
+void verify_retired_generation_expires(bool gcm)
+{
+    GenerationOrderFixture fixture {gcm};
+    fixture.send_and_receive(0, 22);
+    const auto straggler = fixture.send(23);
+    fixture.send_and_receive(24, 56);
+    REQUIRE_EQ(fixture.exchanges, 2U);
+    {
+        // Control: the same straggler is accepted while its generation is
+        // within its lifetime.
+        GenerationOrderFixture control {gcm};
+        control.send_and_receive(0, 22);
+        const auto early = control.send(23);
+        control.send_and_receive(24, 56);
+        REQUIRE_EQ(control.receive(early), Error::none);
+    }
+    const SequenceNumber frontier = SequenceNumber {100}.advanced(56);
+    for (unsigned step = 1; step <= 7; ++step) {
+        fixture.receiver.note_accepted_receive_sequence(
+            frontier.advanced(step << 28));
+    }
+    // One position below the straggler, a full cycle later.
+    fixture.receiver.note_accepted_receive_sequence(
+        SequenceNumber {100}.advanced(22));
+    const Error result = fixture.receive(straggler);
+    REQUIRE(result != Error::none);
+    if (gcm) {
+        REQUIRE_EQ(result, Error::authentication_failure);
+    }
+}
+
+// A duplicated announcement neither reinstalls keys nor disturbs the
+// generation bounds that route stragglers.
+void verify_duplicate_announcement(bool gcm)
+{
+    GenerationOrderFixture fixture {gcm};
+    fixture.send_and_receive(0, 22);
+    std::vector<GenerationOrderFixture::Packet> delayed;
+    for (unsigned position = 23; position <= 56; ++position) {
+        delayed.push_back(fixture.send(position));
+    }
+    REQUIRE_EQ(fixture.exchanges, 2U);
+    fixture.redeliver_last_announcement();
+    fixture.redeliver_last_announcement();
+    REQUIRE_EQ(fixture.receive(delayed[0]), Error::none);
+    fixture.redeliver_last_announcement();
+    for (std::size_t index = 1; index < delayed.size(); ++index) {
+        REQUIRE_EQ(fixture.receive(delayed[index]), Error::none);
+    }
+    fixture.redeliver_last_announcement();
+    fixture.send_and_receive(57, 70);
+}
+
+// Nothing was accepted before the announcement that replaced the first
+// generation's selector. The retired generation has no retirement position;
+// its lifetime is anchored at the first accepted packet and it still serves
+// its DATA. For CTR the very first packets are ambiguous until a companion
+// generation packet is accepted, so a companion packet arrives first there.
+void verify_retirement_before_any_data(bool gcm)
+{
+    GenerationOrderFixture fixture {gcm};
+    std::vector<GenerationOrderFixture::Packet> delayed;
+    for (unsigned position = 0; position <= 56; ++position) {
+        delayed.push_back(fixture.send(position));
+    }
+    REQUIRE_EQ(fixture.exchanges, 2U);
+    if (!gcm) {
+        REQUIRE_EQ(delayed[40].header.encryption_key, EncryptionKey::odd);
+        REQUIRE_EQ(fixture.receive(delayed[40]), Error::none);
+    }
+    for (std::size_t index = 0; index < delayed.size(); ++index) {
+        if (gcm || index != 40) {
+            REQUIRE_EQ(fixture.receive(delayed[index]), Error::none);
+        }
+    }
+    fixture.send_and_receive(57, 70);
+}
+
+// A second sender with the same passphrase announces a fresh key pair in one
+// message (a re-key, not a rotation) while stragglers of both retired
+// generations are still outstanding. Stragglers route to their retired
+// generations, the first packets of the new pair to the new keys.
+void verify_fresh_pair_rekey(bool gcm)
+{
+    GenerationOrderFixture fixture {gcm};
+    fixture.send_and_receive(0, 19);
+    const auto even_straggler = fixture.send(20);
+    fixture.send_and_receive(21, 34);
+    const auto odd_straggler = fixture.send(35);
+    fixture.send_and_receive(36, 40);
+    REQUIRE_EQ(fixture.exchanges, 1U);
+    REQUIRE_EQ(even_straggler.header.encryption_key, EncryptionKey::even);
+    REQUIRE_EQ(odd_straggler.header.encryption_key, EncryptionKey::odd);
+
+    CryptoSession other {fixture.configuration_};
+    REQUIRE_EQ(other.start_initiator(), Error::none);
+    REQUIRE_EQ(fixture.receiver.accept_key_material(
+                   other.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(other.acknowledge_key_material(
+                   fixture.receiver.key_material_response(), false),
+        Error::none);
+
+    const auto fresh = [&](unsigned position) {
+        GenerationOrderFixture::Packet packet;
+        packet.header.sequence = SequenceNumber {100}.advanced(position);
+        packet.header.message_number = position + 1U;
+        packet.header.encryption_key = other.active_sender_key();
+        for (unsigned index = 0; index < packet.plaintext.size(); ++index) {
+            packet.plaintext[index] =
+                static_cast<std::byte>((position * 13U + index * 7U) & 255U);
+        }
+        EncryptionKey selector = EncryptionKey::none;
+        if (gcm) {
+            REQUIRE_EQ(other.seal(packet.header, packet.plaintext,
+                           packet.ciphertext, packet.tag, selector),
+                Error::none);
+        } else {
+            REQUIRE_EQ(other.encrypt(packet.header.sequence, packet.plaintext,
+                           packet.ciphertext, selector),
+                Error::none);
+        }
+        packet.header.encryption_key = selector;
+        REQUIRE_EQ(other.note_data_packet_sent(), Error::none);
+        return packet;
+    };
+    REQUIRE_EQ(other.active_sender_key(), EncryptionKey::even);
+    for (unsigned position = 41; position <= 48; ++position) {
+        REQUIRE_EQ(fixture.receive(fresh(position)), Error::none);
+    }
+    REQUIRE_EQ(fixture.receive(even_straggler), Error::none);
+    REQUIRE_EQ(fixture.receive(odd_straggler), Error::none);
+    for (unsigned position = 49; position <= 52; ++position) {
+        REQUIRE_EQ(fixture.receive(fresh(position)), Error::none);
+    }
+}
+
 } // namespace
+
+TEST(crypto_session_fresh_key_pair_rekey_keeps_stragglers_and_new_keys_apart)
+{
+    for (const bool gcm : {false, true}) {
+        verify_fresh_pair_rekey(gcm);
+    }
+}
 
 TEST(crypto_session_routes_lagging_frontier_repairs_to_the_retired_generation)
 {
@@ -2620,6 +2929,257 @@ TEST(crypto_session_routes_lagging_frontier_repairs_to_the_retired_generation)
     // The selector-less acceptance report attributes the most recent
     // decrypt() the same way.
     verify_lagging_frontier_repair(false, true);
+}
+
+TEST(crypto_session_routes_stragglers_across_repeated_selector_reuse_and_wrap)
+{
+    for (const bool gcm : {false, true}) {
+        verify_repeated_reuse(gcm, SequenceNumber {100}, false);
+        verify_repeated_reuse(gcm, SequenceNumber {100}, true);
+        // The 31-bit sequence rolls over inside the seventh generation.
+        verify_repeated_reuse(gcm, SequenceNumber {0x7fffffffU - 200U}, false);
+        verify_repeated_reuse(gcm, SequenceNumber {0x7fffffffU - 200U}, true);
+    }
+}
+
+TEST(crypto_session_generation_retired_before_any_data_still_serves_its_data)
+{
+    for (const bool gcm : {false, true}) {
+        verify_retirement_before_any_data(gcm);
+    }
+}
+
+TEST(crypto_session_retired_generation_expires_after_half_sequence_space)
+{
+    for (const bool gcm : {false, true}) {
+        verify_retired_generation_expires(gcm);
+    }
+}
+
+TEST(crypto_session_duplicate_announcements_keep_generation_routing)
+{
+    for (const bool gcm : {false, true}) {
+        verify_duplicate_announcement(gcm);
+    }
+}
+
+TEST(crypto_session_gcm_verifies_tag_among_possible_generations_only)
+{
+    // The whole odd generation is missing: even DATA of the replacement
+    // generation arrives with no companion position to separate it from the
+    // retired even generation seen at the frontier. Position alone cannot
+    // decide; the tag identifies the key among exactly those two.
+    ObservedOpenProvider provider;
+    GenerationOrderFixture fixture {
+        true, false, SequenceNumber {100}, false, &provider};
+    fixture.send_and_receive(0, 22);
+    std::vector<GenerationOrderFixture::Packet> lost;
+    for (unsigned position = 23; position <= 63; ++position) {
+        lost.push_back(fixture.send(position));
+    }
+    REQUIRE_EQ(fixture.exchanges, 2U);
+    const auto first = fixture.send(64);
+    REQUIRE_EQ(first.header.encryption_key, EncryptionKey::even);
+    provider.opens = 0;
+    REQUIRE_EQ(fixture.receive(first), Error::none);
+    REQUIRE_EQ(provider.opens, 2U);
+    // The verified tag recorded the replacement generation's position, so
+    // the next packet routes without a second attempt.
+    provider.opens = 0;
+    REQUIRE_EQ(fixture.receive(fixture.send(65)), Error::none);
+    REQUIRE_EQ(provider.opens, 1U);
+    // A retired-generation straggler still routes to its own key.
+    provider.opens = 0;
+    REQUIRE_EQ(fixture.receive(lost[0]), Error::none);
+    REQUIRE_EQ(provider.opens, 1U);
+    // A corrupted tag is tried against every possible generation and then
+    // rejected without publishing plaintext.
+    auto corrupted = lost[1];
+    corrupted.tag[0] ^= std::byte {1};
+    provider.opens = 0;
+    REQUIRE_EQ(fixture.receive(corrupted), Error::authentication_failure);
+    REQUIRE(provider.opens >= 1U);
+    REQUIRE(provider.opens <= 2U);
+    // A provider failure other than authentication stops immediately.
+    provider.fail_open = true;
+    provider.opens = 0;
+    REQUIRE_EQ(fixture.receive(lost[2]), Error::cryptographic_failure);
+    REQUIRE_EQ(provider.opens, 1U);
+    provider.fail_open = false;
+    REQUIRE_EQ(fixture.receive(lost[2]), Error::none);
+}
+
+TEST(crypto_session_ctr_ambiguous_generation_recovers_once_companion_is_seen)
+{
+    // The same missing-generation case without authentication: CTR cannot
+    // identify the key for the first replacement-generation packet (see
+    // docs/encryption.md), records no position for it, and routes correctly
+    // as soon as one companion-generation packet is accepted.
+    GenerationOrderFixture fixture {false};
+    fixture.send_and_receive(0, 22);
+    std::vector<GenerationOrderFixture::Packet> lost;
+    for (unsigned position = 23; position <= 63; ++position) {
+        lost.push_back(fixture.send(position));
+    }
+    const auto first = fixture.send(64);
+    REQUIRE_EQ(first.header.encryption_key, EncryptionKey::even);
+    const Error ambiguous = fixture.receive(first);
+    REQUIRE(
+        ambiguous == Error::none || ambiguous == Error::authentication_failure);
+    REQUIRE_EQ(lost[9].header.encryption_key, EncryptionKey::odd);
+    REQUIRE_EQ(fixture.receive(lost[9]), Error::none);
+    REQUIRE_EQ(fixture.receive(fixture.send(65)), Error::none);
+    REQUIRE_EQ(fixture.receive(first), Error::none);
+    REQUIRE_EQ(fixture.receive(lost[0]), Error::none);
+
+    // Without any companion packet, the policy ends once the companion
+    // generation itself is retired: the announcement at 88 replaces the odd
+    // selector, after which replacement-generation DATA routes to the newest
+    // key again even though no odd position was ever accepted.
+    GenerationOrderFixture stuck {false};
+    stuck.send_and_receive(0, 22);
+    for (unsigned position = 23; position <= 63; ++position) {
+        (void)stuck.send(position);
+    }
+    std::vector<GenerationOrderFixture::Packet> fresh;
+    for (unsigned position = 64; position <= 88; ++position) {
+        fresh.push_back(stuck.send(position));
+    }
+    REQUIRE_EQ(stuck.exchanges, 3U);
+    for (const auto& packet : fresh) {
+        REQUIRE_EQ(stuck.receive(packet), Error::none);
+    }
+    stuck.send_and_receive(89, 100);
+}
+
+TEST(crypto_session_gcm_failure_preserves_overlapping_inputs_for_retry)
+{
+    const CryptoConfiguration configuration {
+        .passphrase = "transactional GCM open regression",
+        .mode = CryptoMode::aes_gcm,
+        .enable_aes_gcm = true,
+        .key_length = 32,
+    };
+    ObservedOpenProvider provider;
+    CryptoSession sender {configuration}, receiver {configuration, provider};
+    REQUIRE_EQ(sender.start_initiator(), Error::none);
+    REQUIRE_EQ(
+        receiver.accept_key_material(sender.pending_key_material(), false),
+        Error::none);
+    REQUIRE_EQ(sender.acknowledge_key_material(
+                   receiver.key_material_response(), false),
+        Error::none);
+    DataHeader header {};
+    header.sequence = SequenceNumber {100};
+    header.encryption_key = sender.active_sender_key();
+    std::array<std::byte, 32> clear {}, ciphertext {};
+    for (std::size_t index = 0; index < clear.size(); ++index) {
+        clear[index] = static_cast<std::byte>(index + 1U);
+    }
+    std::array<std::byte, srt_gcm_authentication_tag_size> tag {};
+    EncryptionKey selector;
+    REQUIRE_EQ(
+        sender.seal(header, clear, ciphertext, tag, selector), Error::none);
+    REQUIRE_EQ(selector, header.encryption_key);
+    auto bad_tag = tag;
+    bad_tag[0] ^= std::byte {1};
+    // Exact alias and both directions of partial overlap. In every case the
+    // correct-tag retry uses the same input bytes after the rejected attempt.
+    for (const auto offsets :
+        {std::pair {0U, 0U}, std::pair {0U, 1U}, std::pair {1U, 0U}}) {
+        for (unsigned failure = 0; failure < 5; ++failure) {
+            std::array<std::byte, 35> storage;
+            storage.fill(std::byte {0xa5});
+            const auto buffer = std::span {storage}.subspan(1, 33);
+            std::copy(ciphertext.begin(), ciphertext.end(),
+                buffer.begin() + offsets.first);
+            const auto input =
+                std::span<const std::byte> {buffer}.subspan(offsets.first, 32);
+            const auto output = std::span {buffer}.subspan(offsets.second, 32);
+            auto failed_header = header;
+            if (failure == 3) {
+                failed_header.encryption_key = EncryptionKey::odd;
+            }
+            const auto supplied_tag = failure == 1
+                ? std::span<const std::byte> {tag}.first(tag.size() - 1U)
+                : std::span<const std::byte> {bad_tag};
+            const auto supplied_output =
+                failure == 2 ? output.first(31) : output;
+            provider.fail_open = failure == 4;
+            REQUIRE_EQ(receiver.open(
+                           failed_header, input, supplied_tag, supplied_output),
+                failure == 2 ? Error::buffer_too_small
+                    : (failure == 3 || failure == 4)
+                    ? Error::cryptographic_failure
+                    : Error::authentication_failure);
+            REQUIRE(std::equal(
+                ciphertext.begin(), ciphertext.end(), input.begin()));
+            if (offsets.first == 1 && offsets.second == 0) {
+                REQUIRE_EQ(buffer[0], std::byte {0});
+            }
+            if (offsets.first == 0 && offsets.second == 1 && failure != 2) {
+                REQUIRE_EQ(buffer[32], std::byte {0});
+            }
+            REQUIRE_EQ(storage.front(), std::byte {0xa5});
+            REQUIRE_EQ(storage.back(), std::byte {0xa5});
+            provider.fail_open = false;
+            REQUIRE_EQ(receiver.open(header, input, tag, output), Error::none);
+            REQUIRE(std::equal(clear.begin(), clear.end(), output.begin()));
+            REQUIRE_EQ(storage.front(), std::byte {0xa5});
+            REQUIRE_EQ(storage.back(), std::byte {0xa5});
+        }
+    }
+    // The tag itself can overlap the destination, independently of DATA.
+    for (const unsigned tag_offset : {0U, 8U, 24U}) {
+        std::array<std::byte, 40> buffer;
+        buffer.fill(std::byte {0xa5});
+        std::copy(bad_tag.begin(), bad_tag.end(), buffer.begin() + tag_offset);
+        const auto input_tag =
+            std::span<const std::byte> {buffer}.subspan(tag_offset, tag.size());
+        const auto output = std::span {buffer}.first(clear.size());
+        REQUIRE_EQ(receiver.open(header, ciphertext, input_tag, output),
+            Error::authentication_failure);
+        REQUIRE(std::equal(bad_tag.begin(), bad_tag.end(), input_tag.begin()));
+        for (unsigned index = 0; index < output.size(); ++index) {
+            if (index < tag_offset || index >= tag_offset + tag.size()) {
+                REQUIRE_EQ(output[index], std::byte {0});
+            }
+        }
+        std::copy(tag.begin(), tag.end(), buffer.begin() + tag_offset);
+        REQUIRE_EQ(
+            receiver.open(header, ciphertext, input_tag, output), Error::none);
+        REQUIRE(std::equal(clear.begin(), clear.end(), output.begin()));
+    }
+    // Empty and maximum DATA sizes retain the destination suffix on success.
+    for (const std::size_t size :
+        {std::size_t {0}, maximum_data_payload_size}) {
+        std::array<std::byte, maximum_data_payload_size> input {}, encrypted {};
+        std::array<std::byte, maximum_data_payload_size + 1U> output;
+        output.fill(std::byte {0xa5});
+        REQUIRE_EQ(sender.seal(header, std::span {input}.first(size),
+                       std::span {encrypted}.first(size), tag, selector),
+            Error::none);
+        REQUIRE_EQ(receiver.open(
+                       header, std::span {encrypted}.first(size), tag, output),
+            Error::none);
+        REQUIRE(
+            std::equal(input.begin(), input.begin() + size, output.begin()));
+        REQUIRE(std::all_of(
+            output.begin() + size, output.end(), [](std::byte value) {
+                return value == std::byte {0xa5};
+            }));
+    }
+    CryptoSession disabled {{}};
+    auto disabled_input = ciphertext;
+    REQUIRE_EQ(disabled.open(header, disabled_input, tag, disabled_input),
+        Error::unsupported);
+    REQUIRE_EQ(disabled_input, ciphertext);
+    std::array<std::byte, maximum_data_payload_size + 1U> oversized;
+    oversized.fill(std::byte {0xa5});
+    const auto original = oversized;
+    REQUIRE_EQ(receiver.open(header, oversized, tag, oversized),
+        Error::invalid_payload_size);
+    REQUIRE_EQ(oversized, original);
 }
 
 TEST(key_material_state_uses_the_reference_byte_layout)
