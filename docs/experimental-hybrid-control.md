@@ -1868,6 +1868,88 @@ keys beyond their usable DATA horizon, isolated lost-tail recovery, hostile-peer
 isolation, other-platform results or uninterrupted playback. The existing
 unauthenticated runtime KM, credential and forward-secrecy limits remain.
 
+### Upper-profile soak qualification
+
+`robotweax_srt_hybrid_soak_tests` adds two HC-conditional native cases selected by
+`--include hybrid_soak_network_`. Its 30-second `RUN_SERIAL` CTest gate explicitly
+sets `ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS=4`, keeping CI on a short smoke run even
+if the parent environment requests a longer soak. Existing gate budgets remain
+unchanged. For a reproducible longer run, use a new output directory:
+
+```sh
+./tools/python tools/qualify_hybrid_soak.py \
+  --build build-hybrid-control --seconds 30 --output /tmp/hybrid-soak-30s
+```
+
+The driver defaults to 30 loaded seconds per CTR/GCM profile and accepts 4..300.
+Only the explicitly executed duration is qualified. It requires HC, ACP1 and
+AEAD enabled, checks that both native cases fully pass with no skips, validates
+both metric records and rejects short duration, deficient offered rate, incomplete
+DATA/rotation counts or exceeded retention/recovery budgets. It records commit,
+dirty-worktree status, backend, platform, executable/cache/log SHA-256 values,
+command and metrics in `qualification.json`; failures retain a failed record and
+raw `native.log`. Existing output directories are refused. Four Python regressions
+exercise valid capacity pressure and rejection of incomplete or invalid evidence.
+
+The soak uses the preceding highest profile: target 500 packets/s, 1,316-byte
+payloads, Source maximum bandwidth 4,000,000 bytes/s, DATA delay 30/50ms with
+periodic loss/duplication/retry, selected UC KM request/response delay 10/20ms and
+auxiliary delay on both Caller channels. Commits remain dropped; ACK/NAK, initial
+handshake KM and the other member's runtime KM remain unchanged. Source DATA
+capacity refusals are permitted and reported at the fixed 64-slot boundary;
+all other DATA, control and KM queues require zero capacity refusals, and all
+UDP I/O errors must remain zero. This is an offered application rate, not
+receiver goodput or a full RTT/network-capacity benchmark.
+
+There are two long loaded phases, each containing half the requested DATA count,
+with one deliberate recovery pause between them. Concurrent readers validate
+every payload while the producer runs, avoiding periodic application-drain
+pauses within a phase. The absolute pacer retains the preceding bounded catch-up
+policy. Loaded time excludes bootstrap, drain and recovery; total loaded messages
+are `seconds * 500`, actual rate must reach 375 packets/s, and both receivers must
+read that count plus 16 small proof messages exactly. The payload now carries a
+full 64-bit position, preventing the earlier pattern's 256-message alias. The
+same factory is used by the short load matrix.
+
+At the midpoint, the MC receiver reports membership loss, obtains fresh UC within
+600ms, fails one preparation, rejoins with a new route epoch within 1s from loss,
+and returns through an exact eight-position overlap proof within the existing
+600ms test budget. Proof retains the profile's delay/duplication/retry with loss
+disabled for exact coverage; loaded-phase tails retain two un-dropped witnesses.
+Every monitored confirmation remains fresh, Source failure stays false, one UC
+member remains and both sender key states finish secured. Protocol operation,
+confirmation and recovery timeouts are unchanged. Synthetic grants are explicitly
+`ceil(requested seconds / 0.75) + 15` for the Source and every Caller, covering
+the permitted pacing overrun; the original fixture's
+default ten-second grants remain unchanged in other cases. A first long trial
+correctly closed the later Caller at its still-ten-second grant; the fixture now
+applies the chosen grant lifetime consistently rather than relaxing expiry checks.
+
+The test observer counts key switches/material changes without retaining a
+per-rotation history; its fixed eight-entry timing history remains available to
+the short matrix. Exact switch count is `(loaded_messages + 15) / 32` using integer
+division. Sender retention is sampled every 125 produced packets and after each
+phase. Each sampled per-member send buffer must stay within a 512-packet test
+budget, and both must drain to at most 16 packets at completion. These are sampled
+packet gauges, not a whole-process memory bound or proof that no intermediate
+peak occurred. Fixed link queues retain 64 datagrams/1500 bytes and bounded worker
+slices. Storage for readers, payload identities and counters stays constant with stream length.
+
+`HYBRID_SOAK_SAMPLE` records show progress, sampled retained DATA and Source DATA
+capacity refusals. `HYBRID_SOAK` records identify duration, loaded count/time,
+actual rate, two exact receivers, switches/material changes, samples/pacer resets,
+retained peaks/final values, link queue peaks/retries and recovery timings. The
+qualification archive distinguishes smoke, failed initial-grant trial and clean
+long-run results. No production protocol, crypto, public C ABI/options, capability,
+provisioning, scheduler/quota or primary SESSIONAUTH/ACP1 support is changed.
+
+The executed long run is still controlled Darwin IPv4 loopback with two authorized
+receivers, deterministic faults and one recovery pause. It does not establish
+hours-long stability, overload/fairness at arbitrary scale, arbitrary jitter/loss,
+real WAN/asymmetric RTT behavior, isolated lost-tail recovery, hostile-peer
+isolation, other platforms or uninterrupted playback. Shared-credential,
+unauthenticated runtime KM and forward-secrecy limitations remain.
+
 ## Control body
 
 Every control body is exactly 96 bytes.

@@ -29,6 +29,8 @@
 #include <atomic>
 #include <chrono>
 #include <cerrno>
+#include <charconv>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -5745,15 +5747,17 @@ struct HybridMultiScenario {
     std::unique_ptr<CoordinatedNative> stream;
     std::vector<HybridMultiReceiver> peers;
     unsigned mode;
+    std::uint64_t grant_lifetime_us;
     int next = 0;
     unsigned healthy_checks = 0;
     std::vector<std::size_t> monitored;
-    explicit HybridMultiScenario(
-        unsigned profile, std::int64_t rate = 1'000'000)
+    explicit HybridMultiScenario(unsigned profile,
+        std::int64_t rate = 1'000'000, std::uint64_t grant_us = 10'000'000)
         : mode(profile)
+        , grant_lifetime_us(grant_us)
     {
         net.startup.source->expiry =
-            hn::NativeService::monotonic_now() + 10'000'000;
+            hn::NativeService::monotonic_now() + grant_lifetime_us;
         net.startup.caller->expiry = net.startup.source->expiry;
         stream = std::make_unique<CoordinatedNative>(rate, mode != 0, mode == 2,
             0, 200, true, false, HybridNetworkFixture::configure, &net);
@@ -5822,7 +5826,7 @@ struct HybridMultiScenario {
         net.startup.caller = std::make_shared<StartupProvision>();
         net.startup.caller->join_success = true;
         net.startup.caller->expiry =
-            hn::NativeService::monotonic_now() + 10'000'000;
+            hn::NativeService::monotonic_now() + grant_lifetime_us;
         return make_receiver(stream->peers, stream->bound, mode != 0, mode == 2,
             200, true, false, false, HybridNetworkFixture::configure, &net,
             result);
@@ -6099,7 +6103,7 @@ struct HybridKeyFaultLink {
         std::array<std::uint64_t, 8> announced {}, switched {};
         unsigned announcements = 0, switches = 0, overflows = 0;
     } timing;
-    std::atomic<bool> measuring = false;
+    std::atomic<bool> measuring = false, timing_history = true;
     std::optional<SequenceNumber> highest_data;
     EncryptionKey data_key = EncryptionKey::none;
     std::atomic<std::uint64_t> max_lateness_us = 0;
@@ -6160,7 +6164,9 @@ struct HybridKeyFaultLink {
                 || header.sequence.is_after(*self.highest_data)) {
                 if (self.highest_data
                     && header.encryption_key != self.data_key) {
-                    if (self.timing.switches < self.timing.switched.size())
+                    if (!self.timing_history.load())
+                        ++self.timing.switches;
+                    else if (self.timing.switches < self.timing.switched.size())
                         self.timing.switched[self.timing.switches++] =
                             HybridFaultLink::now();
                     else
@@ -6199,7 +6205,10 @@ struct HybridKeyFaultLink {
         if (!same) {
             ++self.materials;
             if (self.measuring.load()) {
-                if (self.timing.announcements < self.timing.announced.size())
+                if (!self.timing_history.load())
+                    ++self.timing.announcements;
+                else if (self.timing.announcements
+                    < self.timing.announced.size())
                     self.timing.announced[self.timing.announcements++] =
                         HybridFaultLink::now();
                 else
@@ -6662,12 +6671,15 @@ constexpr std::array hybrid_load_profiles {
     HybridLoadProfile {10'000, 5'000, 5'000, 8'000, 4'000, 4'000, 2'000},
     HybridLoadProfile {4'000, 15'000, 10'000, 8'000, 8'000, 8'000, 4'000},
     HybridLoadProfile {2'000, 30'000, 20'000, 10'000, 10'000, 12'000, 8'000}};
-std::array<char, 1316> hybrid_load_message(int index)
+std::array<char, 1316> hybrid_load_message(std::uint64_t index)
 {
     std::array<char, 1316> bytes;
     for (std::size_t i = 0; i < bytes.size(); ++i)
         bytes[i] = static_cast<char>(
             (static_cast<unsigned>(index) * 17U + i * 29U) & 0xffU);
+    // A full-width identity prevents a long stream aliasing every 256 frames.
+    for (unsigned i = 0; i < sizeof(index); ++i)
+        bytes[i] = static_cast<char>((index >> (i * 8U)) & 0xffU);
     return bytes;
 }
 void hybrid_load_matrix(unsigned mode)
@@ -6912,6 +6924,277 @@ TEST(hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm)
 {
     SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
     hybrid_load_matrix(2);
+}
+#endif
+
+namespace {
+unsigned hybrid_soak_seconds()
+{
+    const char* setting = std::getenv("ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS");
+    if (!setting)
+        return 4;
+    unsigned value = 0;
+    const auto length = std::strlen(setting);
+    const auto result = std::from_chars(setting, setting + length, value);
+    if (result.ec != std::errc {} || result.ptr != setting + length || value < 4
+        || value > 300)
+        throw std::runtime_error(
+            "ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS must be 4..300");
+    return value;
+}
+void hybrid_upper_soak(unsigned mode)
+{
+    const auto seconds = hybrid_soak_seconds();
+    const auto count = seconds * 500U;
+    const auto cfg = hybrid_load_profiles.back();
+    const auto wall_budget_seconds = (seconds * 4ULL + 2) / 3;
+    HybridKeyScenario f(
+        mode, 4'000'000, (wall_budget_seconds + 15) * 1'000'000);
+    f.net.source.rules({}, f.net.source.payload_rules());
+    f.net.caller.rules({}, {});
+    f.add();
+    f.multicast(1);
+    f.monitored = {0, 1};
+    HybridFaultLink other_caller;
+    const auto group = GroupRegistry::instance().find(f.peers[1].id);
+    SRTSOCKET child;
+    {
+        std::lock_guard lock(group->mutex);
+        child = group->members.front().public_data.id;
+    }
+    const auto socket = SocketRegistry::instance().find(child);
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
+    {
+        std::lock_guard lock(socket->mutex);
+        channel = socket->channel;
+    }
+    other_caller.install(std::move(channel));
+    other_caller.rules({cfg.caller_control_us, cfg.caller_control_us}, {});
+    const HybridFaultLink::Queue::Rules data {
+        cfg.data_delay_us, cfg.data_jitter_us, 17, 7, 43};
+    f.net.source.rules({cfg.source_control_us, cfg.source_control_us}, data);
+    f.net.caller.rules({cfg.caller_control_us, cfg.caller_control_us}, {});
+    f.net.multicast.rules({}, data);
+    HybridKeyFaultLink requests(f.net.source,
+        {cfg.request_delay_us, cfg.request_delay_us, 0, 3},
+        f.endpoint(f.peers[0].id));
+    HybridKeyFaultLink responses(
+        f.net.caller, {cfg.response_delay_us, cfg.response_delay_us, 0, 3});
+    // Streaming counters keep storage constant through thousands of rotations.
+    requests.timing_history = false;
+    requests.measuring = true;
+    const std::array senders {f.sender_runtime(0), f.sender_runtime(1)};
+    std::array<std::size_t, 2> retained_peak {};
+    std::uint64_t loaded_us = 0;
+    unsigned resets = 0, samples = 0;
+    const auto sample = [&] {
+        std::array<std::size_t, 2> retained {};
+        for (unsigned i = 0; i < senders.size(); ++i) {
+            retained[i] = senders[i]->sender_buffer_status().packets;
+            retained_peak[i] = std::max(retained_peak[i], retained[i]);
+            if (retained[i] > 512)
+                throw std::runtime_error(
+                    "soak retention peer=" + std::to_string(i)
+                    + " packets=" + std::to_string(retained[i]));
+        }
+        f.monitor();
+        ++samples;
+        std::fprintf(stdout,
+            "[HYBRID_SOAK_SAMPLE] "
+            "{\"profile\":%u,\"sample\":%u,\"produced\":%d,"
+            "\"retained_uc\":%zu,\"retained_mc\":%zu,\"uc_capacity_retries\":%"
+            "llu}\n",
+            mode, samples, f.next, retained[0], retained[1],
+            static_cast<unsigned long long>(
+                f.net.source.stats(true).overflows));
+        std::fflush(stdout);
+    };
+    const auto stream = [&](unsigned frames) {
+        const auto first = f.next;
+        std::atomic<int> offered = first;
+        std::atomic<bool> done = false, failed = false;
+        std::array<std::exception_ptr, 2> errors;
+        std::array<std::jthread, 2> readers;
+        for (unsigned peer = 0; peer < readers.size(); ++peer) {
+            readers[peer] = std::jthread([&, peer](std::stop_token stop) {
+                auto next = first;
+                try {
+                    while (!stop.stop_requested()) {
+                        if (next >= offered.load()) {
+                            if (done.load() && next >= offered.load())
+                                break;
+                            std::this_thread::sleep_for(
+                                std::chrono::milliseconds {1});
+                            continue;
+                        }
+                        std::array<char, 1316> actual {};
+                        const auto n = srt_recvmsg(
+                            f.peers[peer].id, actual.data(), actual.size());
+                        if (n != static_cast<int>(actual.size())
+                            || actual != hybrid_load_message(next))
+                            throw std::runtime_error(
+                                "soak DATA crypto=" + std::to_string(mode)
+                                + " peer=" + std::to_string(peer)
+                                + " expected=" + std::to_string(next)
+                                + " bytes=" + std::to_string(n));
+                        ++next;
+                    }
+                    f.peers[peer].read_next = next;
+                } catch (...) {
+                    errors[peer] = std::current_exception();
+                    failed = true;
+                }
+            });
+        }
+        const auto begin = HybridFaultLink::now();
+        auto deadline = std::chrono::steady_clock::now();
+        const auto gap = std::chrono::microseconds {2'000};
+        for (unsigned i = 0; i < frames && !failed.load(); ++i) {
+            if (i + 2 >= frames) {
+                auto reliable = data;
+                reliable.drop_every = reliable.drop_first = 0;
+                f.net.source.payload_rules(reliable);
+                f.net.multicast.payload_rules(reliable);
+            }
+            const auto bytes = hybrid_load_message(f.next);
+            REQUIRE_EQ(srt_sendmsg(
+                           f.stream->sender, bytes.data(), bytes.size(), -1, 1),
+                static_cast<int>(bytes.size()));
+            offered = ++f.next;
+            if (i % 125 == 0)
+                sample();
+            deadline += gap;
+            const auto now = std::chrono::steady_clock::now();
+            if (now > deadline + gap) {
+                deadline = now;
+                ++resets;
+            }
+            std::this_thread::sleep_until(deadline);
+        }
+        loaded_us += HybridFaultLink::now() - begin;
+        done = true;
+        for (auto& reader : readers)
+            reader.join();
+        for (auto& error : errors)
+            if (error)
+                std::rethrow_exception(error);
+        REQUIRE_EQ(f.next, first + static_cast<int>(frames));
+        for (const auto& peer : f.peers)
+            REQUIRE_EQ(peer.read_next, static_cast<std::uint64_t>(f.next));
+        f.net.source.payload_rules(data);
+        f.net.multicast.payload_rules(data);
+        sample();
+    };
+    stream(count / 2);
+    auto owner = f.peers[1].owner;
+    const auto epoch = owner->membership()->snapshot().route_epoch;
+    f.peers[1].provider->recovery_failures = 1;
+    const auto loss = HybridFaultLink::now();
+    REQUIRE(owner->membership()->report_loss());
+    REQUIRE_EQ(owner->receiver()->request_fallback(f.next),
+        hn::ReceiverBridge::Admission::accepted);
+    hybrid_network_wait([&] {
+        const auto s = owner->receiver()->snapshot();
+        return s.fresh && s.mode == hn::Mode::unicast;
+    });
+    const auto fallback_us = HybridFaultLink::now() - loss;
+    REQUIRE(fallback_us < 600'000);
+    hybrid_network_wait([&] {
+        const auto s = owner->membership()->snapshot();
+        return s.joined && s.route_epoch > epoch;
+    });
+    const auto rejoin_us = HybridFaultLink::now() - loss;
+    REQUIRE(rejoin_us < 1'000'000);
+    REQUIRE_EQ(owner->membership()->snapshot().failures, 1U);
+    const auto return_at = HybridFaultLink::now();
+    auto reliable = data;
+    reliable.drop_every = reliable.drop_first = 0;
+    f.net.multicast.payload_rules(reliable);
+    REQUIRE_EQ(owner->receiver()->request_overlap(),
+        hn::ReceiverBridge::Admission::accepted);
+    hybrid_network_wait([&] {
+        const auto s = owner->receiver()->snapshot();
+        return s.fresh && s.mode == hn::Mode::overlap;
+    });
+    const auto boundary = static_cast<std::uint64_t>(f.next);
+    REQUIRE_EQ(owner->receiver()->snapshot().commit_position, boundary);
+    f.burst(8, false);
+    std::optional<hn::CoverageProof> proof;
+    hybrid_network_wait([&] {
+        proof = owner->receiver()->coverage_proof(boundary + 8, 200'000);
+        return proof.has_value();
+    });
+    REQUIRE_EQ(owner->receiver()->request_multicast(*proof),
+        hn::ReceiverBridge::Admission::accepted);
+    hybrid_network_wait([&] {
+        const auto s = owner->receiver()->snapshot();
+        return s.fresh && s.mode == hn::Mode::multicast;
+    });
+    f.read_all();
+    const auto return_us = HybridFaultLink::now() - return_at;
+    REQUIRE(return_us < 600'000);
+    f.net.multicast.payload_rules(data);
+    stream(count - count / 2);
+    hybrid_network_wait([&] {
+        return senders[0]->sender_buffer_status().packets <= 16
+            && senders[1]->sender_buffer_status().packets <= 16
+            && f.key_ready(f.peers[0].id) && f.key_ready(f.peers[1].id);
+    });
+    const auto observations = requests.observations();
+    REQUIRE_EQ(observations.overflows, 0U);
+    REQUIRE_EQ(observations.switches, (count + 15U) / 32U);
+    REQUIRE(observations.announcements >= observations.switches);
+    REQUIRE_EQ(f.next, static_cast<int>(count + 16));
+    f.received_all();
+    for (const auto& peer : f.peers)
+        REQUIRE_EQ(peer.read_next, static_cast<std::uint64_t>(f.next));
+    REQUIRE_EQ(f.stream->actor()->snapshot().unicast_members, 1U);
+    REQUIRE(!f.stream->actor()->snapshot().failed);
+    requests.check();
+    responses.check();
+    for (auto* link :
+        {&f.net.source, &f.net.caller, &other_caller, &f.net.multicast}) {
+        REQUIRE_EQ(link->io_errors.load(), 0U);
+        REQUIRE_EQ(link->stats().overflows, 0U);
+        if (link != &f.net.source)
+            REQUIRE_EQ(link->stats(true).overflows, 0U);
+        REQUIRE(link->stats(true).peak <= HybridFaultLink::Queue::capacity);
+    }
+    const auto actual_pps = count * 1'000'000ULL / loaded_us;
+    REQUIRE(actual_pps >= 375);
+    std::fprintf(stdout,
+        "[HYBRID_SOAK] {\"profile\":%u,\"seconds\":%u,\"loaded_messages\":%u,"
+        "\"loaded_us\":%llu,\"actual_pps\":%llu,\"payload_bytes\":1316,"
+        "\"messages_per_receiver\":%d,\"data_receivers\":2,\"key_switches\":%u,"
+        "\"km_material_changes\":%u,\"samples\":%u,\"pacer_resets\":%u,"
+        "\"retained_peak_uc\":%zu,\"retained_peak_mc\":%zu,"
+        "\"retained_final_uc\":%zu,\"retained_final_mc\":%zu,"
+        "\"uc_queue_peak\":%zu,\"mc_queue_peak\":%zu,\"uc_capacity_retries\":%"
+        "llu,"
+        "\"fallback_us\":%llu,\"rejoin_us\":%llu,\"return_us\":%llu}\n",
+        mode, seconds, count, static_cast<unsigned long long>(loaded_us),
+        static_cast<unsigned long long>(actual_pps), f.next,
+        observations.switches, requests.material_changes(), samples, resets,
+        retained_peak[0], retained_peak[1],
+        senders[0]->sender_buffer_status().packets,
+        senders[1]->sender_buffer_status().packets,
+        f.net.source.stats(true).peak, f.net.multicast.stats(true).peak,
+        static_cast<unsigned long long>(f.net.source.stats(true).overflows),
+        static_cast<unsigned long long>(fallback_us),
+        static_cast<unsigned long long>(rejoin_us),
+        static_cast<unsigned long long>(return_us));
+}
+}
+TEST(hybrid_soak_network_upper_profile_ctr)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    hybrid_upper_soak(1);
+}
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(hybrid_soak_network_upper_profile_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    hybrid_upper_soak(2);
 }
 #endif
 #endif
