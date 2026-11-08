@@ -4,6 +4,14 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
+## Unreleased
+
+- Route delayed DATA that arrives after the KMREQ replacing its key selector by
+  accepted sequence position instead of the receive frontier alone. A burst
+  loss or delay longer than the pre-announcement window no longer decrypts
+  retired-generation packets with the replacement key (wrong CTR plaintext,
+  GCM authentication failure). Wire format and KM messages are unchanged.
+
 ## 0.3.2 — Multicast and Recovery Stabilization
 
 See the [release notes](docs/release-notes-0.3.2.md) for upgrade behavior and limits.

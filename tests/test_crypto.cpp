@@ -2410,6 +2410,218 @@ TEST(crypto_session_routes_ctr_keys_from_transport_accepted_sequences)
     }
 }
 
+namespace {
+
+// Direct-session model of a runtime that lags behind the control path by a
+// burst longer than the pre-announcement window: DATA still encrypted with
+// the retiring generation arrives after the KMREQ that replaced its selector,
+// above every sequence accepted so far. Positions follow the probe recorded
+// for the PR #387 KM-1 finding: refresh 32, pre-announcement 8, the first
+// successor announced at position 24 and the even selector replaced at 56.
+struct GenerationOrderFixture {
+    struct Packet {
+        DataHeader header;
+        std::array<std::byte, 32> ciphertext {};
+        std::array<std::byte, 32> plaintext {};
+        std::array<std::byte, srt_gcm_authentication_tag_size> tag {};
+    };
+
+    explicit GenerationOrderFixture(bool gcm, bool selector_less_notes = false)
+        : gcm_ {gcm}, selector_less_notes_ {selector_less_notes}
+        , configuration_ {
+              .passphrase = "generation order fixture",
+              .mode = gcm ? CryptoMode::aes_gcm : CryptoMode::aes_ctr,
+              .enable_aes_gcm = gcm,
+              .key_length = 32,
+              .refresh_rate_packets = 32,
+              .preannouncement_packets = 8,
+          }
+        , sender {configuration_}, receiver {configuration_}
+    {
+        REQUIRE_EQ(sender.start_initiator(), Error::none);
+        REQUIRE_EQ(
+            receiver.accept_key_material(sender.pending_key_material(), false),
+            Error::none);
+        REQUIRE_EQ(sender.acknowledge_key_material(
+                       receiver.key_material_response(), false),
+            Error::none);
+    }
+
+    // Encrypts the packet at `position`, exchanging any announcement the
+    // sender prepares first. Returns the packet without delivering it.
+    [[nodiscard]] Packet send(unsigned position)
+    {
+        REQUIRE_EQ(position, next_position_);
+        REQUIRE_EQ(sender.prepare_rotation(), Error::none);
+        if (!sender.pending_key_material().empty()) {
+            ++exchanges;
+            REQUIRE_EQ(receiver.accept_key_material(
+                           sender.pending_key_material(), false),
+                Error::none);
+            REQUIRE_EQ(sender.acknowledge_key_material(
+                           receiver.key_material_response(), false),
+                Error::none);
+        }
+        Packet packet;
+        packet.header.sequence = SequenceNumber {100U + position};
+        packet.header.message_number = position + 1U;
+        packet.header.encryption_key = sender.active_sender_key();
+        for (unsigned index = 0; index < packet.plaintext.size(); ++index) {
+            packet.plaintext[index] =
+                static_cast<std::byte>((position * 17U + index * 29U) & 255U);
+        }
+        EncryptionKey selector = EncryptionKey::none;
+        if (gcm_) {
+            REQUIRE_EQ(sender.seal(packet.header, packet.plaintext,
+                           packet.ciphertext, packet.tag, selector),
+                Error::none);
+        } else {
+            REQUIRE_EQ(sender.encrypt(packet.header.sequence, packet.plaintext,
+                           packet.ciphertext, selector),
+                Error::none);
+        }
+        packet.header.encryption_key = selector;
+        REQUIRE_EQ(sender.note_data_packet_sent(), Error::none);
+        ++next_position_;
+        return packet;
+    }
+
+    // Delivers the packet; a successful round trip is reported to the
+    // session the way the transport reports an accepted CTR sequence.
+    [[nodiscard]] Error receive(const Packet& packet)
+    {
+        std::array<std::byte, 32> output {};
+        const Error error = gcm_
+            ? receiver.open(
+                  packet.header, packet.ciphertext, packet.tag, output)
+            : receiver.decrypt(packet.header.encryption_key,
+                  packet.header.sequence, packet.ciphertext, output);
+        if (error != Error::none) {
+            return error;
+        }
+        if (output != packet.plaintext) {
+            return Error::authentication_failure;
+        }
+        if (!gcm_) {
+            if (selector_less_notes_) {
+                receiver.note_accepted_receive_sequence(packet.header.sequence);
+            } else {
+                receiver.note_accepted_receive_sequence(
+                    packet.header.encryption_key, packet.header.sequence);
+            }
+        }
+        return Error::none;
+    }
+
+    void send_and_receive(unsigned first, unsigned last)
+    {
+        for (unsigned position = first; position <= last; ++position) {
+            REQUIRE_EQ(receive(send(position)), Error::none);
+        }
+    }
+
+    bool gcm_;
+    bool selector_less_notes_;
+    CryptoConfiguration configuration_;
+    CryptoSession sender;
+    CryptoSession receiver;
+    unsigned exchanges = 0;
+    unsigned next_position_ = 0;
+};
+
+void verify_lagging_frontier_repair(bool gcm, bool selector_less_notes)
+{
+    GenerationOrderFixture fixture {gcm, selector_less_notes};
+    fixture.send_and_receive(0, 22);
+    // Everything from 23 on is delayed past the announcement at 56 that
+    // replaces the even selector. The receive frontier stays at 22.
+    std::vector<GenerationOrderFixture::Packet> delayed;
+    for (unsigned position = 23; position <= 56; ++position) {
+        delayed.push_back(fixture.send(position));
+    }
+    REQUIRE_EQ(fixture.exchanges, 2U);
+    REQUIRE_EQ(delayed.front().header.encryption_key, EncryptionKey::even);
+    REQUIRE_EQ(delayed[9].header.encryption_key, EncryptionKey::odd);
+
+    // The retiring even generation still owns position 23: the companion
+    // odd generation has not been seen, so the frontier is no boundary.
+    REQUIRE_EQ(fixture.receive(delayed[0]), Error::none);
+    // An even packet inside the odd generation's accepted range is invalid
+    // once that range is known; check it after the repair below.
+    for (std::size_t index = 1; index < delayed.size(); ++index) {
+        REQUIRE_EQ(fixture.receive(delayed[index]), Error::none);
+    }
+    GenerationOrderFixture::Packet relabeled = delayed[17];
+    REQUIRE_EQ(relabeled.header.encryption_key, EncryptionKey::odd);
+    relabeled.header.encryption_key = EncryptionKey::even;
+    REQUIRE_EQ(fixture.receive(relabeled), Error::cryptographic_failure);
+
+    // The replacement even generation starts at 64 and routes to the new
+    // key now that the odd generation separates it from the retired one.
+    fixture.send_and_receive(57, 70);
+    REQUIRE_EQ(fixture.send(71).header.encryption_key, EncryptionKey::even);
+}
+
+void verify_companion_first_repair(bool gcm)
+{
+    GenerationOrderFixture fixture {gcm};
+    fixture.send_and_receive(0, 22);
+    std::vector<GenerationOrderFixture::Packet> delayed;
+    for (unsigned position = 23; position <= 56; ++position) {
+        delayed.push_back(fixture.send(position));
+    }
+    REQUIRE_EQ(fixture.exchanges, 2U);
+    // Repairs of the odd generation arrive before the even stragglers; the
+    // accepted odd positions then bound the retired even generation.
+    REQUIRE_EQ(fixture.receive(delayed[17]), Error::none);
+    REQUIRE_EQ(fixture.receive(delayed[33]), Error::none);
+    REQUIRE_EQ(fixture.receive(delayed[0]), Error::none);
+    REQUIRE_EQ(fixture.receive(delayed[8]), Error::none);
+    // A new-generation packet routes to the replacement before the gap in
+    // the odd generation is repaired.
+    for (unsigned position = 57; position <= 63; ++position) {
+        (void)fixture.send(position);
+    }
+    fixture.send_and_receive(64, 66);
+    for (std::size_t index = 1; index < delayed.size(); ++index) {
+        if (index != 8 && index != 17 && index != 33) {
+            REQUIRE_EQ(fixture.receive(delayed[index]), Error::none);
+        }
+    }
+}
+
+void verify_ordered_and_advanced_controls(bool gcm)
+{
+    for (const bool advanced : {false, true}) {
+        GenerationOrderFixture fixture {gcm};
+        fixture.send_and_receive(0, 22);
+        const auto held = fixture.send(23);
+        if (advanced) {
+            fixture.send_and_receive(24, 55);
+            (void)fixture.send(56);
+        } else {
+            fixture.send_and_receive(24, 56);
+        }
+        REQUIRE_EQ(fixture.exchanges, 2U);
+        REQUIRE_EQ(fixture.receive(held), Error::none);
+        fixture.send_and_receive(57, 70);
+    }
+}
+
+} // namespace
+
+TEST(crypto_session_routes_lagging_frontier_repairs_to_the_retired_generation)
+{
+    for (const bool gcm : {false, true}) {
+        verify_lagging_frontier_repair(gcm, false);
+        verify_companion_first_repair(gcm);
+        verify_ordered_and_advanced_controls(gcm);
+    }
+    // The selector-less acceptance report attributes the most recent
+    // decrypt() the same way.
+    verify_lagging_frontier_repair(false, true);
+}
+
 TEST(key_material_state_uses_the_reference_byte_layout)
 {
     // The reference implementation sends NOSECRET as 03 00 00 00 on the wire.

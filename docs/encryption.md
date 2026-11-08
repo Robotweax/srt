@@ -444,7 +444,27 @@ This is a bounded rollback guard: CTR reception does not authenticate the key
 choice, and material older than both histories is still indistinguishable from
 a fresh announcement. Unused provisional replacements can still be removed to
 recover original retransmissions, while older legitimate generations remain
-available. Known key bytes must retain the same
+available.
+
+A delayed DATA packet names only its selector, which both the retired and the
+current generation share. Generations occupy disjoint, ordered sequence ranges
+and the companion selector's generation lies between two generations of one
+selector, so the receiver routes by sequence position alone, never by trial
+decryption or plaintext inspection. It records the lowest and highest
+positions accepted under every retained generation (authenticated for GCM,
+reported by the receive window for CTR). A packet below the companion
+generation's accepted range belongs to the retired generation, a packet above
+it to the replacement, and a packet with the wrong selector inside an accepted
+range is rejected. The receive frontier at a replacement is only a floor for
+the new key: a rotation retires a generation while its companion is current,
+and DATA of that generation may still arrive above the frontier after a burst
+loss or delay longer than the pre-announcement window. Until a companion
+position separates the two generations, such a packet is decrypted with the
+retired generation already seen at the frontier rather than with a key two
+generations newer; a replacement without a rotated companion (a fresh key
+pair) closes the retired generation at the frontier as before. Only an
+unambiguous routing extends a generation's accepted range, so this fallback
+never records positions. Known key bytes must retain the same
 salt, selector, and cipher mode across both current receive slots and their
 bounded histories; relabeled material is rejected without changing the session. Stale KMRSP messages cannot
 acknowledge a newer request or roll the session back.
