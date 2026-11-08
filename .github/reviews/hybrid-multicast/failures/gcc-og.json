@@ -1,0 +1,20 @@
+{
+  "status": "failed",
+  "seconds_per_profile": 4,
+  "platform": "Linux-6.8.0-138-generic-aarch64-with-glibc2.39",
+  "configuration": "Debug",
+  "commit": "c142cb6f08e849dadb132eff7d74acf8bbcde690",
+  "worktree_dirty": false,
+  "scope": "Two-receiver IPv4 loopback upper-profile soak; one midpoint recovery pause; sampled retention, not a whole-process memory or WAN claim.",
+  "backend": "openssl",
+  "binary": "<source>/build-linux-sanitized-og/robotweax_srt_tests",
+  "binary_sha256": "09da3806798ac9db920d85dc94c960885132146c7612ffbecacaa5a1a65775e5",
+  "cache_sha256": "83fd5c38a2a2f9a89efa4a949c3b8e1e2e29109e3fc068772eff08dba371a89d",
+  "command": [
+    "<source>/build-linux-sanitized-og/robotweax_srt_tests",
+    "--include",
+    "hybrid_soak_network_"
+  ],
+  "log_sha256": "26e3358db9ced6b110a320dde2a8b1553953ed0eada4d8aa9b440a36ffbcbe39",
+  "error": "native exit -6; see <lab>/og-linux-sanitized-smoke/native.log"
+}

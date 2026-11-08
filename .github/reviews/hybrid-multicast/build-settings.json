@@ -1,0 +1,86 @@
+{
+  "mac-enabled": {
+    "settings": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "OFF",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+    },
+    "original_cache_sha256": "c675533ba24933c841c1da1d2faffe15ddd6cd2615764b29a28477fd7ab9a4e9",
+    "compiler": "Apple Clang; original cache settings below",
+    "note": "Selected values only; generate a fresh cache when reproducing."
+  },
+  "mac-sanitized": {
+    "settings": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "ON",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+    },
+    "original_cache_sha256": "bf1b3d6503fde1139c004cb011a6e40e0e8e6be88e3fb61524be61f8879c3b9d",
+    "compiler": "Apple Clang; original cache settings below",
+    "note": "Selected values only; generate a fresh cache when reproducing."
+  },
+  "linux-release": {
+    "settings": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "OFF",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+    },
+    "original_cache_sha256": "90ffd50803c1d552dbc2737d901c744f5600648a2ff77b5b4ef6dd4dd56c84ec",
+    "compiler": "Ubuntu GCC 13.3.0",
+    "note": "Selected values only; generate a fresh cache when reproducing."
+  },
+  "linux-sanitized": {
+    "settings": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "CMAKE_CXX_COMPILER": "<lab>/llvm-toolchain/clang++",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "ON",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_EXAMPLES": "OFF",
+      "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_CRYPTO_BACKEND": "openssl",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+    },
+    "original_cache_sha256": "5bafb39d0dba9c509b0c9aa3018b9dae06587a867234c1e6c1a83eec9313a60a",
+    "compiler": "Ubuntu Clang 18.1.3",
+    "note": "Selected values only; generate a fresh cache when reproducing."
+  }
+}

@@ -1,0 +1,147 @@
+{
+  "license": "MIT",
+  "original_archive_manifest_sha256": "58f6b471317ef3b37cc7a625be3481da8da56e6f3f672c0ef218c682dbb97fa9",
+  "redaction": "Absolute host/build paths and long hexadecimal failure addresses only; no payload, test count, outcome, metric or original artifact hash changed.",
+  "files": [
+    {
+      "source_artifact": "mac-enabled-long/qualification.json",
+      "published_file": "records/mac-enabled.json",
+      "original_sha256": "ee477aa464509c2bb273a2343142e5ac3e1d56f71dc13f20412747e03812d57c",
+      "published_sha256": "92ad81b7cf015507411e725005b816771073c76d9a3e6853a00e2c5a3c8fb3e3",
+      "redacted": true
+    },
+    {
+      "source_artifact": "mac-enabled-long/native.log",
+      "published_file": "logs/mac-enabled-native.log",
+      "original_sha256": "156c187dbd66eeed8bda4781989d134fc3f524dc42f63813ec3e55202b555a62",
+      "published_sha256": "156c187dbd66eeed8bda4781989d134fc3f524dc42f63813ec3e55202b555a62",
+      "redacted": false
+    },
+    {
+      "source_artifact": "mac-sanitized-long/qualification.json",
+      "published_file": "records/mac-sanitized.json",
+      "original_sha256": "4b1d6d5a01e5e08a98def98aa1be53da3cc846ed2e9bdfab80393ddc14ff895d",
+      "published_sha256": "82e6560fbcc8a843fec03198cc49fda1c320eb4f007454c09e612de617a1440a",
+      "redacted": true
+    },
+    {
+      "source_artifact": "mac-sanitized-long/native.log",
+      "published_file": "logs/mac-sanitized-native.log",
+      "original_sha256": "d9714735e9b4f09fbba790021a9631af05a5ade0c10c47c2b18b304255a746d9",
+      "published_sha256": "d9714735e9b4f09fbba790021a9631af05a5ade0c10c47c2b18b304255a746d9",
+      "redacted": false
+    },
+    {
+      "source_artifact": "linux-release-long/qualification.json",
+      "published_file": "records/linux-release.json",
+      "original_sha256": "dd489957df8a385159e8c176fefc9ad280343d7a55fe591410fd7e8d1599c579",
+      "published_sha256": "734b98181aed9fb9fdfe45b5c04f7562b5d498c35f2897e722b85c888994a82e",
+      "redacted": true
+    },
+    {
+      "source_artifact": "linux-release-long/native.log",
+      "published_file": "logs/linux-release-native.log",
+      "original_sha256": "2f226179a658570e1721eae5b83fd09465d51ca939c67c4914d969734dd84f07",
+      "published_sha256": "2f226179a658570e1721eae5b83fd09465d51ca939c67c4914d969734dd84f07",
+      "redacted": false
+    },
+    {
+      "source_artifact": "linux-sanitized-long/qualification.json",
+      "published_file": "records/linux-sanitized.json",
+      "original_sha256": "f752edfb3d09548ca300dcbccd367bb83577854c4572f14ec29ae164b16971cf",
+      "published_sha256": "97d18b6320d176db820dd4c58da263b66594270ed7fd2af6270afc234b49256e",
+      "redacted": true
+    },
+    {
+      "source_artifact": "linux-sanitized-long/native.log",
+      "published_file": "logs/linux-sanitized-native.log",
+      "original_sha256": "a6cee68d9233bd99cad3d04ed7df1b08ef1b73b3e168a9085cf1b691d7abcf15",
+      "published_sha256": "a6cee68d9233bd99cad3d04ed7df1b08ef1b73b3e168a9085cf1b691d7abcf15",
+      "redacted": false
+    },
+    {
+      "source_artifact": "hybrid-linux-final2-mac-default-ctest.log",
+      "published_file": "logs/mac-default-ctest.log",
+      "original_sha256": "8245df0e1536fc04080e9d715f6bff2633b9b2c9d5f6232f06cc250b86e00c02",
+      "published_sha256": "f1083b715c2573f17b4b2022da9eed1c29881ff018bb4d3f6bca7f792761919c",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-final2-mac-enabled-ctest.log",
+      "published_file": "logs/mac-enabled-ctest.log",
+      "original_sha256": "f1b20324928e3e4d29cc1fae0d30decaace46c767e1eae0042af74de0b0cc320",
+      "published_sha256": "a7cb129cced77efe32bdddb3ab5f3824148cc4eb8d31e2413c1a8db19f421bf5",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-final2-linux-ctest.log",
+      "published_file": "logs/linux-ctest.log",
+      "original_sha256": "b186341cdfaacf8ca1e298d7eacef62f3ac36725a17b76befbac7f679e45facd",
+      "published_sha256": "dcd3f94129b2cad759b74ce66c7d9011b54498dbbc89d32f6c589df917dd6e92",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-clock-final-linux-sanitized-failure-qualification.json",
+      "published_file": "failures/gcc-o0.json",
+      "original_sha256": "947567a29a96c18bc67c32f64f91f5031c0966314d12902c9c0771af25db8d69",
+      "published_sha256": "e6059b41e8a47fa0b47262350489f21c7f3a22f43bf8348b3069e9237f224db0",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-clock-final-linux-sanitized-failure-native.log",
+      "published_file": "failures/gcc-o0.log",
+      "original_sha256": "b0ed02bdab27c5f50cba24960de29334c083d40e5d8ab0e71b67ec56ab0d7fe7",
+      "published_sha256": "c46bd07f39a753ccb3210918070338403079ae31c1314f490b780be28a300cb0",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-og-smoke-failure-qualification.json",
+      "published_file": "failures/gcc-og.json",
+      "original_sha256": "8e9622306177dd4cab069b364656a10f93756f6d16edd718f242ca5be1c2e48f",
+      "published_sha256": "01b4014cc32f41ec40fc2b7a6df98032e3a221ff193bcf690332ffc8a0b27160",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-og-smoke-failure-native.log",
+      "published_file": "failures/gcc-og.log",
+      "original_sha256": "26e3358db9ced6b110a320dde2a8b1553953ed0eada4d8aa9b440a36ffbcbe39",
+      "published_sha256": "26e3358db9ced6b110a320dde2a8b1553953ed0eada4d8aa9b440a36ffbcbe39",
+      "redacted": false
+    },
+    {
+      "source_artifact": "hybrid-linux-final2-smoke-failure-qualification.json",
+      "published_file": "failures/gcc-o1.json",
+      "original_sha256": "4788a3a5e6e880e1e9a9ae71df0ea66a28b3bf3d32b4af843363457045cf3623",
+      "published_sha256": "96003f3d4dd46e5d82aaa9ef807f5c7b9cf54b703d28ec95c54e471d09a3f41c",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-final2-smoke-failure-native.log",
+      "published_file": "failures/gcc-o1.log",
+      "original_sha256": "eb394984db75efdd3ed4986e86baf4e86e4e0c83d1481063874f57f0c24a3cf4",
+      "published_sha256": "4c224ba0d2c034acfe19135cdae1db26ee50697e20267d47a5a31626d9cdcf28",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-payload-diagnostic-run.log",
+      "published_file": "failures/canonical-drop-diagnostic.log",
+      "original_sha256": "fd0559574daff972c0d472760b7238d61af31dd8418b01d56d8fdeb12cf96c24",
+      "published_sha256": "fd0559574daff972c0d472760b7238d61af31dd8418b01d56d8fdeb12cf96c24",
+      "redacted": false
+    },
+    {
+      "source_artifact": "focused-names.json",
+      "published_file": "focused-test-names.json",
+      "original_sha256": "bcc2b05cd384d5349d46453f3a430493b4f08fd2f5bf3588da170e87ea67674c",
+      "published_sha256": "bcc2b05cd384d5349d46453f3a430493b4f08fd2f5bf3588da170e87ea67674c",
+      "redacted": false
+    },
+    {
+      "source_artifact": "sanitizer-log-audit.json",
+      "published_file": "sanitizer-log-audit.json",
+      "original_sha256": "ed96ee86f2da433e5556aeed1bd50c882ada4e547efd1b99f113296e4720b843",
+      "published_sha256": "ed96ee86f2da433e5556aeed1bd50c882ada4e547efd1b99f113296e4720b843",
+      "redacted": false
+    }
+  ]
+}
