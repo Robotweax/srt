@@ -7032,12 +7032,45 @@ void hybrid_upper_soak(unsigned mode)
                         const auto n = srt_recvmsg(
                             f.peers[peer].id, actual.data(), actual.size());
                         if (n != static_cast<int>(actual.size())
-                            || actual != hybrid_load_message(next))
+                            || actual != hybrid_load_message(next)) {
+                            std::uint64_t identity = 0;
+                            for (unsigned i = 0; i < sizeof(identity); ++i)
+                                identity |=
+                                    static_cast<std::uint64_t>(
+                                        static_cast<unsigned char>(actual[i]))
+                                    << (i * 8U);
+                            const auto received =
+                                hybrid_runtime(f.peers[peer].id)
+                                    ->statistics(false, false)
+                                    .total;
+                            const auto sent =
+                                senders[peer]->statistics(false, false).total;
+                            std::fprintf(stderr,
+                                "[HYBRID_SOAK_FAILURE] crypto=%u peer=%u "
+                                "expected=%d "
+                                "received=%llu bytes=%d canonical=%u "
+                                "offered=%d "
+                                "unique=%llu dropped=%llu undecryptable=%llu "
+                                "sender_dropped=%llu\n",
+                                mode, peer, next,
+                                static_cast<unsigned long long>(identity), n,
+                                static_cast<unsigned>(
+                                    actual == hybrid_load_message(identity)),
+                                offered.load(),
+                                static_cast<unsigned long long>(
+                                    received.received_unique.packets),
+                                static_cast<unsigned long long>(
+                                    received.receiver_dropped.packets),
+                                static_cast<unsigned long long>(
+                                    received.receiver_undecryptable.packets),
+                                static_cast<unsigned long long>(
+                                    sent.sender_tlpktdrop_dropped.packets));
                             throw std::runtime_error(
                                 "soak DATA crypto=" + std::to_string(mode)
                                 + " peer=" + std::to_string(peer)
                                 + " expected=" + std::to_string(next)
                                 + " bytes=" + std::to_string(n));
+                        }
                         ++next;
                     }
                     f.peers[peer].read_next = next;

@@ -1975,14 +1975,29 @@ cmake --build build-linux-release --parallel 4
   --build build-linux-release --seconds 30 --output NEW_DIRECTORY
 ```
 
-The sanitizer variant uses a separate Debug build with
+The GCC sanitizer variant uses a separate Debug build with
 `-DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"` and
-`-DENABLE_MAXREXMITBW=ON`, then the same driver with `--config Debug` and another
+`-DCMAKE_CXX_FLAGS_DEBUG="-g -O1"`, plus `-DENABLE_MAXREXMITBW=ON`, then the same driver with `--config Debug` and another
 new output directory. Builds and focused checks complete before measured native
 runs; fixed-port multicast cases are serial. Per-run executable/cache/log hashes,
 configuration, exact commit, dirty state, platform and metrics remain the
 qualification record. Only clean final runs support the recorded result; raw
 failed builds and dirty prototype runs are retained separately.
+
+Qualification is specific to the archived compiler flags. In this VM,
+unoptimized GCC sanitizer execution failed the initial multicast proof wait;
+the separate `-Og` smoke reached DATA but skipped expected messages. Failure
+diagnostics identified valid later canonical messages, receiver drops, zero
+undecryptable packets and zero sender late drops. Neither configuration is
+qualified for the strict native profile. Instrumentation/scheduling overhead is
+an inference, not proof that no runtime defect exists. Optimization retains all
+sanitizer instrumentation, message comparisons, fault rules and deadlines; only
+a successful driver record establishes a result for that configuration.
+
+Soak DATA failure diagnostics print the full received identity, canonical-body
+match, published producer position and receiver/sender counters before throwing.
+This distinguishes a skipped canonical message from payload corruption without
+relaxing exact delivery validation, even if exception unwinding later aborts.
 
 GCC's existing warnings-as-errors policy exposed a scoped-enum name collision
 and omitted aggregate member defaults. The internal capability constant is now
