@@ -1952,8 +1952,8 @@ unauthenticated runtime KM and forward-secrecy limitations remain.
 
 ### Linux compiler and runtime qualification
 
-The same strict soak driver is used on Ubuntu 24.04 ARM64 with GCC 13 and
-OpenSSL, in an isolated checkout inside a local Lima Linux VM. This exercises
+The same strict soak driver is used on Ubuntu 24.04 ARM64 with GCC 13 Release
+and Clang 18 sanitizer builds using OpenSSL, in an isolated checkout inside a local Lima Linux VM. This exercises
 the Linux kernel/socket/runtime and libstdc++ paths on ARM64; it is not a second
 physical machine, another CPU architecture or a WAN/separate-network result.
 Existing VM network-lab namespaces, routing, qdiscs and firewall configuration
@@ -1975,7 +1975,8 @@ cmake --build build-linux-release --parallel 4
   --build build-linux-release --seconds 30 --output NEW_DIRECTORY
 ```
 
-The GCC sanitizer variant uses a separate Debug build with
+The Linux Clang sanitizer variant uses a separate Debug build with
+`-DCMAKE_CXX_COMPILER=clang++-18`,
 `-DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"` and
 `-DCMAKE_CXX_FLAGS_DEBUG="-g -O1"`, plus `-DENABLE_MAXREXMITBW=ON`, then the same driver with `--config Debug` and another
 new output directory. Builds and focused checks complete before measured native
@@ -1986,13 +1987,16 @@ failed builds and dirty prototype runs are retained separately.
 
 Qualification is specific to the archived compiler flags. In this VM,
 unoptimized GCC sanitizer execution failed the initial multicast proof wait;
-the separate `-Og` smoke reached DATA but skipped expected messages. Failure
+the separate `-Og` and `-O1` smokes reached DATA but skipped expected messages. Failure
 diagnostics identified valid later canonical messages, receiver drops, zero
-undecryptable packets and zero sender late drops. Neither configuration is
+undecryptable packets and zero sender late drops. The GCC `-O1` failure also
+faulted inside ASan during error unwinding. None of these GCC sanitizer configurations is
 qualified for the strict native profile. Instrumentation/scheduling overhead is
 an inference, not proof that no runtime defect exists. Optimization retains all
 sanitizer instrumentation, message comparisons, fault rules and deadlines; only
 a successful driver record establishes a result for that configuration.
+The separate Clang comparison does not resolve the GCC receiver-drop or
+error-unwinding failures, which require further investigation.
 
 Soak DATA failure diagnostics print the full received identity, canonical-body
 match, published producer position and receiver/sender counters before throwing.
