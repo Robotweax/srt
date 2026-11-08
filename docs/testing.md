@@ -128,7 +128,8 @@ and coordinated cases. Hybrid-control builds also separate startup, conclusions,
 control transitions, source errors and rejoin. The direct `multicast_dispatch`
 selector still runs the complete profile used by qualification tools. The hybrid
 model and native investigation cases have separate budgets, as do the two
-multi-receiver fault scenarios. Each new CTest partition has a 30-second process
+multi-receiver fault scenarios. Each native key scenario also has its own
+process. Each new CTest partition has a 30-second process
 limit. Case filters change only ownership; operation counts, packet comparisons,
 playout, confirmation and recovery deadlines are preserved. The optional
 retransmission-limit job includes cases moved out of the general aggregate.

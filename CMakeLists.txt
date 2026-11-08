@@ -712,8 +712,20 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         set_tests_properties(robotweax_srt_hybrid_multi_quota_tests PROPERTIES
             TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection")
         add_test(NAME robotweax_srt_hybrid_key_timing_tests
-            COMMAND robotweax_srt_tests --include hybrid_key_network_)
+            COMMAND robotweax_srt_tests --include hybrid_key_network_delayed_reordered_requests_)
         set_tests_properties(robotweax_srt_hybrid_key_timing_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;key-management;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_key_response_tests
+            COMMAND robotweax_srt_tests --include hybrid_key_network_old_response_)
+        set_tests_properties(robotweax_srt_hybrid_key_response_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;key-management;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_key_multi_receiver_tests
+            COMMAND robotweax_srt_tests --include hybrid_key_network_multi_receiver_pending_response_)
+        set_tests_properties(robotweax_srt_hybrid_key_multi_receiver_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;key-management;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_key_admission_tests
+            COMMAND robotweax_srt_tests --include hybrid_key_network_multi_receiver_late_admission_)
+        set_tests_properties(robotweax_srt_hybrid_key_admission_tests PROPERTIES
             TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;key-management;fault-injection")
         add_test(NAME robotweax_srt_hybrid_load_tests
             COMMAND robotweax_srt_tests --include hybrid_load_network_)

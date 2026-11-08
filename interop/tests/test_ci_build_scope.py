@@ -192,6 +192,9 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_multicast_rejoin_tests",
             "robotweax_srt_hybrid_multi_control_tests",
             "robotweax_srt_hybrid_multi_quota_tests",
+            "robotweax_srt_hybrid_key_response_tests",
+            "robotweax_srt_hybrid_key_multi_receiver_tests",
+            "robotweax_srt_hybrid_key_admission_tests",
             "robotweax_srt_tests", "robotweax_srt_tsbpd_rtt_tests", "robotweax_srt_socket_api_tests",
             "robotweax_srt_multicast_dispatch_tests", "robotweax_srt_idle_readiness_tests",
             "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests", "robotweax_srt_hybrid_soak_tests", "robotweax_srt_hybrid_harness_tests",
@@ -265,6 +268,9 @@ class CiTestRegistrationTests(unittest.TestCase):
             "multicast_rejoin": ["--include", "multicast_dispatch_native_rejoin_"],
             "hybrid_multi_control": ["--include", "hybrid_network_multi_receiver_control_loss_"],
             "hybrid_multi_quota": ["--include", "hybrid_network_multi_receiver_stale_control_"],
+            "hybrid_key_response": ["--include", "hybrid_key_network_old_response_"],
+            "hybrid_key_multi_receiver": ["--include", "hybrid_key_network_multi_receiver_pending_response_"],
+            "hybrid_key_admission": ["--include", "hybrid_key_network_multi_receiver_late_admission_"],
             "hybrid_investigation": ["--include", "investigation_hybrid_"],
         }
         for suffix, arguments in multicast_filters.items():
@@ -303,7 +309,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         self.assertIsNotNone(hybrid_network_properties)
         self.assertIn("RUN_SERIAL TRUE", hybrid_network_properties.group(1))
         self.assertEqual(commands["robotweax_srt_hybrid_key_timing_tests"], [
-            "--include", "hybrid_key_network_",
+            "--include", "hybrid_key_network_delayed_reordered_requests_",
         ])
         key_timing_properties = re.search(
             r"set_tests_properties\(robotweax_srt_hybrid_key_timing_tests\s+PROPERTIES\s+([^)]*)\)",
@@ -378,6 +384,9 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_multicast_rejoin_tests",
             "robotweax_srt_hybrid_multi_control_tests",
             "robotweax_srt_hybrid_multi_quota_tests",
+            "robotweax_srt_hybrid_key_response_tests",
+            "robotweax_srt_hybrid_key_multi_receiver_tests",
+            "robotweax_srt_hybrid_key_admission_tests",
             "robotweax_srt_multicast_dispatch_tests",
             "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests", "robotweax_srt_hybrid_soak_tests", "robotweax_srt_hybrid_harness_tests",
             "robotweax_srt_arq_transport_tests",
