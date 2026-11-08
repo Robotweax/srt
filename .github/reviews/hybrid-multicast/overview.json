@@ -311,7 +311,7 @@
     "Public C ABI/options/provisioning unchanged; HC/ACP1 default OFF. Primary coordinated Source still rejects primary SESSIONAUTH/ACP1. Runtime KM remains ordinary unauthenticated passphrase control. Shared credentials/no-forward-secrecy/provisional-registry/socket-ID and explicit host loss/source recovery/provisioning limits remain.",
     "Project incomplete. Branch published for independent review in draft PR #387; no merge, release or default enablement."
   ],
-  "next": "Investigate remaining GCC packet/KM/member/freshness failures; preserve close-progress regression and diagnose any distinct stalled close state. Enforce source binding and continue original review findings.",
+  "next": "Fix safe receive-key generation/lifetime association with deterministic delayed-DATA/reordered-KM/reuse/rollover regression; diagnose separate freshness failures. Continue original review findings and source binding.",
   "evidence_note": "Full local archive is not published. Curated qualifications, all four long native logs, CTest gate logs, selected sanitizer names/audit, selected CMake settings and original failure logs are included here. Paths and failure memory addresses are redacted. Original binary/cache/log hashes identify unredacted local artifacts; SHA256SUMS and provenance.json identify the published versions.",
   "full_local_archive_manifest_sha256": "58f6b471317ef3b37cc7a625be3481da8da56e6f3f672c0ef218c682dbb97fa9",
   "publication": {
@@ -322,11 +322,11 @@
   },
   "historical_qualification_checkout": "997cfe2438eab1b0e9bdac2c797a7be7daf31c11",
   "historical_scope": "Controlled two-receiver IPv4 loopback; local Ubuntu24.04.4 ARM64 Lima VM on same physical host as macOS ARM64. Same30s/profile CTR/GCM upper fault model on Release and sanitizer builds. Linux sanitizer final configuration explicitly LLVM18 Debug -g -O1, ASan/UBSan with normal default options.",
-  "current_scope": "Listener-close regression/scheduler fairness fix at 4d59666ebaf54df57b514d1069a5172df440af51: records/review-listener-close.json. Historical native profiles do not requalify the current source.",
+  "current_scope": "GCC DATA/KM receive-generation diagnosis at production input 4d59666ebaf54df57b514d1069a5172df440af51; no production fix. See records/review-gcc-km.json.",
   "review": {
     "url": "https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185",
     "reviewed_head": "4af9c86cc86bd915fb67bda22463bbd0ec068a05",
-    "status": "Build/harness, partition/quota and deterministic listener-close fairness fixes implemented in recorded scope; hosted CI, DATA/KM and other findings open.",
+    "status": "Build/harness, partition/quota and listener-close fixes recorded; additional KM-1 receive-generation defect confirmed and still open. No production fix for DATA/KM; original review acceptance work remains.",
     "tracking": "review-follow-up.md"
   },
   "post_review_validation": {
@@ -381,5 +381,19 @@
     "focused_configurations": 8,
     "fresh_tsan": true,
     "new_process_queues_threads": 0
+  },
+  "gcc_km_diagnosis": {
+    "finding": "KM-1 confirmed additional blocker; open",
+    "record": "records/review-gcc-km.json",
+    "production_input": "4d59666ebaf54df57b514d1069a5172df440af51",
+    "source_inherited_from_robotweax_v032": true,
+    "compiler_specific": false,
+    "unique_probe_scenarios": 6,
+    "probe_configurations": 5,
+    "matching_controls_per_configuration": 4,
+    "failing_round_trips_per_configuration": 2,
+    "native_v2_cases_failed": 4,
+    "production_fix": false,
+    "control_freshness_cause_proven": false
   }
 }

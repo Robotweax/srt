@@ -167,6 +167,63 @@ observations do not establish lateness as the sole cause; packet/repair/playout
 and KM activation evidence is still needed. No 30-second GCC run replaces these
 failed smoke gates, and O0 has not been revalidated.
 
+## GCC DATA/KM diagnosis: receive generation misrouting
+
+Production input: `4d59666ebaf54df57b514d1069a5172df440af51`. This batch adds
+a standalone diagnostic and review evidence; it changes no production runtime,
+crypto algorithm, wire/API, default test registration or deadline.
+
+**KM-1, confirmed additional blocker:** replacement of an Even/Odd key stores
+the highest accepted receive sequence as the retired key's ceiling. Old DATA
+can still be in flight *above* that value when KM arrives. The selector then
+routes it to a key two generations newer even though the correct key is still
+retained. CTR reports success with wrong plaintext; GCM rejects authentication.
+`src/crypto.cpp` and the OpenSSL provider are byte-identical to Robotweax v0.3.2.
+This is an inherited receive implementation, not evidence of a GCC compiler bug
+or a full baseline-binary result.
+
+The [clock-free standalone probe](../../../tools/diagnostics/crypto_receive_order.cpp)
+reproduces this in macOS Release and Linux GCC Release/O1/Og plus LLVM O1 sanitizer
+builds. In each build, **four control round trips match and two lagging-frontier
+round trips fail** (six unique scenarios across five configurations). The actual
+failure exit is 1, not inverted to success. Initial/final probe inputs and hashes
+are retained separately in the local archive; the record pins the final source.
+
+A separate scratch GCC O1 ASan/UBSan overlay captures encoder generation, exact
+opaque key identity, receive frontier/history selection and actual original/
+repair send/decrypt events. It logs no keys or key digests. All four v2 native
+captures retain the failing DATA-position witness and select the wrong known key:
+
+| Diagnostic capture | Wrong CTR decrypt observations | GCM auth-failure observations | Known selected generation |
+| --- | ---: | ---: | --- |
+| CTR soak | 13 | 0 | 2 for original generation 0; later 3 for 1 |
+| GCM soak | 0 | 22 | 3 for original generation 1; later reuse also observed |
+| CTR load | 3 | 0 | 3 for original generation 1 |
+| GCM load | 0 | 36 | 3 for original generation 1 |
+
+These are repeated decode observations, not unique lost messages. All four
+native tests fail; none is counted as passing qualification. Ring captures are
+complete (2,122 / 2,677 / 6,262 / 6,424 events), with zero key-ID overflow.
+Both trace versions pass the same **34 crypto-session + 15 encoder controls**,
+not 98 different tests. V1's initial captures and the first failed strict-warning
+build are retained. The native configuration has full default ASan/UBSan; no
+sanitizer report or timeout occurs. Build/focus precedes serial native captures.
+Four-second workloads, faults, rates and all protocol deadlines are unchanged.
+
+The four v2 captures fail DATA, not their control-freshness monitor. Separate
+historical GCC freshness failures, other packet drops, KM readiness and platform
+qualification remain open. The exact-key relation establishes this mechanism in
+these captures; it does not explain every previous failure. Source attestation
+is still manual, and diagnostic timing/scheduling is not qualification.
+
+[Reproduction and trace schema](records/review-gcc-km-reproduction.md),
+[exact inputs/results/identities and native witnesses](records/review-gcc-km.json).
+Next: establish a trustworthy activation/generation or lifetime rule for CTR;
+never guess a key from unauthenticated plaintext. Evaluate bounded authenticated
+candidate selection for GCM separately, with replay/range/work-budget tests,
+and diagnose distinct freshness failures independently. No production fix or
+review closure is claimed here.
+
 ## Deterministic listener-close regression and scheduler fix
 
 Source: `4d59666ebaf54df57b514d1069a5172df440af51`. A real `ListenerHandshakeActor` close can

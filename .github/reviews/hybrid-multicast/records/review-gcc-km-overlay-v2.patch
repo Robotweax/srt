@@ -1,0 +1,162 @@
+--- a/src/crypto.cpp
++++ b/src/crypto.cpp
+@@ -1,6 +1,7 @@
+ #include "robotweax/srt/crypto.hpp"
+
+ #include "robotweax/srt/codec.hpp"
++#include "diagnostic_trace.hpp"
+
+ #include <algorithm>
+ #include <array>
+@@ -778,6 +779,8 @@
+     } else {
+         erase_slot(*current);
+     }
++    km_diagnostic::emit("rx_replace", this, static_cast<unsigned>(key_selection), highest_receive_sequence_.value(), highest_receive_sequence_known_, history->size, restored, static_cast<std::uint64_t>(highest_receive_position_));
++    km_diagnostic::emit("rx_key_install", this, static_cast<unsigned>(key_selection), km_diagnostic::key_id(key), highest_receive_sequence_.value(), highest_receive_sequence_known_);
+     *current = std::move(replacement);
+     erase_slot(replacement);
+     return Error::none;
+@@ -1798,6 +1801,11 @@
+         }
+     }
+
++    unsigned selected_history = 0;
++    for (unsigned i=0; i<history->size; ++i)
++        if(selected == &history->generations[i].slot) selected_history=i+1;
++    km_diagnostic::emit("rx_select", this, sequence.value(), static_cast<unsigned>(key), selected_history, highest_receive_sequence_.value(), history->size, static_cast<std::uint64_t>(history->size ? history->generations[0].sequence_ceiling_position : 0));
++    km_diagnostic::emit("rx_key_select", this, sequence.value(), km_diagnostic::key_id(std::span {selected->key}.first(selected->key_length)), static_cast<unsigned>(key), selected_history);
+     if (commit_sequence) {
+         note_authenticated_receive_sequence(sequence);
+     }
+@@ -1893,6 +1901,7 @@
+     const auto iv =
+         make_srt_ctr_initialization_vector(sequence, slot->salt);
+     const auto result = slot->ctr_cipher->transform(iv, ciphertext, plaintext);
++    km_diagnostic::emit("ctr_clear", this, sequence.value(), static_cast<unsigned>(key), static_cast<unsigned>(result), km_diagnostic::identity(plaintext), ciphertext.size());
+     if (result == Error::none) {
+         slot->received_payload = true;
+     }
+@@ -1963,6 +1972,7 @@
+     const auto aad = make_srt_gcm_additional_authenticated_data(header);
+     const Error result = slot->authenticated_cipher->open(
+         iv, aad, ciphertext, authentication_tag, plaintext);
++    km_diagnostic::emit("gcm_clear", this, header.sequence.value(), static_cast<unsigned>(header.encryption_key), static_cast<unsigned>(result), result == Error::none ? km_diagnostic::identity(plaintext) : UINT64_MAX, ciphertext.size());
+     if (result == Error::none) {
+         slot->received_payload = true;
+         note_authenticated_receive_sequence(header.sequence);
+--- a/src/compat/group_packet_encoder.cpp
++++ b/src/compat/group_packet_encoder.cpp
+@@ -1,4 +1,5 @@
+ #include "compat/group_packet_encoder.hpp"
++#include "../diagnostic_trace.hpp"
+
+ #include "robotweax/srt/codec.hpp"
+ #include "robotweax/srt/connection_group.hpp"
+@@ -127,6 +128,7 @@
+     error = configuration_.key_schedule->key_for(
+         index, std::span {key}.first(length));
+     if (error == Error::none) {
++        km_diagnostic::emit("encoder_key", this, index, km_diagnostic::key_id(std::span {key}.first(length)));
+         configuration_.key_schedule->copy_salt(generation->salt);
+         error = configuration_.key_schedule->mode() == CryptoMode::aes_gcm
+             ? provider_.make_aes_gcm_cipher(
+@@ -186,6 +188,7 @@
+         auto packet = std::shared_ptr<Packet>(new Packet);
+         packet->header_ = header;
+         packet->stream_generation_ = configuration_.stream_generation;
++        km_diagnostic::emit("encode", this, header.sequence.value(), configuration_.key_schedule ? configuration_.key_schedule->generation_at(next_position_) : UINT64_MAX, km_diagnostic::identity(plaintext), next_position_, plaintext.size());
+         Error error = Error::none;
+         if (configuration_.key_schedule) {
+             packet->generation_ = generation_locked(
+--- a/tests/test_multicast_dispatch.cpp
++++ b/tests/test_multicast_dispatch.cpp
+@@ -3,6 +3,7 @@
+ // group. The administratively scoped group 239.255.133.0/24 with hop limit 0
+ // and the loopback interface keeps every datagram on this host.
+ #include "test.hpp"
++#include "../src/diagnostic_trace.hpp"
+ #include "hybrid_fault_link.hpp"
+
+ #include "compat/group_registry.hpp"
+@@ -5300,6 +5301,10 @@
+                         std::max(max_lateness_us.load(), now() - p->due_us);
+                     const auto bytes = std::span {p->bytes}.first(p->size);
+                     const auto result = channel->socket.send_to(bytes, p->peer);
++                    if (const auto decoded=decode_packet(bytes); decoded) {
++                        const auto& v=decoded.packet;
++                        km_diagnostic::emit(v.kind==PacketKind::data ? "wire_out_data" : "wire_out_control", this, v.kind==PacketKind::data ? v.data.sequence.value() : v.control.subtype, v.kind==PacketKind::data ? static_cast<unsigned>(v.data.encryption_key) : 0, v.kind==PacketKind::data ? v.data.retransmitted : 0, path, p->due_us, static_cast<unsigned>(result.error));
++                    }
+                     if (!result)
+                         ++io_errors;
+                     else if (const auto kind = body_kind(bytes); kind
+@@ -5392,6 +5397,7 @@
+         auto& queue = payload ? self.data : self.auxiliary;
+         const auto dropped = queue.snapshot().dropped;
+         const auto r = queue.enqueue(bytes, peer, now(), rules);
++        if(payload) km_diagnostic::emit("wire_enqueue_data", &self, packet.packet.data.sequence.value(), static_cast<unsigned>(packet.packet.data.encryption_key), packet.packet.data.retransmitted, queue.snapshot().dropped != dropped, static_cast<unsigned>(r), queue.snapshot().queued);
+         if (r == Queue::Result::accepted) {
+             if (policy_reply && queue.snapshot().dropped == dropped)
+                 ++self.policy_queued;
+@@ -5910,13 +5916,16 @@
+     {
+         for (auto index : monitored) {
+             const auto r = peers[index].owner->receiver()->snapshot();
+-            if (!r.fresh || r.closed)
++            if (!r.fresh || r.closed) {
++                km_diagnostic::emit("monitor_failed", peers[index].owner->receiver().get(), index, static_cast<std::uint64_t>(next), r.fresh, r.closed, r.confirmation_origin_us, r.queries);
++                km_diagnostic::emit("monitor_counts", peers[index].owner->receiver().get(), r.confirmed, r.stale, r.unmatched, r.exhausted, r.attempts, r.next_wakeup_us);
+                 throw std::runtime_error("multi control peer="
+                     + std::to_string(index) + " next=" + std::to_string(next)
+                     + " fresh=" + std::to_string(r.fresh)
+                     + " closed=" + std::to_string(r.closed)
+                     + " mode=" + std::to_string(static_cast<unsigned>(r.mode))
+                     + " revision=" + std::to_string(r.revision));
++            }
+             REQUIRE_EQ(srt_getsockstate(peers[index].id), SRTS_CONNECTED);
+             ++healthy_checks;
+         }
+@@ -6222,6 +6231,8 @@
+     }
+     UdpIoResult forward(const Queue::Packet& p)
+     {
++        if (const auto decoded=decode_packet(std::span {p.bytes}.first(p.size)); decoded)
++            km_diagnostic::emit("km_out", this, decoded.packet.control.subtype, decoded.packet.payload.size()>3 ? std::to_integer<unsigned>(decoded.packet.payload[3]) : 0, p.ordinal, p.due_us);
+         return normal.channel->socket.send_to(
+             std::span {p.bytes}.first(p.size), p.peer);
+     }
+--- a/src/compat/hybrid_receiver.cpp
++++ b/src/compat/hybrid_receiver.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: MIT
+ #include "compat/hybrid_receiver.hpp"
+ #include "compat/transport_runtime.hpp"
++#include "../diagnostic_trace.hpp"
+ #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+ #include <algorithm>
+
+@@ -69,6 +70,7 @@
+     s.fresh = !s.closed && confirmed_ && at >= s.confirmation_origin_us
+         && at - s.confirmation_origin_us
+             < configuration_.confirmation_lifetime_us;
++    if(!s.fresh && state_.observed) km_diagnostic::emit("stale_snapshot", this, s.confirmation_origin_us, at, configuration_.confirmation_lifetime_us, confirmed_, state_.confirmed, state_.exhausted);
+     if (s.closed) {
+         s.phase = Phase::closed;
+         if (s.fallback == RequestState::pending)
+@@ -627,6 +629,8 @@
+     const bool ordered = m.serial > highest_reply_;
+     highest_reply_ = std::max(highest_reply_, m.serial);
+     const auto first = e.received.first_received_us;
++    km_diagnostic::emit("confirm_consider", this, m.request_serial, request_.serial, first_send_, first, at, round_deadline_);
++    km_diagnostic::emit("confirm_state", this, active_, sent_, ordered, deadline_, configuration_.confirmation_lifetime_us, confirmed_);
+     if (!active_ || !sent_ || m.request_serial != request_.serial || !ordered
+         || at >= round_deadline_ || at >= deadline_ || first < first_send_
+         || first >= round_deadline_ || at < first
+@@ -638,6 +642,7 @@
+     }
+     confirmed_ = true;
+     state_.confirmation_origin_us = first_send_;
++    km_diagnostic::emit("confirmed", this, m.serial, m.request_serial, first_send_, at, round_deadline_);
+     state_.outcome = m.outcome;
+     if (want_fallback_)
+         state_.fallback_outcome = m.outcome;

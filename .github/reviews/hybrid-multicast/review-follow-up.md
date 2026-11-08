@@ -99,6 +99,24 @@ in the record. Hosted build-fix evidence resolves the Win32 compilation blocker,
 not the full Windows hybrid profile. GCC O0 and outstanding canonical DATA,
 suite timing, automation and source/binary attestation findings remain open.
 
+## Additional confirmed receive-key finding
+
+**KM-1 remains open:** old-generation DATA above the receive frontier at KM
+replacement is routed to the replacement key. A standalone public-API diagnostic
+fails CTR/GCM without clocks/network in five configurations; four controls per
+build match and the two lagging-frontier round trips fail. Exact opaque key-ID
+traces bind wrong selection to the reported failing DATA position in all four
+native v2 captures. CTR can silently publish wrong plaintext; GCM rejects.
+The affected receive implementation is unchanged from Robotweax v0.3.2. This is
+not a GCC-only or sanitizer-only issue, and no production fix is claimed.
+
+[Canonical diagnosis and limits](README.md#gcc-datakm-diagnosis-receive-generation-misrouting)
+and [record](records/review-gcc-km.json) preserve every diagnostic failure.
+All original 32 finding states remain; this additional blocker does not close
+L-3 or explain distinct freshness failures. Safe CTR generation/lifetime binding
+and bounded authenticated GCM selection need dedicated production regressions.
+No payload-format guessing, widened deadline or sanitizer exemption is accepted.
+
 ## Deterministic listener-close follow-up
 
 `4d59666ebaf54df57b514d1069a5172df440af51` adds four deterministic real-actor close cases:
