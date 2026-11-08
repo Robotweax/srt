@@ -196,12 +196,18 @@ The internal scheduler also supports explicitly configured persistent service
 slots with a coalesced wake and one reserved deadline. These slots do not consume
 ordinary job or timer capacity. Service callbacks run on the existing shard,
 with round-robin service selection and alternating service/ordinary dispatch
-when both are ready. Release closes service admission without blocking; an
+when both are ready. Ordinary turns alternate due timers and FIFO jobs when
+both are available. A timer that continually rearms at an overdue deadline
+therefore cannot starve queued listener-close or completion work. Timer deadline
+and equal-deadline insertion order, and FIFO order, are preserved within each
+class. The progress bound is in completed callback turns; callbacks are not
+preempted. Release closes service admission without blocking; an
 already dispatched callback retains its context until it returns, so clients
 must check their own generation and close barrier before effects. Final stop
 cancels pending service wakes, joins active callbacks, and retires contexts
-before concurrent stop callers return. The process scheduler currently reserves
-zero service slots; the UDP transport does not use this internal facility.
+before concurrent stop callers return. The process scheduler provisions 128
+service slots per shard for coordinated multicast actors. Ordinary UDP channel
+work retains its existing queue/timer path.
 
 Message send and receive separate one locked state attempt from the synchronous
 wrapper's condition-variable waits. The attempt completes the existing buffer,

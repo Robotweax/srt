@@ -189,6 +189,7 @@ private:
         std::size_t service_pending = 0;
         std::size_t next_service = 0;
         bool service_turn = true;
+        bool timer_turn = true;
         std::size_t head = 0;
         std::size_t size = 0;
         std::uint64_t next_timer_order = 1U;

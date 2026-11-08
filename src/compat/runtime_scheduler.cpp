@@ -677,8 +677,9 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                     && !shard.timer_heap.empty()
                     && std::chrono::steady_clock::now()
                         >= shard.timer_slots[shard.timer_heap.front()].deadline;
-                // Alternate a service turn with ordinary work when both are
-                // ready. With no pending service, legacy timer/FIFO order holds.
+                // Alternate services with ordinary work. Ordinary turns also
+                // alternate due timers and FIFO jobs, so a rearming timer
+                // cannot indefinitely postpone queued close/completion work.
                 if (shard.service_pending != 0U
                     && (shard.service_turn
                         || (!timer_due && shard.size == 0U))) {
@@ -705,7 +706,8 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                     const std::size_t timer_slot = shard.timer_heap.front();
                     const auto deadline =
                         shard.timer_slots[timer_slot].deadline;
-                    if (std::chrono::steady_clock::now() >= deadline) {
+                    if (std::chrono::steady_clock::now() >= deadline
+                        && (shard.timer_turn || shard.size == 0U)) {
                         // Reuse the same idle wake for the timers already due
                         // at that wake. Time spent in preceding callbacks is
                         // not a measurement of the host timer resolution.
@@ -721,6 +723,7 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                         }
                         task = shard.remove_timer(0U);
                         shard.service_turn = true;
+                        shard.timer_turn = false;
                         timer_dispatch = true;
                         break;
                     }
@@ -732,6 +735,7 @@ void RuntimeScheduler::run(std::size_t shard_index) noexcept
                     shard.head = (shard.head + 1U) % shard.entries.size();
                     --shard.size;
                     shard.service_turn = true;
+                    shard.timer_turn = true;
                     break;
                 }
                 if (shard.stop_requested) {
