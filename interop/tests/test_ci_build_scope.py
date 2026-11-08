@@ -183,7 +183,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         partitions = {
             "robotweax_srt_tests", "robotweax_srt_tsbpd_rtt_tests", "robotweax_srt_socket_api_tests",
             "robotweax_srt_multicast_dispatch_tests", "robotweax_srt_idle_readiness_tests",
-            "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests",
+            "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests",
             "robotweax_srt_arq_transport_tests",
             "robotweax_srt_transport_runtime_tests",
             "robotweax_srt_session_auth_admission_tests",
@@ -237,7 +237,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "srt_compat_group_pathid_",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
             "stale_drop_coverage", "stale_nak", "standby_rtt_native_runtime_", "compat_group_connect_joins_with_unread_messages_across_rollover",
-            "tsbpd_rtt", "multicast_dispatch", "hybrid_network_", "hybrid_key_network_", "compat_idle_readiness_", "arq_transport_",
+            "tsbpd_rtt", "multicast_dispatch", "hybrid_network_", "hybrid_key_network_", "hybrid_load_network_", "compat_idle_readiness_", "arq_transport_",
         ])
         self.assertEqual(commands["robotweax_srt_hybrid_network_tests"], [
             "--include", "hybrid_network_",
@@ -258,6 +258,16 @@ class CiTestRegistrationTests(unittest.TestCase):
         self.assertIsNotNone(key_timing_properties)
         self.assertIn("RUN_SERIAL TRUE", key_timing_properties.group(1))
         self.assertIn("TIMEOUT 30", key_timing_properties.group(1))
+        self.assertEqual(commands["robotweax_srt_hybrid_load_tests"], [
+            "--include", "hybrid_load_network_",
+        ])
+        load_properties = re.search(
+            r"set_tests_properties\(robotweax_srt_hybrid_load_tests\s+PROPERTIES\s+([^)]*)\)",
+            cmake,
+        )
+        self.assertIsNotNone(load_properties)
+        self.assertIn("RUN_SERIAL TRUE", load_properties.group(1))
+        self.assertIn("TIMEOUT 30", load_properties.group(1))
         self.assertEqual(commands["robotweax_srt_tsbpd_rtt_tests"], [
             "--include", "tsbpd_rtt",
         ])
@@ -293,7 +303,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_stale_nak_tests",
         }
         network_partitions = {
-            "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests",
+            "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests",
             "robotweax_srt_arq_transport_tests",
             "robotweax_srt_native_reuseport_tests", "robotweax_srt_local_address_tests",
             "robotweax_srt_group_pathid_tests",

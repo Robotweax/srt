@@ -5748,15 +5748,15 @@ struct HybridMultiScenario {
     int next = 0;
     unsigned healthy_checks = 0;
     std::vector<std::size_t> monitored;
-    explicit HybridMultiScenario(unsigned profile)
+    explicit HybridMultiScenario(
+        unsigned profile, std::int64_t rate = 1'000'000)
         : mode(profile)
     {
         net.startup.source->expiry =
             hn::NativeService::monotonic_now() + 10'000'000;
         net.startup.caller->expiry = net.startup.source->expiry;
-        stream =
-            std::make_unique<CoordinatedNative>(1'000'000, mode != 0, mode == 2,
-                0, 200, true, false, HybridNetworkFixture::configure, &net);
+        stream = std::make_unique<CoordinatedNative>(rate, mode != 0, mode == 2,
+            0, 200, true, false, HybridNetworkFixture::configure, &net);
         peers.push_back(describe(stream->receiver, net.startup.caller));
         net.install_caller(stream->receiver);
         net.multicast.install(stream->source());
@@ -6095,6 +6095,14 @@ struct HybridKeyFaultLink {
     mutable std::mutex mutex;
     Queue queue;
     Queue::Rules rules;
+    struct Timing {
+        std::array<std::uint64_t, 8> announced {}, switched {};
+        unsigned announcements = 0, switches = 0, overflows = 0;
+    } timing;
+    std::atomic<bool> measuring = false;
+    std::optional<SequenceNumber> highest_data;
+    EncryptionKey data_key = EncryptionKey::none;
+    std::atomic<std::uint64_t> max_lateness_us = 0;
     std::optional<Queue::Packet> first, latest;
     bool holding = false;
     unsigned materials = 0, held = 0;
@@ -6124,6 +6132,8 @@ struct HybridKeyFaultLink {
                     if (packet->ordinal < last)
                         ++reordered;
                     last = std::max(last, packet->ordinal);
+                    max_lateness_us = std::max(max_lateness_us.load(),
+                        HybridFaultLink::now() - packet->due_us);
                     if (!forward(*packet))
                         ++io_errors;
                 }
@@ -6141,6 +6151,25 @@ struct HybridKeyFaultLink {
     {
         auto& self = *static_cast<HybridKeyFaultLink*>(context);
         const auto p = decode_packet(bytes);
+        if (self.measuring.load() && p && p.packet.kind == PacketKind::data
+            && (!self.selected_peer || peer == *self.selected_peer)
+            && !p.packet.data.retransmitted) {
+            std::lock_guard lock(self.mutex);
+            const auto& header = p.packet.data;
+            if (!self.highest_data
+                || header.sequence.is_after(*self.highest_data)) {
+                if (self.highest_data
+                    && header.encryption_key != self.data_key) {
+                    if (self.timing.switches < self.timing.switched.size())
+                        self.timing.switched[self.timing.switches++] =
+                            HybridFaultLink::now();
+                    else
+                        ++self.timing.overflows;
+                }
+                self.highest_data = header.sequence;
+                self.data_key = header.encryption_key;
+            }
+        }
         if (!p || p.packet.kind != PacketKind::control
             || p.packet.control.type != ControlType::user_defined
             || (p.packet.control.subtype != key_material_request_subtype
@@ -6167,8 +6196,16 @@ struct HybridKeyFaultLink {
                 && std::ranges::equal(
                     previous.packet.payload, p.packet.payload);
         }
-        if (!same)
+        if (!same) {
             ++self.materials;
+            if (self.measuring.load()) {
+                if (self.timing.announcements < self.timing.announced.size())
+                    self.timing.announced[self.timing.announcements++] =
+                        HybridFaultLink::now();
+                else
+                    ++self.timing.overflows;
+            }
+        }
         self.latest = capture;
         if (self.holding) {
             ++self.held;
@@ -6195,6 +6232,11 @@ struct HybridKeyFaultLink {
     {
         std::lock_guard lock(mutex);
         return held;
+    }
+    Timing observations() const
+    {
+        std::lock_guard lock(mutex);
+        return timing;
     }
     void hold()
     {
@@ -6610,4 +6652,266 @@ TEST(
         f.record_multi(1, requests, responses, origin);
     }
 }
+
+namespace {
+struct HybridLoadProfile {
+    std::uint32_t gap_us, data_delay_us, data_jitter_us, request_delay_us,
+        response_delay_us, source_control_us, caller_control_us;
+};
+constexpr std::array hybrid_load_profiles {
+    HybridLoadProfile {10'000, 5'000, 5'000, 8'000, 4'000, 4'000, 2'000},
+    HybridLoadProfile {4'000, 15'000, 10'000, 8'000, 8'000, 8'000, 4'000},
+    HybridLoadProfile {2'000, 30'000, 20'000, 10'000, 10'000, 12'000, 8'000}};
+std::array<char, 1316> hybrid_load_message(int index)
+{
+    std::array<char, 1316> bytes;
+    for (std::size_t i = 0; i < bytes.size(); ++i)
+        bytes[i] = static_cast<char>(
+            (static_cast<unsigned>(index) * 17U + i * 29U) & 0xffU);
+    return bytes;
+}
+void hybrid_load_matrix(unsigned mode)
+{
+    for (std::size_t row = 0; row < hybrid_load_profiles.size(); ++row) {
+        const auto cfg = hybrid_load_profiles[row];
+        HybridKeyScenario f(mode, 4'000'000);
+        // Bootstrap normally; the measured envelope begins after exact MC admission.
+        f.net.source.rules({}, f.net.source.payload_rules());
+        f.net.caller.rules({}, {});
+        f.add();
+        f.multicast(1);
+        f.monitored = {0, 1};
+        HybridFaultLink other_caller;
+        const auto other_group = GroupRegistry::instance().find(f.peers[1].id);
+        SRTSOCKET other_child;
+        {
+            std::lock_guard lock(other_group->mutex);
+            other_child = other_group->members.front().public_data.id;
+        }
+        const auto other_socket = SocketRegistry::instance().find(other_child);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> other_channel;
+        {
+            std::lock_guard lock(other_socket->mutex);
+            other_channel = other_socket->channel;
+        }
+        other_caller.install(std::move(other_channel));
+        other_caller.rules({cfg.caller_control_us, cfg.caller_control_us}, {});
+        const HybridFaultLink::Queue::Rules data_rules {
+            cfg.data_delay_us, cfg.data_jitter_us, 17, 7, 43};
+        f.net.source.rules(
+            {cfg.source_control_us, cfg.source_control_us}, data_rules);
+        f.net.caller.rules({cfg.caller_control_us, cfg.caller_control_us}, {});
+        f.net.multicast.rules({}, data_rules);
+        HybridKeyFaultLink requests(f.net.source,
+            {cfg.request_delay_us, cfg.request_delay_us, 0, 3},
+            f.endpoint(f.peers[0].id));
+        HybridKeyFaultLink responses(
+            f.net.caller, {cfg.response_delay_us, cfg.response_delay_us, 0, 3});
+        requests.measuring = true;
+        std::uint64_t offered_us = 0;
+        unsigned pacer_resets = 0;
+        const auto await = [&](const char* stage, auto predicate) {
+            try {
+                hybrid_network_wait(predicate);
+            } catch (const std::exception& e) {
+                throw std::runtime_error("load row=" + std::to_string(row)
+                    + " crypto=" + std::to_string(mode) + " stage=" + stage
+                    + " next=" + std::to_string(f.next) + " " + e.what());
+            }
+        };
+        const auto burst = [&](unsigned count) {
+            const auto saved_uc = f.net.source.payload_rules(),
+                       saved_mc = f.net.multicast.payload_rules();
+            const auto begin = HybridFaultLink::now();
+            auto deadline = std::chrono::steady_clock::now();
+            const auto gap = std::chrono::microseconds {cfg.gap_us};
+            for (unsigned i = 0; i < count; ++i) {
+                if (i + 2 >= count) {
+                    auto uc = saved_uc, mc = saved_mc;
+                    uc.drop_every = mc.drop_every = 0;
+                    uc.drop_first = mc.drop_first = 0;
+                    f.net.source.payload_rules(uc);
+                    f.net.multicast.payload_rules(mc);
+                }
+                const auto payload = hybrid_load_message(f.next);
+                REQUIRE_EQ(srt_sendmsg(f.stream->sender, payload.data(),
+                               payload.size(), -1, 1),
+                    static_cast<int>(payload.size()));
+                ++f.next;
+                f.monitor();
+                deadline += gap;
+                const auto now = std::chrono::steady_clock::now();
+                // Retain phase through normal timer jitter, but never accumulate
+                // more than one interval of catch-up after a host scheduling gap.
+                if (now > deadline + gap) {
+                    deadline = now;
+                    ++pacer_resets;
+                }
+                std::this_thread::sleep_until(deadline);
+            }
+            offered_us += HybridFaultLink::now() - begin;
+            for (auto& peer : f.peers) {
+                while (peer.read_next < static_cast<std::uint64_t>(f.next)) {
+                    const auto expected =
+                        hybrid_load_message(static_cast<int>(peer.read_next));
+                    std::array<char, 1316> actual {};
+                    const auto n =
+                        srt_recvmsg(peer.id, actual.data(), actual.size());
+                    if (n != static_cast<int>(actual.size())
+                        || actual != expected)
+                        throw std::runtime_error(
+                            "load DATA row=" + std::to_string(row)
+                            + " crypto=" + std::to_string(mode)
+                            + " position=" + std::to_string(peer.read_next)
+                            + " bytes=" + std::to_string(n));
+                    ++peer.read_next;
+                    f.monitor();
+                }
+            }
+            f.net.source.payload_rules(saved_uc);
+            f.net.multicast.payload_rules(saved_mc);
+        };
+        burst(96);
+        auto owner = f.peers[1].owner;
+        const auto old_epoch = owner->membership()->snapshot().route_epoch;
+        f.peers[1].provider->recovery_failures = 1;
+        const auto lost_at = HybridFaultLink::now();
+        REQUIRE(owner->membership()->report_loss());
+        REQUIRE_EQ(owner->receiver()->request_fallback(f.next),
+            hn::ReceiverBridge::Admission::accepted);
+        await("fresh UC", [&] {
+            const auto state = owner->receiver()->snapshot();
+            return state.fresh && state.mode == hn::Mode::unicast;
+        });
+        const auto fallback_us = HybridFaultLink::now() - lost_at;
+        REQUIRE(fallback_us < 600'000);
+        await("membership rejoin", [&] {
+            const auto state = owner->membership()->snapshot();
+            return state.joined && state.route_epoch > old_epoch;
+        });
+        const auto rejoin_us = HybridFaultLink::now() - lost_at;
+        REQUIRE(rejoin_us < 1'000'000);
+        REQUIRE_EQ(owner->membership()->snapshot().failures, 1U);
+        const auto return_at = HybridFaultLink::now();
+        auto reliable = data_rules;
+        reliable.drop_every = reliable.drop_first = 0;
+        f.net.multicast.payload_rules(reliable);
+        REQUIRE_EQ(owner->receiver()->request_overlap(),
+            hn::ReceiverBridge::Admission::accepted);
+        await("overlap", [&] {
+            const auto state = owner->receiver()->snapshot();
+            return state.fresh && state.mode == hn::Mode::overlap;
+        });
+        const auto boundary = static_cast<std::uint64_t>(f.next);
+        REQUIRE_EQ(owner->receiver()->snapshot().commit_position, boundary);
+        f.burst(8, false);
+        std::optional<hn::CoverageProof> proof;
+        await("delayed exact proof", [&] {
+            proof = owner->receiver()->coverage_proof(boundary + 8, 200'000);
+            return proof.has_value();
+        });
+        REQUIRE_EQ(owner->receiver()->request_multicast(*proof),
+            hn::ReceiverBridge::Admission::accepted);
+        await("MC return", [&] {
+            const auto state = owner->receiver()->snapshot();
+            return state.fresh && state.mode == hn::Mode::multicast;
+        });
+        f.read_all();
+        const auto return_us = HybridFaultLink::now() - return_at;
+        REQUIRE(return_us < 600'000);
+        f.net.multicast.payload_rules(data_rules);
+        burst(64);
+        REQUIRE_EQ(f.next, 176);
+        f.received_all();
+        REQUIRE_EQ(f.stream->actor()->snapshot().unicast_members, 1U);
+        REQUIRE(!f.stream->actor()->snapshot().failed);
+        for (auto& peer : f.peers) {
+            REQUIRE_EQ(peer.read_next, 176U);
+            REQUIRE_EQ(hybrid_runtime(peer.id)
+                           ->statistics(false, false)
+                           .total.received_unique.packets,
+                176U);
+            REQUIRE(f.key_ready(peer.id));
+        }
+        requests.check();
+        responses.check();
+        for (auto* link :
+            {&f.net.source, &f.net.caller, &other_caller, &f.net.multicast}) {
+            REQUIRE_EQ(link->io_errors.load(), 0U);
+            REQUIRE_EQ(link->stats().overflows, 0U);
+            // The highest offered-load row intentionally probes the fixed UC
+            // queue boundary. Full-queue refusals are unaccepted, retryable
+            // sends; no buffer growth or accepted-datagram loss is introduced.
+            if (row != 2 || link != &f.net.source)
+                REQUIRE_EQ(link->stats(true).overflows, 0U);
+            REQUIRE(link->stats(true).peak <= HybridFaultLink::Queue::capacity);
+        }
+        const auto timing = requests.observations();
+        REQUIRE_EQ(timing.overflows, 0U);
+        REQUIRE_EQ(timing.announcements, 5U);
+        REQUIRE_EQ(timing.switches, 5U);
+        std::uint64_t min_lead_us = UINT64_MAX;
+        for (unsigned i = 0; i < timing.switches; ++i) {
+            REQUIRE(timing.switched[i] > timing.announced[i]);
+            min_lead_us =
+                std::min(min_lead_us, timing.switched[i] - timing.announced[i]);
+        }
+        const auto request_budget_margin_us =
+            static_cast<std::int64_t>(min_lead_us + cfg.data_delay_us)
+            - 2 * cfg.request_delay_us
+            - static_cast<std::int64_t>(requests.max_lateness_us.load());
+        const auto ack_margin_us = static_cast<std::int64_t>(min_lead_us)
+            - 2 * (cfg.request_delay_us + cfg.response_delay_us)
+            - static_cast<std::int64_t>(requests.max_lateness_us.load()
+                + responses.max_lateness_us.load());
+        REQUIRE(request_budget_margin_us > 0);
+        const auto actual_pps = 160'000'000ULL / offered_us;
+        const auto target_pps = 1'000'000U / cfg.gap_us;
+        REQUIRE(f.net.source.stats(true).dropped > 0);
+        REQUIRE(f.net.multicast.stats(true).dropped > 0);
+        std::fprintf(stdout,
+            "[HYBRID_LOAD] "
+            "{\"row\":%zu,\"profile\":%u,\"target_pps\":%u,\"actual_pps\":%llu,"
+            "\"pacer_resets\":%u,\"payload_bytes\":1316,\"loaded_messages\":"
+            "160,\"messages_per_receiver\":176,"
+            "\"data_receivers\":2,\"data_delay_max_us\":%u,\"km_request_max_"
+            "us\":%u,"
+            "\"km_response_max_us\":%u,\"min_announcement_lead_us\":%llu,"
+            "\"request_budget_margin_us\":%lld,\"ack_budget_margin_us\":%lld,"
+            "\"key_switches\":5,\"fallback_us\":%llu,\"rejoin_us\":%llu,"
+            "\"return_us\":%llu,"
+            "\"uc_queue_peak\":%zu,\"mc_queue_peak\":%zu,\"uc_capacity_"
+            "retries\":%llu}\n",
+            row, mode, target_pps, static_cast<unsigned long long>(actual_pps),
+            pacer_resets, cfg.data_delay_us + cfg.data_jitter_us,
+            2 * cfg.request_delay_us, 2 * cfg.response_delay_us,
+            static_cast<unsigned long long>(min_lead_us),
+            static_cast<long long>(request_budget_margin_us),
+            static_cast<long long>(ack_margin_us),
+            static_cast<unsigned long long>(fallback_us),
+            static_cast<unsigned long long>(rejoin_us),
+            static_cast<unsigned long long>(return_us),
+            f.net.source.stats(true).peak, f.net.multicast.stats(true).peak,
+            static_cast<unsigned long long>(
+                f.net.source.stats(true).overflows));
+        if (actual_pps * 4U < target_pps * 3U)
+            throw std::runtime_error(
+                "load offered-rate row=" + std::to_string(row)
+                + " actual_pps=" + std::to_string(actual_pps)
+                + " target_pps=" + std::to_string(target_pps));
+    }
+}
+}
+TEST(hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    hybrid_load_matrix(1);
+}
+#ifdef ENABLE_AEAD_API_PREVIEW
+TEST(hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    hybrid_load_matrix(2);
+}
+#endif
 #endif

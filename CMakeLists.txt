@@ -638,7 +638,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover
-            tsbpd_rtt multicast_dispatch hybrid_network_ hybrid_key_network_ compat_idle_readiness_ arq_transport_)
+            tsbpd_rtt multicast_dispatch hybrid_network_ hybrid_key_network_ hybrid_load_network_ compat_idle_readiness_ arq_transport_)
     add_test(NAME robotweax_srt_arq_transport_tests
         COMMAND robotweax_srt_tests --include arq_transport_)
     set_tests_properties(robotweax_srt_arq_transport_tests
@@ -656,6 +656,10 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             COMMAND robotweax_srt_tests --include hybrid_key_network_)
         set_tests_properties(robotweax_srt_hybrid_key_timing_tests PROPERTIES
             TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;key-management;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_load_tests
+            COMMAND robotweax_srt_tests --include hybrid_load_network_)
+        set_tests_properties(robotweax_srt_hybrid_load_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;load;fault-injection")
     endif()
     add_test(NAME robotweax_srt_idle_readiness_tests
         COMMAND robotweax_srt_tests --include compat_idle_readiness_)

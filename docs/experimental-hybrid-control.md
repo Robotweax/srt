@@ -1783,6 +1783,91 @@ isolation, sustained overload, physical/WAN paths, other platforms or uninterrup
 playback. Ordinary unauthenticated runtime KM and the earlier credential,
 forward-secrecy and primary SESSIONAUTH/ACP1 restrictions retain their limits.
 
+### Bounded packet-load and delay matrix
+
+Enabled builds register `robotweax_srt_hybrid_load_tests`, selected by
+`--include hybrid_load_network_`, with a separate 30-second `RUN_SERIAL` budget.
+One CTR and one GCM case each run the following three rows. Existing network
+and key-timing gates retain their budgets. This is a finite offered-load matrix
+on Darwin IPv4 loopback, not a sustained-throughput or physical RTT benchmark.
+
+| Row | Target packets/s | Payload bytes/s at target | DATA delay (ms) | Selected KM request delay (ms) | Selected KM response delay (ms) | Source/Caller auxiliary delay (ms) | Source UC DATA capacity policy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 100 | 131,600 | 5 / 10 | 8 / 16 | 4 / 8 | 4 / 8 and 2 / 4 | No capacity retries |
+| 1 | 250 | 329,000 | 15 / 25 | 8 / 16 | 8 / 16 | 8 / 16 and 4 / 8 | No capacity retries |
+| 2 | 500 | 658,000 | 30 / 50 | 10 / 20 | 10 / 20 | 12 / 24 and 8 / 16 | Retryable capacity refusals permitted and counted |
+
+Each delay pair alternates deterministically between its listed values; it is
+not a random jitter distribution. DATA additionally drops every 17th accepted
+send, duplicates every seventh and returns a configured retry every 43rd
+attempt. Burst tails retain two un-dropped witnesses. Selected runtime KM
+duplicates every third accepted request/response, without configured KM loss.
+All commit replies are dropped; other auxiliary control has only the listed
+delays, applied to both Caller channels and the shared Source channel. ACK/NAK,
+initial handshake KM and the other receiver's runtime KM are unchanged. The
+fixed link queues remain 64 datagrams of at most 1500 bytes, with bounded worker
+slices. No production transport, crypto, policy or wire changes are introduced.
+
+The fixture uses a 4,000,000 bytes/s Source maximum-bandwidth setting and two
+receivers. One stays on UC; the other starts on confirmed MC. After eight small
+bootstrap/proof messages, the producer sends 96 canonical 1,316-byte messages,
+then pauses to report MC membership loss. The affected receiver must obtain
+fresh UC confirmation within 600ms, fail one preparation and rejoin within 1s
+from loss, then return through a new exact eight-position overlap proof. The
+complete return, including application reads, must finish within a 600ms test
+budget. The proof retains the row's DATA delay/duplication/retry settings, with
+loss disabled for its exact-coverage window. A final 64 large messages follow.
+Each receiver must read all 176 canonical messages exactly, including 160 large
+payloads, with matching unique-packet counts. Both sender key states finish
+secured, one UC member remains, Source failure stays false and every observed
+policy confirmation remains fresh. Existing operation/confirmation/recovery
+settings and 10-second synthetic grants are unchanged.
+
+Absolute producer deadlines retain phase through timer jitter. If the producer
+falls more than one interval behind, it resets the deadline rather than building
+an unbounded catch-up burst. The log reports resets and the actual accepted
+application rate over the two loaded bursts, excluding control/proof pauses.
+Actual rate must reach at least 75% of the target. This is offered application
+rate, not measured receiver goodput or a production capacity guarantee. Relative
+sleeps in the first trial undershot the faster targets; the rate threshold was
+retained when the test pacer was corrected.
+
+A test-only observer records changed runtime KM submission times and the first
+forward sequence carrying a different DATA key selector on the selected UC
+channel. It ignores retransmissions/older sequences and uses fixed eight-entry
+arrays. Five announcements and five DATA key switches are required. The minimum
+Source submission lead is measured directly. The request budget margin adds the
+minimum programmed DATA delay, then subtracts maximum programmed KM request
+delay and observed request-worker lateness. It must stay positive. The ACK budget
+margin subtracts maximum programmed request/response delays and both workers'
+lateness; it may be negative. These are model budgets, not measurements of peer
+key installation or ACK receipt, and exclude unmodeled socket/host processing.
+Exact decrypted application delivery remains the functional check.
+
+The highest row probes the fixed unicast DATA queue boundary. A diagnostic run
+observed 15 retryable full-queue refusals at a 64-slot peak while earlier delivery,
+key-readiness and recovery checks had passed. This queue carries UC originals
+and unicast repairs for both receivers. Full-queue sends are unaccepted and
+return `would_block`; accepted packets are not silently discarded and storage
+is not enlarged. Row 2 permits and reports these Source DATA capacity retries.
+Rows 0/1 and all other DATA, control and KM queues still require zero capacity
+refusals. Every row requires zero UDP I/O errors and queue peaks within 64 slots.
+This separates a capacity-boundary result from an unsaturated operating claim.
+
+`HYBRID_LOAD` JSON rows identify crypto/profile, target and actual offered rate,
+pacer resets, payload/message counts, programmed delay maxima, five switches,
+minimum announcement lead, request/ACK budget margins, fallback/rejoin/return
+elapsed times, UC/MC queue peaks and Source DATA capacity retries. Failed early
+trials remain in the qualification archive. No new capability, public C option,
+provisioning API, scheduler/quota rule or primary SESSIONAUTH/ACP1 support is added.
+
+This matrix qualifies only these finite two-receiver bursts and deterministic
+fault patterns. It does not establish sustained overload stability, fairness,
+large member scale, arbitrary loss/jitter, real WAN/asymmetric RTT behavior,
+keys beyond their usable DATA horizon, isolated lost-tail recovery, hostile-peer
+isolation, other-platform results or uninterrupted playback. The existing
+unauthenticated runtime KM, credential and forward-secrecy limits remain.
+
 ## Control body
 
 Every control body is exactly 96 bytes.
