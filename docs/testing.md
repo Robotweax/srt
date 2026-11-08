@@ -43,8 +43,13 @@ through this variable, because Linux loopback need not deliver IPv6 multicast.
 The required CI multicast job checks IPv4 loopback dispatch and the public
 MPEG-TS sample in plain, CTR and GCM modes on OpenSSL Linux/macOS/Windows,
 Mbed TLS Linux, and experimental BCrypt Windows. It requires every named
-dispatch regression to execute and rejects skips, missing cases, unsuccessful
-processes and incomplete summaries. Evidence records the exact source SHA,
+dispatch regression to execute and rejects skips of required cases, missing
+cases, unsuccessful processes and incomplete summaries. A non-required case may
+be skipped only for a host limitation listed in `tools/qualify_multicast.py`
+with its exact reason; today that is the independent source-IP rejoin case on
+hosts without a second assigned IPv4 address, such as hosted Windows runners.
+Such a skip is recorded under `environment_skips` in the evidence and leaves
+that case unqualified on that host. Evidence records the exact source SHA,
 platform, configured backend and logs. Its result participates in the required
 CI gate. To run this matrix alone, dispatch the `CI` workflow on the candidate
 branch with the `multicast_only` input set to `true`. That focused run does not
