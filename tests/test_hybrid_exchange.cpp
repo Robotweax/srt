@@ -791,11 +791,12 @@ TEST(
     hybrid_exchange_optional_features_and_prefix_limit_are_bilaterally_selected)
 {
     Pair p;
-    p.f.listener_configuration.policy.supported = h::core_features | h::overlap;
+    p.f.listener_configuration.policy.supported =
+        h::core_features | h::overlap_control;
     p.f.listener_configuration.policy.prefix_limit = 17;
     p.connect();
-    REQUIRE_EQ(
-        p.caller.context().selection.supported, h::core_features | h::overlap);
+    REQUIRE_EQ(p.caller.context().selection.supported,
+        h::core_features | h::overlap_control);
     REQUIRE_EQ(p.caller.context().selection.prefix_limit, 17U);
     REQUIRE_EQ(p.caller.context(), p.listener.context());
     REQUIRE_EQ(p.cr.seen.context, p.caller.context());

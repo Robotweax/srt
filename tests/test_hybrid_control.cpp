@@ -64,7 +64,7 @@ TEST(
     auto c = context();
     REQUIRE(h::valid(c));
     auto local = c.offer;
-    local.supported = h::core_features | h::overlap;
+    local.supported = h::core_features | h::overlap_control;
     local.prefix_limit = 17;
     h::Capability selected;
     REQUIRE(h::negotiate(c.offer, local, 71, 97, UINT64_MAX, selected));
@@ -79,7 +79,7 @@ TEST(
     REQUIRE(!h::valid(c.offer));
     c = context();
     c.selection.supported = h::core_features;
-    c.offer.required |= h::overlap;
+    c.offer.required |= h::overlap_control;
     REQUIRE(!h::valid(c));
     c = context();
     REQUIRE(!h::negotiate(c.offer, c.offer, 0, 97, 0, selected));
@@ -633,7 +633,7 @@ TEST(
         if (variant == 3)
             altered.dispatch.initial_sequence--;
         if (variant == 4)
-            altered.selection.supported &= ~h::overlap;
+            altered.selection.supported &= ~h::overlap_control;
         if (variant == 5)
             altered.selection.prefix_limit--;
         if (variant == 6)

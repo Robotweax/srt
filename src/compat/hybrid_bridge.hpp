@@ -79,7 +79,7 @@ private:
         std::shared_ptr<GroupSendCoordinator>, std::shared_ptr<NativeService>,
         std::shared_ptr<AuthorizationLease>, Configuration, bool) noexcept;
     struct Entry {
-        Message request, reply;
+        Message request {}, reply {};
         std::uint64_t first_received = 0, deadline = 0;
         std::uint32_t sends = 0, busy = 0;
         bool occupied = false, complete = false, pending = false;

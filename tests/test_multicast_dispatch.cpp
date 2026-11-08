@@ -2139,13 +2139,13 @@ struct NativeHybridPair {
         }
         if (returning) {
             o.policy.supported |=
-                hn::return_control | hn::overlap | hn::policy_query;
+                hn::return_control | hn::overlap_control | hn::policy_query;
             o.policy.required |=
-                hn::return_control | hn::overlap | hn::policy_query;
+                hn::return_control | hn::overlap_control | hn::policy_query;
             caller_options.policy.supported |=
-                hn::return_control | hn::overlap | hn::policy_query;
+                hn::return_control | hn::overlap_control | hn::policy_query;
             caller_options.policy.required |=
-                hn::return_control | hn::overlap | hn::policy_query;
+                hn::return_control | hn::overlap_control | hn::policy_query;
         }
         if (startup) {
             o.policy.supported |= hn::startup_fallback | hn::policy_query;
@@ -2383,7 +2383,8 @@ struct StartupHooks {
         options.source.reporting = options.receiver.reporting = self.reporting;
         options.membership.maximum_recoveries = self.maximum_recoveries;
         if (self.returning) {
-            options.native.policy.supported |= hn::return_control | hn::overlap;
+            options.native.policy.supported |=
+                hn::return_control | hn::overlap_control;
             options.source.returning = self.returning;
         }
         if (self.network_timing) {

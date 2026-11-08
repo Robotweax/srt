@@ -32,11 +32,11 @@ bool conclusion(std::span<const std::byte> payload, bool caller,
         || payload.size() > maximum_conclusion_payload)
         return false;
     std::array<std::byte, 1500> datagram {};
-    const auto wire =
-        encode_packet({.kind = PacketKind::control,
-                          .control = {.type = ControlType::handshake},
-                          .payload = payload},
-            datagram);
+    const auto wire = encode_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::handshake, .timestamp = {}},
+            .payload = payload},
+        datagram);
     if (!wire)
         return false;
     const auto decoded = decode_handshake_datagram(

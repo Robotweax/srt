@@ -316,31 +316,33 @@ std::optional<CoverageProof> ReceiverBridge::coverage_proof(
             >= configuration_.confirmation_lifetime_us)
         return {};
     const auto runtime = service_->runtime_.lock();
-    const auto coverage = runtime
-        ? runtime->hybrid_multicast_coverage(service_.get(),
-              state_.commit_position, through,
-              context_.selection.initial_position)
-        : std::nullopt;
+    if (!runtime)
+        return {};
+    const auto observed = runtime->hybrid_multicast_coverage(service_.get(),
+        state_.commit_position, through, context_.selection.initial_position);
     const auto checked = service_->now();
+    if (!observed)
+        return {};
+    const auto coverage = *observed;
     if (cancelled_.load() || service_->closed() || checked < at
         || checked >= native.expires_at_us
         || checked - state_.confirmation_origin_us
             >= configuration_.confirmation_lifetime_us
-        || !coverage || coverage->last_at_us > checked
-        || coverage->last_at_us <= coverage->first_at_us
-        || coverage->last_at_us - coverage->first_at_us > maximum_interval_us
-        || checked - coverage->last_at_us >= lifetime)
+        || coverage.last_at_us > checked
+        || coverage.last_at_us <= coverage.first_at_us
+        || coverage.last_at_us - coverage.first_at_us > maximum_interval_us
+        || checked - coverage.last_at_us >= lifetime)
         return {};
     return CoverageProof {.generation = generation_,
         .revision = state_.revision,
         .boundary = state_.commit_position,
         .through = through,
-        .observed_at_us = coverage->last_at_us,
+        .observed_at_us = coverage.last_at_us,
         .not_after_us =
-            std::min(add(coverage->last_at_us, lifetime), native.expires_at_us),
+            std::min(add(coverage.last_at_us, lifetime), native.expires_at_us),
         .interval_us = static_cast<std::uint32_t>(
-            coverage->last_at_us - coverage->first_at_us),
-        .route_epoch = coverage->route_epoch};
+            coverage.last_at_us - coverage.first_at_us),
+        .route_epoch = coverage.route_epoch};
 }
 ReceiverBridge::Admission ReceiverBridge::request_overlap() noexcept
 {

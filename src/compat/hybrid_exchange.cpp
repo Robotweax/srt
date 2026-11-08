@@ -114,11 +114,11 @@ bool message(std::span<const std::byte> payload, HandshakeMessage& out) noexcept
     if (payload.size() > maximum_conclusion_payload)
         return false;
     std::array<std::byte, 1500> wire {};
-    const auto encoded =
-        encode_packet({.kind = PacketKind::control,
-                          .control = {.type = ControlType::handshake},
-                          .payload = payload},
-            wire);
+    const auto encoded = encode_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::handshake, .timestamp = {}},
+            .payload = payload},
+        wire);
     if (!encoded)
         return false;
     const auto decoded = decode_handshake_datagram(

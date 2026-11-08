@@ -1950,6 +1950,62 @@ real WAN/asymmetric RTT behavior, isolated lost-tail recovery, hostile-peer
 isolation, other platforms or uninterrupted playback. Shared-credential,
 unauthenticated runtime KM and forward-secrecy limitations remain.
 
+### Linux compiler and runtime qualification
+
+The same strict soak driver is used on Ubuntu 24.04 ARM64 with GCC 13 and
+OpenSSL, in an isolated checkout inside a local Lima Linux VM. This exercises
+the Linux kernel/socket/runtime and libstdc++ paths on ARM64; it is not a second
+physical machine, another CPU architecture or a WAN/separate-network result.
+Existing VM network-lab namespaces, routing, qdiscs and firewall configuration
+are not part of the loopback experiment and are left unchanged.
+
+A matching enabled Release build can be configured from the repository root:
+
+```sh
+cmake -S . -B build-linux-release -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DROBOTWEAX_SRT_CRYPTO_BACKEND=openssl \
+  -DENABLE_AEAD_API_PREVIEW=ON -DENABLE_MAXREXMITBW=OFF \
+  -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON \
+  -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL=ON \
+  -DROBOTWEAX_SRT_BUILD_TOOLS=OFF \
+  -DROBOTWEAX_SRT_BUILD_EXAMPLES=OFF
+cmake --build build-linux-release --parallel 4
+./tools/python tools/qualify_hybrid_soak.py \
+  --build build-linux-release --seconds 30 --output NEW_DIRECTORY
+```
+
+The sanitizer variant uses a separate Debug build with
+`-DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"` and
+`-DENABLE_MAXREXMITBW=ON`, then the same driver with `--config Debug` and another
+new output directory. Builds and focused checks complete before measured native
+runs; fixed-port multicast cases are serial. Per-run executable/cache/log hashes,
+configuration, exact commit, dirty state, platform and metrics remain the
+qualification record. Only clean final runs support the recorded result; raw
+failed builds and dirty prototype runs are retained separately.
+
+GCC's existing warnings-as-errors policy exposed a scoped-enum name collision
+and omitted aggregate member defaults. The internal capability constant is now
+`overlap_control`, retaining bit value 8; `Mode::overlap`, all mode values and
+protocol encodings are unchanged. Internal result, completion, event and context
+members now state their intended empty/default values explicitly. Temporary
+handshake-parser control headers explicitly use a zero timestamp. No public
+header, public C layout/option, capability allocation, crypto algorithm or
+operation/confirmation/recovery deadline changes are introduced.
+
+Coverage-proof construction also checks optional runtime coverage explicitly
+before copying its value. The post-observation cancellation, expiry, confirmation
+freshness, time-order, interval and proof-age checks remain in place. This makes
+the initialized value visible to GCC without suppressing diagnostics or relaxing
+proof validation. Existing independent protocol vectors and regression tests
+remain the behavioral checks; compiler warning settings are unchanged.
+
+Linux evidence extends only the executed loopback profile and test selections.
+It does not qualify Windows, x86, other distributions/backends, physical UC/MC
+separation, arbitrary network conditions, long-duration/large-scale production
+operation or the earlier excluded security/continuity guarantees. Current
+per-commit platform results are recorded in the project handover and archives.
+
 ## Control body
 
 Every control body is exactly 96 bytes.

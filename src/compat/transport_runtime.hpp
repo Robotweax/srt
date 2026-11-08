@@ -460,7 +460,7 @@ private:
     struct ConnectionRoute {
         std::shared_ptr<ConnectionRuntime> runtime;
         PacketIngress provenance = PacketIngress::unicast_session;
-        std::shared_ptr<const MulticastIngressBinding> multicast_binding;
+        std::shared_ptr<const MulticastIngressBinding> multicast_binding {};
         ConnectionRoute* previous = nullptr;
         ConnectionRoute* next = nullptr;
     };
@@ -807,7 +807,7 @@ private:
         DataHeader data {};
         ControlType control = ControlType::keepalive;
         std::size_t payload_size = 0;
-        std::shared_ptr<const GroupSendBinding> group_binding;
+        std::shared_ptr<const GroupSendBinding> group_binding {};
         std::uint64_t group_position = 0;
     };
 

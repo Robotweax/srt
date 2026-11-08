@@ -53,11 +53,11 @@ std::shared_ptr<const Conclusions> ConclusionCapture::freeze(
     // the published payloads are copied unchanged from the original capture.
     const auto decode_body = [](std::span<const std::byte> body) {
         std::array<std::byte, 1500> packet {};
-        const auto encoded =
-            encode_packet({.kind = PacketKind::control,
-                              .control = {.type = ControlType::handshake},
-                              .payload = body},
-                packet);
+        const auto encoded = encode_packet(
+            {.kind = PacketKind::control,
+                .control = {.type = ControlType::handshake, .timestamp = {}},
+                .payload = body},
+            packet);
         return encoded
             ? decode_handshake_datagram(
                   std::span {packet}.first(encoded.bytes_written))

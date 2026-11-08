@@ -15,7 +15,7 @@ inline constexpr std::uint8_t authentication_version = 7;
 inline constexpr std::size_t capability_size = 48, context_size = 192,
                              message_size = 96;
 inline constexpr std::uint32_t originals = 1, prefix_replay = 2, progress = 4,
-                               overlap = 8, source_recovery = 16,
+                               overlap_control = 8, source_recovery = 16,
                                policy_query = 32, return_control = 64,
                                startup_fallback = 128, core_features = 7,
                                legacy_features = 31, policy_query_features = 63,
@@ -38,9 +38,9 @@ struct Capability {
     const Capability& local_policy, std::uint64_t stream, std::uint64_t member,
     std::uint64_t initial_position, Capability& selection) noexcept;
 struct Context {
-    MulticastDispatch dispatch;
-    MulticastSource source;
-    Capability offer, selection;
+    MulticastDispatch dispatch {};
+    MulticastSource source {};
+    Capability offer {}, selection {};
     friend bool operator==(const Context&, const Context&) = default;
 };
 [[nodiscard]] bool valid(const Context&) noexcept;
@@ -113,7 +113,7 @@ public:
     };
     struct Result {
         Status status = Status::invalid;
-        Message message;
+        Message message {};
         std::uint64_t first_received_us = 0;
     };
     Session(SessionAuthentication&, const Context&, bool caller) noexcept;

@@ -56,7 +56,7 @@ TEST(
     auto c = context(true);
     REQUIRE_EQ(c.selection.supported, 127U);
     auto bad = c.offer;
-    bad.supported &= ~hr::overlap;
+    bad.supported &= ~hr::overlap_control;
     REQUIRE(!hr::valid(bad));
     bad = c.offer;
     bad.supported |= 256;

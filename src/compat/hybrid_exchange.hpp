@@ -16,7 +16,7 @@ struct ExchangeRecord {
     std::uint32_t caller_socket = 0, listener_socket = 0;
     CredentialId credential_id {};
     Capability capability {.supported = 0, .required = 0, .prefix_limit = 0};
-    SessionAuthenticationParameters authentication;
+    SessionAuthenticationParameters authentication {};
 };
 [[nodiscard]] bool encode(const ExchangeRecord&, std::span<std::byte>) noexcept;
 [[nodiscard]] bool decode(std::span<const std::byte>, ExchangeRecord&) noexcept;

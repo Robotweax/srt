@@ -43,8 +43,8 @@ bool valid(const Capability& c) noexcept
         || c.prefix_limit > maximum_prefix
         || ((c.supported & startup_fallback) && !(c.supported & policy_query))
         || ((c.supported & return_control)
-            && (c.supported & (overlap | policy_query))
-                != (overlap | policy_query)))
+            && (c.supported & (overlap_control | policy_query))
+                != (overlap_control | policy_query)))
         return false;
     if (c.kind == CapabilityKind::offer)
         return !c.stream && !c.member && !c.initial_position;
@@ -237,7 +237,7 @@ bool valid(const Message& m, const Context& c) noexcept
         && !(c.selection.supported & policy_query))
         return false;
     if ((m.mode == Mode::overlap || m.kind == Kind::multicast_ready)
-        && !(c.selection.supported & overlap))
+        && !(c.selection.supported & overlap_control))
         return false;
     if (m.kind == Kind::stream_progress
         && (m.produced_next < c.selection.initial_position

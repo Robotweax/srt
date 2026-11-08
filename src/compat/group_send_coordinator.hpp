@@ -92,8 +92,8 @@ public:
     };
     struct Transition {
         TransitionStatus status = TransitionStatus::stale;
-        Member member;
-        SendBuffer::GroupRecovery prefix;
+        Member member {};
+        SendBuffer::GroupRecovery prefix {};
         bool prefix_scheduled = false;
     };
     // Internal single-writer policy command. The expected revision fences old
@@ -114,7 +114,7 @@ public:
         SequenceNumber effective_sequence {};
         std::uint64_t effective_position = 0;
         std::size_t members = 0;
-        SendBuffer::GroupRecovery prefix;
+        SendBuffer::GroupRecovery prefix {};
     };
     // Explicit internal recovery after a terminal native multicast error and
     // complete outcome drain. Atomically validate selected member lifetimes,
@@ -224,7 +224,7 @@ private:
     };
     struct Recipient {
         std::uint64_t member = 0;
-        std::optional<GroupRuntimeAdmission::Ticket> ticket;
+        std::optional<GroupRuntimeAdmission::Ticket> ticket {};
         std::uint32_t busy_attempts = 0;
     };
     struct Frame {

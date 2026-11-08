@@ -86,7 +86,7 @@ public:
     struct Result {
         Status status = Status::invalid_packet;
         Error error = Error::none;
-        std::shared_ptr<const Packet> packet;
+        std::shared_ptr<const Packet> packet {};
         [[nodiscard]] explicit operator bool() const noexcept
         {
             return status == Status::prepared;

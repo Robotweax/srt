@@ -137,7 +137,7 @@ public:
             GroupOriginalDelivery::multicast) noexcept;
     struct Recovery {
         Status status = Status::stale;
-        SendBuffer::GroupRecovery prefix;
+        SendBuffer::GroupRecovery prefix {};
         std::size_t pending_unicast = 0;
     };
     // Hold distinct runtimes in stable order, without registry/emitter locks.

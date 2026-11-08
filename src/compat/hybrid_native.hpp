@@ -67,8 +67,8 @@ public:
     struct Event {
         enum class Kind { received, submitted, retryable, rejected, expired };
         Kind kind = Kind::rejected;
-        Session::Result received;
-        Message message;
+        Session::Result received {};
+        Message message {};
         std::uint64_t generation = 0;
     };
     struct Snapshot {
@@ -147,7 +147,7 @@ private:
         bool packet = false;
         std::array<std::byte, maximum_native_control_size> bytes {};
         std::size_t size = 0;
-        Message message;
+        Message message {};
         std::uint64_t arrival = 0, not_after = 0, route_epoch = 0;
         std::optional<std::uint64_t> observed;
     };
