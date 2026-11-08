@@ -272,42 +272,42 @@
       "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
       "published_file": "logs/review-harness-gcc-og.log",
       "original_sha256": "0c085c2105adf12eec5593a54bb514d1f015b3763472ceaf283e83071d096f8a",
-      "published_sha256": "40c08b1f898fc6932d77eff0fe195a9bb11e2e043bf347c522846eae31ee34cb",
+      "published_sha256": "b3bd3de17674602c3751ea3222f876804788c48863be140dbdfa71da667f054c",
       "redacted_or_trimmed": true
     },
     {
       "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
       "published_file": "logs/review-harness-gcc-o1.log",
       "original_sha256": "50e2cd864f6d5d240727a527d21b0370e711cf2ef1d4fffa0004b23d0ea7afce",
-      "published_sha256": "03ea678cb614b2dbe608d6dd9b22f3b7f7058c7f4219d89e353b653c7ae43f91",
+      "published_sha256": "6a4fd474c6f0646bf0b5daa1a7dd3d4c19fd41307f4b1cf804cd7f3764d38321",
       "redacted_or_trimmed": true
     },
     {
       "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
       "published_file": "logs/review-harness-llvm-o1.log",
       "original_sha256": "2d373735099286cc7b9f789a30f67598bb8e486c2a8f071c984752a911bd812e",
-      "published_sha256": "c6b6b189b7c5ad201c6e54f10c1986707a83b63722a4cb10a6d7a4e430a7e817",
+      "published_sha256": "9514d4d26fab9e7cb875d5b077190c388b769e067cf4894ac395deb11d8ee028",
       "redacted_or_trimmed": true
     },
     {
       "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
       "published_file": "logs/review-harness-gcc-release.log",
       "original_sha256": "119821bcffc1e41d5eaa5a14cbc8b7c8e52c995719f6fb1b834e409a5700655c",
-      "published_sha256": "87e033871e632b3b4db662246bf69357b0fce36071bfa589ac59f18df1166701",
+      "published_sha256": "bd74c6dba37fac5d594cd2e4452c66b24196488ea4ffc8b03194555ed487fd2d",
       "redacted_or_trimmed": true
     },
     {
       "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
       "published_file": "logs/review-harness-mac-release.log",
       "original_sha256": "c03f580f7799210f52cbeb24d4178c4b4408d6fb4245830396b41ea780596045",
-      "published_sha256": "8fcfa5925da76b25e60b5896e2160fb9c8f4dabb17d88a5285e3cc6d2da7249e",
+      "published_sha256": "8a346f466dc7aef70f03490e0bbd650d11453703eee4f070fb78649ba9c402f7",
       "redacted_or_trimmed": true
     },
     {
       "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
       "published_file": "logs/review-harness-mac-sanitized.log",
       "original_sha256": "0e6468ef80e6c6433005336396e166fd352b0f54213fddc3b289d1616a2d78b8",
-      "published_sha256": "c758ea61a131c44b524af1c942a7ec02b4a2dc8fdd469547519e73d109496314",
+      "published_sha256": "fde39f146e8a54fedb709a9ef4fe698712befffdbaa635dfa8473f10185a2d80",
       "redacted_or_trimmed": true
     }
   ]
