@@ -2000,6 +2000,13 @@ the initialized value visible to GCC without suppressing diagnostics or relaxing
 proof validation. Existing independent protocol vectors and regression tests
 remain the behavioral checks; compiler warning settings are unchanged.
 
+The Linux sanitizer regression also exposed mixed clock domains in runtime
+initialization: control timers started from elapsed wall time even when polling
+used an injected clock. Initialization now uses the configured clock. A focused
+regression offsets the wall-clock origin in both directions and checks the exact
+one-second keepalive boundary. Production runtimes retain their elapsed-clock
+behavior; no timer interval is widened.
+
 Linux evidence extends only the executed loopback profile and test selections.
 It does not qualify Windows, x86, other distributions/backends, physical UC/MC
 separation, arbitrary network conditions, long-duration/large-scale production

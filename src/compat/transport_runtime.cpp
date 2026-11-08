@@ -1657,7 +1657,9 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
           .send_capacity_packets = configuration.options.send_buffer_packets(),
           .receive_capacity_packets = effective_receive_capacity(configuration),
           .maximum_payload_size = effective_maximum_payload_size(configuration),
-          .start_microseconds = elapsed_microseconds(configuration.origin),
+          .start_microseconds = configuration.now_function != nullptr
+              ? configuration.now_function(configuration.now_context)
+              : elapsed_microseconds(configuration.origin),
           .member_receive_initial_sequence = configuration.group
                   && configuration.group->type == SRT_GTYPE_BACKUP
               ? std::optional {configuration.peer_wire_initial_sequence

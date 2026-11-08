@@ -361,6 +361,39 @@ void exercise_gcm_fec_geometry(std::string_view filter,
 
 } // namespace
 
+TEST(compat_runtime_injected_clock_initializes_keepalive_deadline)
+{
+    for (const auto origin_offset :
+        {std::chrono::seconds {-10}, std::chrono::seconds {10}}) {
+        const auto channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams output;
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        std::uint64_t now = 5'000;
+        ConnectionRuntime runtime {{
+            .channel = channel,
+            .peer = {.address = {192, 0, 2, 42}, .port = 16'002},
+            .peer_socket_id = 420,
+            .initial_sequence = SequenceNumber {100},
+            .origin = ConnectionRuntime::Clock::now() + origin_offset,
+            .now_function = injected_now,
+            .now_context = &now,
+        }};
+        (void)runtime.poll();
+        REQUIRE(take_datagrams(output).empty());
+        now += 999'999;
+        (void)runtime.poll();
+        REQUIRE(take_datagrams(output).empty());
+        ++now;
+        (void)runtime.poll();
+        const auto packets = take_datagrams(output);
+        REQUIRE_EQ(packets.size(), 1U);
+        const auto packet = decode_packet(packets.front());
+        REQUIRE(packet);
+        REQUIRE_EQ(packet.packet.kind, PacketKind::control);
+        REQUIRE_EQ(packet.packet.control.type, ControlType::keepalive);
+    }
+}
+
 #ifdef ENABLE_AEAD_API_PREVIEW
 TEST(compat_runtime_gcm_sensor_authenticates_fec_and_duplicate_data)
 {
