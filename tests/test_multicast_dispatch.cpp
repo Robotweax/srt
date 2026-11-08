@@ -5224,7 +5224,7 @@ struct HybridFaultLink {
         std::lock_guard lock(mutex);
         selected_aux_peer = peer;
     }
-    std::atomic<unsigned> commits_dropped = 0, io_errors = 0,
+    std::atomic<unsigned> commits_dropped = 0, io_errors = 0, policy_queued = 0,
                           policy_released = 0, reordered = 0;
     std::atomic<std::uint64_t> max_lateness_us = 0;
     std::array<std::uint64_t, 2> last_ordinal {};
@@ -5362,10 +5362,14 @@ struct HybridFaultLink {
             rules.delay_us = self.policy_delay_us.load();
             rules.alternating_delay_us = 0;
         }
-        const auto r = (payload ? self.data : self.auxiliary)
-                           .enqueue(bytes, peer, now(), rules);
-        if (r == Queue::Result::accepted)
+        auto& queue = payload ? self.data : self.auxiliary;
+        const auto dropped = queue.snapshot().dropped;
+        const auto r = queue.enqueue(bytes, peer, now(), rules);
+        if (r == Queue::Result::accepted) {
+            if (policy_reply && queue.snapshot().dropped == dropped)
+                ++self.policy_queued;
             return {.bytes_transferred = bytes.size()};
+        }
         return {.error = r == Queue::Result::retry ? Error::would_block
                                                    : Error::io_error};
     }
@@ -5651,25 +5655,49 @@ TEST(hybrid_network_delayed_policy_replies_cannot_revive_closed_startup)
         server.peers.keep(srt_accept(server.listener, nullptr, nullptr));
     REQUIRE(sender != SRT_INVALID_SOCK);
     std::shared_ptr<hn::StartupSession> owner;
-    hybrid_network_wait([&] {
+    std::shared_ptr<PolicyActor> actor;
+    const auto await = [&](const char* stage, auto predicate) {
+        try {
+            hybrid_network_wait(predicate);
+        } catch (const std::exception&) {
+            const auto snapshot =
+                owner ? owner->snapshot() : hn::StartupSession::Snapshot {};
+            throw std::runtime_error(std::string("delayed-close stage=") + stage
+                + " owner=" + std::to_string(bool(owner)) + " phase="
+                + std::to_string(static_cast<unsigned>(snapshot.phase))
+                + " published=" + std::to_string(snapshot.published)
+                + " closed=" + std::to_string(snapshot.closed) + " outcome="
+                + std::to_string(static_cast<unsigned>(snapshot.outcome))
+                + " policy_queued="
+                + std::to_string(net.source.policy_queued.load()) + " released="
+                + std::to_string(net.source.policy_released.load()) + " queued="
+                + std::to_string(net.source.stats().queued) + " uc="
+                + std::to_string(actor ? actor->snapshot().unicast_members : 0)
+                + " joins=" + std::to_string(net.startup.caller->joins.load()));
+        }
+    };
+    await("admitting", [&] {
         owner = startup_owner(receiver);
         return owner
             && owner->snapshot().phase == hn::StartupSession::Phase::admitting;
     });
     const auto group = GroupRegistry::instance().find(sender);
-    std::shared_ptr<PolicyActor> actor;
     {
         std::lock_guard lock(group->mutex);
         actor = group->dispatch->coordinator;
     }
-    hybrid_network_wait([&] {
-        return actor->snapshot().unicast_members == 1;
+    // Reservation visibility precedes reply enqueue. Close only after a real
+    // delayed policy reply survived the modeled drop, so post-close delivery
+    // cannot depend on scheduling another reply after the peer is gone.
+    await("queued reply and UC reservation", [&] {
+        return actor->snapshot().unicast_members == 1
+            && net.source.policy_queued.load() > 0;
     });
     REQUIRE(!owner->snapshot().published);
     REQUIRE(srt_getsockstate(receiver) != SRTS_CONNECTED);
     REQUIRE_EQ(net.source.policy_released.load(), 0U);
     server.peers.drop(receiver);
-    hybrid_network_wait([&] {
+    await("post-close release", [&] {
         return net.source.policy_released.load() > 0;
     });
     std::this_thread::sleep_for(std::chrono::milliseconds {50});
@@ -6049,6 +6077,318 @@ TEST(
             "reservations\":4}\n",
             mode, f.healthy_checks, f.net.source.selected_aux_drops.load(),
             f.net.source.bypassed_aux.load());
+    }
+}
+
+namespace {
+// Runtime KM only: initial handshake, HC authentication and DATA still use
+// their existing paths. Fixed captures retain packet bytes, never log keys.
+struct HybridKeyFaultLink {
+    using Queue = HybridFaultLink::Queue;
+    HybridFaultLink& normal;
+    mutable std::mutex mutex;
+    Queue queue;
+    Queue::Rules rules;
+    std::optional<Queue::Packet> first, latest;
+    bool holding = false;
+    unsigned materials = 0, held = 0;
+    std::atomic<unsigned> reordered = 0, io_errors = 0, replays = 0;
+    std::jthread worker;
+    explicit HybridKeyFaultLink(HybridFaultLink& link, Queue::Rules r)
+        : normal(link)
+        , rules(r)
+    {
+        REQUIRE(normal.channel);
+        REQUIRE(Queue::valid(rules));
+        normal.channel->set_send_hook_for_testing(send, this);
+        worker = std::jthread([this](std::stop_token stop) {
+            std::uint64_t last = 0;
+            while (!stop.stop_requested()) {
+                for (unsigned i = 0; i < 16; ++i) {
+                    std::optional<Queue::Packet> packet;
+                    {
+                        std::lock_guard lock(mutex);
+                        packet = queue.take(HybridFaultLink::now());
+                    }
+                    if (!packet)
+                        break;
+                    if (packet->ordinal < last)
+                        ++reordered;
+                    last = std::max(last, packet->ordinal);
+                    if (!forward(*packet))
+                        ++io_errors;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds {1});
+            }
+        });
+    }
+    UdpIoResult forward(const Queue::Packet& p)
+    {
+        return normal.channel->socket.send_to(
+            std::span {p.bytes}.first(p.size), p.peer);
+    }
+    static UdpIoResult send(std::span<const std::byte> bytes, IpEndpoint peer,
+        void* context) noexcept
+    {
+        auto& self = *static_cast<HybridKeyFaultLink*>(context);
+        const auto p = decode_packet(bytes);
+        if (!p || p.packet.kind != PacketKind::control
+            || p.packet.control.type != ControlType::user_defined
+            || (p.packet.control.subtype != key_material_request_subtype
+                && p.packet.control.subtype != key_material_response_subtype))
+            return HybridFaultLink::send(bytes, peer, &self.normal);
+        if (bytes.size() > Queue::datagram_capacity)
+            return {.error = Error::io_error};
+        std::lock_guard lock(self.mutex);
+        Queue::Packet capture;
+        std::copy(bytes.begin(), bytes.end(), capture.bytes.begin());
+        capture.size = bytes.size();
+        capture.peer = peer;
+        if (!self.first)
+            self.first = capture;
+        bool same = false;
+        if (self.latest) {
+            const auto previous = decode_packet(
+                std::span {self.latest->bytes}.first(self.latest->size));
+            same = previous
+                && std::ranges::equal(
+                    previous.packet.payload, p.packet.payload);
+        }
+        if (!same)
+            ++self.materials;
+        self.latest = capture;
+        if (self.holding) {
+            ++self.held;
+            return {.bytes_transferred = bytes.size()};
+        }
+        const auto result =
+            self.queue.enqueue(bytes, peer, HybridFaultLink::now(), self.rules);
+        if (result == Queue::Result::accepted)
+            return {.bytes_transferred = bytes.size()};
+        return {.error = result == Queue::Result::retry ? Error::would_block
+                                                        : Error::io_error};
+    }
+    Queue::Snapshot stats() const
+    {
+        std::lock_guard lock(mutex);
+        return queue.snapshot();
+    }
+    unsigned material_changes() const
+    {
+        std::lock_guard lock(mutex);
+        return materials;
+    }
+    unsigned held_count() const
+    {
+        std::lock_guard lock(mutex);
+        return held;
+    }
+    void hold()
+    {
+        std::lock_guard lock(mutex);
+        holding = true;
+    }
+    void release()
+    {
+        std::lock_guard lock(mutex);
+        REQUIRE(holding);
+        REQUIRE(held > 0);
+        REQUIRE(latest);
+        holding = false;
+        REQUIRE(forward(*latest));
+    }
+    void replay_first()
+    {
+        std::lock_guard lock(mutex);
+        REQUIRE(first);
+        REQUIRE(forward(*first));
+        ++replays;
+    }
+    void check()
+    {
+        REQUIRE_EQ(io_errors.load(), 0U);
+        REQUIRE_EQ(stats().overflows, 0U);
+        REQUIRE(stats().peak <= Queue::capacity);
+    }
+    ~HybridKeyFaultLink()
+    {
+        normal.channel->set_send_hook_for_testing(
+            HybridFaultLink::send, &normal);
+        worker.request_stop();
+        worker.join();
+    }
+};
+struct HybridKeyScenario : HybridMultiScenario {
+    using HybridMultiScenario::HybridMultiScenario;
+    void paced(unsigned count, bool drain = true)
+    {
+        const auto uc_saved = net.source.payload_rules(),
+                   mc_saved = net.multicast.payload_rules();
+        for (unsigned i = 0; i < count; ++i) {
+            if (i + 2 >= count) {
+                auto uc = uc_saved, mc = mc_saved;
+                uc.drop_every = mc.drop_every = 0;
+                uc.drop_first = mc.drop_first = 0;
+                net.source.payload_rules(uc);
+                net.multicast.payload_rules(mc);
+            }
+            REQUIRE_EQ(
+                stream->send(next), static_cast<int>(message(next).size()));
+            ++next;
+            std::this_thread::sleep_for(std::chrono::milliseconds {10});
+        }
+        if (drain)
+            read_all();
+        net.source.payload_rules(uc_saved);
+        net.multicast.payload_rules(mc_saved);
+    }
+    std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> sender_runtime()
+    {
+        const auto group = GroupRegistry::instance().find(stream->sender);
+        SRTSOCKET child;
+        {
+            std::lock_guard lock(group->mutex);
+            REQUIRE_EQ(group->members.size(), 1U);
+            child = group->members.front().public_data.id;
+        }
+        const auto socket = SocketRegistry::instance().find(child);
+        std::lock_guard lock(socket->mutex);
+        return socket->runtime;
+    }
+    void unicast()
+    {
+        auto receiver = peers[0].owner->receiver();
+        REQUIRE_EQ(receiver->request_fallback(next),
+            hn::ReceiverBridge::Admission::accepted);
+        hybrid_network_wait([&] {
+            const auto s = receiver->snapshot();
+            return s.fresh && s.mode == hn::Mode::unicast;
+        });
+    }
+    void record(unsigned scenario, HybridKeyFaultLink& requests,
+        HybridKeyFaultLink& responses)
+    {
+        requests.check();
+        responses.check();
+        for (auto* link : {&net.source, &net.caller, &net.multicast}) {
+            REQUIRE_EQ(link->io_errors.load(), 0U);
+            REQUIRE_EQ(link->stats().overflows, 0U);
+            REQUIRE_EQ(link->stats(true).overflows, 0U);
+        }
+        REQUIRE_EQ(peers[0].read_next, static_cast<std::uint64_t>(next));
+        REQUIRE_EQ(hybrid_runtime(stream->receiver)
+                       ->statistics(false, false)
+                       .total.received_unique.packets,
+            static_cast<std::uint64_t>(next));
+        std::fprintf(stdout,
+            "[HYBRID_KEY] {\"scenario\":%u,\"profile\":%u,\"messages\":%d,"
+            "\"request_material_changes\":%u,\"response_material_changes\":%u,"
+            "\"request_duplicates\":%llu,\"response_drops\":%llu,"
+            "\"request_reordered\":%u,\"request_replays\":%u,"
+            "\"response_replays\":%u,\"held_responses\":%u}\n",
+            scenario, mode, next, requests.material_changes(),
+            responses.material_changes(),
+            static_cast<unsigned long long>(requests.stats().duplicates),
+            static_cast<unsigned long long>(responses.stats().dropped),
+            requests.reordered.load(), requests.replays.load(),
+            responses.replays.load(), responses.held_count());
+    }
+};
+}
+TEST(
+    hybrid_key_network_delayed_reordered_requests_preserve_rotation_and_rejoin_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 1; mode <= 2; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        HybridKeyScenario f(mode);
+        HybridKeyFaultLink requests(f.net.source, {2'000, 38'000, 0, 2});
+        HybridKeyFaultLink responses(f.net.caller, {2'000, 8'000, 0, 2, 0, 1});
+        f.paced(40);
+        f.multicast(0);
+        f.paced(32);
+        REQUIRE(requests.material_changes() >= 2);
+        // Replay stays inside the four-entry material history, after DATA has
+        // used the later key. It must not reinstall the captured older keys.
+        const auto changes = responses.material_changes();
+        requests.replay_first();
+        hybrid_network_wait([&] {
+            return responses.material_changes() > changes;
+        });
+        const auto epoch =
+            f.peers[0].owner->membership()->snapshot().route_epoch;
+        REQUIRE(f.peers[0].owner->membership()->report_loss());
+        f.unicast();
+        hybrid_network_wait([&] {
+            return f.peers[0].owner->membership()->snapshot().joined;
+        });
+        REQUIRE(f.peers[0].owner->membership()->snapshot().route_epoch > epoch);
+        f.paced(16);
+        f.multicast(0);
+        f.paced(8);
+        REQUIRE_EQ(f.next, 112);
+        REQUIRE(requests.stats().duplicates > 0);
+        REQUIRE(responses.stats().dropped > 0);
+        REQUIRE(requests.reordered.load() > 0);
+        REQUIRE(requests.material_changes() >= 3);
+        f.record(0, requests, responses);
+    }
+}
+TEST(
+    hybrid_key_network_old_response_cannot_acknowledge_pending_rotation_ctr_gcm)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    for (unsigned mode = 1; mode <= 2; ++mode) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == 2)
+            continue;
+#endif
+        HybridKeyScenario f(mode);
+        HybridKeyFaultLink requests(f.net.source, {1'000});
+        HybridKeyFaultLink responses(f.net.caller, {1'000});
+        auto sender = f.sender_runtime();
+        f.paced(40);
+        hybrid_network_wait([&] {
+            return responses.material_changes() == 1
+                && responses.stats().queued == 0
+                && sender->sender_crypto_state() == CryptoState::secured;
+        });
+        responses.hold();
+        // Observe the second announcement before the switch at64. Do not
+        // wait for application playout between individual producer messages.
+        while (responses.material_changes() < 2 && f.next < 64)
+            f.paced(1, false);
+        REQUIRE_EQ(responses.material_changes(), 2U);
+        REQUIRE(responses.held_count() > 0);
+        REQUIRE_EQ(sender->sender_crypto_state(), CryptoState::securing);
+        f.paced(68 - f.next, false);
+        hybrid_network_wait([&] {
+            return hybrid_runtime(f.stream->receiver)
+                       ->statistics(false, false)
+                       .total.received_unique.packets
+                == 68;
+        });
+        REQUIRE_EQ(sender->sender_crypto_state(), CryptoState::securing);
+        REQUIRE_EQ(hybrid_runtime(f.stream->receiver)->receiver_crypto_state(),
+            CryptoState::secured);
+        const auto attempts = requests.stats().attempts;
+        responses.replay_first();
+        hybrid_network_wait([&] {
+            return requests.stats().attempts >= attempts + 2;
+        });
+        REQUIRE_EQ(sender->sender_crypto_state(), CryptoState::securing);
+        REQUIRE_EQ(srt_getsockstate(f.stream->sender), SRTS_CONNECTED);
+        responses.release();
+        hybrid_network_wait([&] {
+            return sender->sender_crypto_state() == CryptoState::secured;
+        });
+        f.read_all();
+        f.paced(96 - f.next);
+        REQUIRE_EQ(f.next, 96);
+        f.record(1, requests, responses);
     }
 }
 #endif

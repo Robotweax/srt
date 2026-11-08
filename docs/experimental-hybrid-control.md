@@ -1658,6 +1658,64 @@ The same synthetic credentials/shared group keys retain their existing security
 limits. Larger populations, stronger traffic contention and delayed KM remain
 separate qualification work.
 
+### Bounded runtime key-message timing
+
+Enabled builds also register `robotweax_srt_hybrid_key_timing_tests`, selected by
+`--include hybrid_key_network_`. Its independent 30-second `RUN_SERIAL` budget
+keeps the earlier network and multicast partitions unchanged. Two cases run
+CTR and GCM through native IPv4 loopback sockets. They install test hooks after
+the initial encrypted connection succeeds; initial handshake key material is
+outside this timing model. No production crypto, protocol or policy changes
+are needed. The earlier delayed-policy/close case now waits for an actual
+non-dropped reply to enter the test queue before closing its Caller. A committed
+UC reservation alone can become visible before reply enqueue; stage diagnostics
+identify admission, queue and post-close delivery waits. Delays and deadlines
+remain unchanged.
+
+The test wrapper delegates HC and DATA to the existing asymmetric fault links.
+Only runtime KMREQ/KMRSP packets enter another fixed 64-datagram, 1500-byte queue,
+with at most 16 releases per 1ms worker slice. It forwards the original bytes
+from the original UDP sockets. The request link alternates modeled 40ms and 2ms
+delays and duplicates every second accepted request; retries can overtake older
+copies. Responses alternate 10ms and 2ms delays, duplicate every second reply
+and lose the first runtime reply. Most DATA is paced at 10ms per message to
+keep this delay below the configured key-announcement lead; the existing
+8-message overlap proof bursts retain their 3ms pacing. This is one bounded
+timing envelope, not arbitrary latency or jitter tolerance.
+
+The first case consumes 112 canonical messages per crypto profile through UC,
+exact overlap/MC, local membership loss, confirmed UC, real rejoin and another
+exact return to MC. After a later key has carried DATA, it replays the first
+captured runtime KMREQ within the existing four-entry material history and
+waits for its echoed response. Continued exact plaintext delivery and unique
+packet counts check that replay did not roll the receiver back. Duplicate and
+reordered request counters and a dropped response are required to be nonzero.
+
+The second case consumes 96 canonical messages per profile. It acknowledges the
+first rotation, retains current KMRSP packets for the next generation, and sends
+DATA across that generation's switch while the sender remains `securing` and
+the receiver stays `secured`. Replaying the acknowledged older KMRSP must leave
+the newer rotation pending and its requests retrying. Releasing the captured
+matching response restores `secured`; subsequent application reads must match
+every expected message. Held replies use one fixed latest-packet capture, so
+retries cannot grow an unbounded backlog. These captures are never logged.
+
+`HYBRID_KEY` JSON records report scenario/profile, delivered message count,
+consecutive request/response material changes, duplication/drop/reordering,
+replays and held-response counts. Material changes count consecutive payload
+changes, including an echoed historical request; they are not unique key counts.
+Each healthy link checks zero I/O errors and queue overflows. Grants remain
+10 seconds; operation/recovery bounds, two un-dropped DATA tail witnesses and
+proof-before-playout requirements are unchanged.
+
+Runtime KM control remains the ordinary passphrase-based unauthenticated path;
+these replay checks exercise bounded duplicate histories and matching pending
+responses, not hostile-peer authentication or arbitrary-age replay protection.
+They do not qualify keys arriving after their usable DATA horizon, initial KM
+loss, multi-receiver KM contention, sustained overload, physical/WAN paths,
+other platforms or uninterrupted playback. Shared-credential, no-forward-secrecy
+and primary coordinated-source SESSIONAUTH/ACP1 restrictions still apply.
+
 ## Control body
 
 Every control body is exactly 96 bytes.
