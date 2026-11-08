@@ -289,7 +289,12 @@
       "SRTO_ROBOTWEAX_MCAST_COORDINATED": "0x0100001a"
     },
     "c_abi": "Existing C exports, structures, upstream option values and SRTO_E_SIZE preserved; new Robotweax-only option IDs require review. Native C++ consumers must rebuild.",
-    "automation": "HC and ACP1 explicit build opt-ins, both default OFF; hybrid owner/provisioning/control API is internal C++, not a new public C automation API."
+    "automation": "HC and ACP1 explicit build opt-ins, both default OFF; hybrid owner/provisioning/control API is internal C++, not a new public C automation API.",
+    "option_types": {
+      "SRTO_ROBOTWEAX_MCAST_INDEPENDENT": "bool; default false",
+      "SRTO_ROBOTWEAX_MCAST_SOURCE": "Listener PRE-bind sockaddr_in; independent mode requires a configured source; port zero selects ephemeral at listen",
+      "SRTO_ROBOTWEAX_MCAST_COORDINATED": "bool; default false"
+    }
   },
   "merge_blockers": [
     "Independent concurrency/lifetime, transport/protocol and security review/sign-off remains outstanding.",
@@ -303,9 +308,15 @@
     "Source UC fixed64-slot queue capacity retries permitted/reported; other queue overflow and UDP I/O errors asserted0. No sustained-overload guarantee. Synthetic grants and strict operation/confirmation/recovery deadlines unchanged.",
     "Native IPv6 multicast outside the IPv4 profile is not qualified: Linux full general suite skips one IPv6 multicast send on loopback ifindex1 (ENETUNREACH101). Mac full suite has eight expected Linux-only reuseport skips; selected sanitizer/profile cases have no skips.",
     "Public C ABI/options/provisioning unchanged; HC/ACP1 default OFF. Primary coordinated Source still rejects primary SESSIONAUTH/ACP1. Runtime KM remains ordinary unauthenticated passphrase control. Shared credentials/no-forward-secrecy/provisional-registry/socket-ID and explicit host loss/source recovery/provisioning limits remain.",
-    "Project incomplete. Signed-off local branch clean; no push,PR,merge or release."
+    "Project incomplete. Branch published for independent review in draft PR #387; no merge, release or default enablement."
   ],
   "next": "Investigate Linux GCC O0/Og/O1 proof and receiver-drop failures using runtime timing evidence before expanding duration/receiver count; retain explicit qualified compiler/configuration scope.",
   "evidence_note": "Full local archive is not published. Curated qualifications, all four long native logs, CTest gate logs, selected sanitizer names/audit, selected CMake settings and original failure logs are included here. Paths and failure memory addresses are redacted. Original binary/cache/log hashes identify unredacted local artifacts; SHA256SUMS and provenance.json identify the published versions.",
-  "full_local_archive_manifest_sha256": "58f6b471317ef3b37cc7a625be3481da8da56e6f3f672c0ef218c682dbb97fa9"
+  "full_local_archive_manifest_sha256": "58f6b471317ef3b37cc7a625be3481da8da56e6f3f672c0ef218c682dbb97fa9",
+  "publication": {
+    "pull_request": 387,
+    "url": "https://github.com/Robotweax/srt/pull/387",
+    "status": "draft for independent review",
+    "ci": "New GitHub evidence; inspect current PR checks separately from archived local runs."
+  }
 }

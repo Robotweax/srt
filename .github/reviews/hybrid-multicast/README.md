@@ -10,8 +10,8 @@ The branch starts at `v0.3.2`, commit
 `e45d0edd346e5c427d85e4c3b1ac605c81a23397`. The annotated tag object's SHA
 `235cbdb6c0b0d1950b3e74d623ffc21108bf3ef1` is not the release commit.
 Latest code qualification is at
-`997cfe2438eab1b0e9bdac2c797a7be7daf31c11`; `de62cd32a` and this review-packet
-commit change documentation/evidence only. GitHub CI on the pushed branch is
+`997cfe2438eab1b0e9bdac2c797a7be7daf31c11`; subsequent documentation/review-packet
+commits change documentation/evidence only. GitHub CI on the pushed branch is
 new evidence and must be assessed separately from these local results.
 
 ## Implemented behavior and reading order
@@ -41,9 +41,12 @@ new evidence and must be assessed separately from these local results.
    `test_group_*` cases, `tests/hybrid_fault_link.hpp`,
    `tests/hybrid_control_vectors.py`, and `tools/qualify_hybrid_soak.py`.
 
-The full branch adds three default-false Robotweax C options:
+The full branch adds three opt-in Robotweax C options:
 `MCAST_INDEPENDENT` (`0x01000018`), `MCAST_SOURCE` (`0x01000019`) and
 `MCAST_COORDINATED` (`0x0100001a`), each prefixed `SRTO_ROBOTWEAX_`.
+The two mode options are booleans defaulting to false; `MCAST_SOURCE` is a
+Listener PRE-bind `sockaddr_in` source address, configured for the independent
+mode (port zero selects an ephemeral port at listen).
 Existing C exports/layouts, upstream values and `SRTO_E_SIZE` are preserved;
 native C++ consumers must rebuild. Review the full feature diff, not only the
 latest portability/clock fixes. The hybrid control/provisioning/automation API
