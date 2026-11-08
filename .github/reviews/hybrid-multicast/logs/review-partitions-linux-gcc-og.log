@@ -1,0 +1,378 @@
+Internal ctest changing into directory: <source>/build-linux-sanitized-og
+Test project <source>/build-linux-sanitized-og
+      Start  6: robotweax_srt_hybrid_model_tests
+ 1/17 Test  #6: robotweax_srt_hybrid_model_tests .............   Passed   25.87 sec
+      Start  7: robotweax_srt_hybrid_investigation_tests
+ 2/17 Test  #7: robotweax_srt_hybrid_investigation_tests .....   Passed   11.13 sec
+      Start  9: robotweax_srt_multicast_dispatch_tests
+ 3/17 Test  #9: robotweax_srt_multicast_dispatch_tests .......***Failed   18.60 sec
+[RUN] group_membership_admits_multicast_dispatch_only_by_policy
+[PASS] group_membership_admits_multicast_dispatch_only_by_policy
+[TIME] group_membership_admits_multicast_dispatch_only_by_policy 14 us
+[RUN] multicast_dispatch_round_trips_ipv4_and_ipv6_announcements
+[PASS] multicast_dispatch_round_trips_ipv4_and_ipv6_announcements
+[TIME] multicast_dispatch_round_trips_ipv4_and_ipv6_announcements 23 us
+[RUN] multicast_dispatch_encoder_rejects_invalid_announcements
+[PASS] multicast_dispatch_encoder_rejects_invalid_announcements
+[TIME] multicast_dispatch_encoder_rejects_invalid_announcements 5 us
+[RUN] multicast_dispatch_decoder_rejects_malformed_wire_content
+[PASS] multicast_dispatch_decoder_rejects_malformed_wire_content
+[TIME] multicast_dispatch_decoder_rejects_malformed_wire_content 20 us
+[RUN] hsv5_multicast_dispatch_negotiation_announces_the_group
+[PASS] hsv5_multicast_dispatch_negotiation_announces_the_group
+[TIME] hsv5_multicast_dispatch_negotiation_announces_the_group 163 us
+[RUN] hsv5_multicast_dispatch_is_rejected_without_policy_or_announcement
+[PASS] hsv5_multicast_dispatch_is_rejected_without_policy_or_announcement
+[TIME] hsv5_multicast_dispatch_is_rejected_without_policy_or_announcement 334 us
+[RUN] compat_multicast_dispatch_group_creation_and_receiver_shape
+[PASS] compat_multicast_dispatch_group_creation_and_receiver_shape
+[TIME] compat_multicast_dispatch_group_creation_and_receiver_shape 4552 us
+[RUN] compat_multicast_dispatch_sender_epoll_tracks_empty_and_backpressure
+[PASS] compat_multicast_dispatch_sender_epoll_tracks_empty_and_backpressure
+[TIME] compat_multicast_dispatch_sender_epoll_tracks_empty_and_backpressure 6025 us
+[RUN] compat_multicast_dispatch_backpressure_preserves_original_and_tail
+[PASS] compat_multicast_dispatch_backpressure_preserves_original_and_tail
+[TIME] compat_multicast_dispatch_backpressure_preserves_original_and_tail 15305 us
+[RUN] compat_multicast_dispatch_lost_or_failed_repair_uses_unicast_within_budget
+[PASS] compat_multicast_dispatch_lost_or_failed_repair_uses_unicast_within_budget
+[TIME] compat_multicast_dispatch_lost_or_failed_repair_uses_unicast_within_budget 20601 us
+[RUN] multicast_dispatch_repair_does_not_suppress_before_submission
+[PASS] multicast_dispatch_repair_does_not_suppress_before_submission
+[TIME] multicast_dispatch_repair_does_not_suppress_before_submission 25 us
+[RUN] multicast_dispatch_repair_repeated_nak_uses_unicast
+[PASS] multicast_dispatch_repair_repeated_nak_uses_unicast
+[TIME] multicast_dispatch_repair_repeated_nak_uses_unicast 10 us
+[RUN] multicast_dispatch_repair_completion_cannot_mutate_a_new_tally
+[PASS] multicast_dispatch_repair_completion_cannot_mutate_a_new_tally
+[TIME] multicast_dispatch_repair_completion_cannot_mutate_a_new_tally 30 us
+[RUN] multicast_dispatch_repair_member_capacity_preserves_unicast_fallback
+[PASS] multicast_dispatch_repair_member_capacity_preserves_unicast_fallback
+[TIME] multicast_dispatch_repair_member_capacity_preserves_unicast_fallback 18 us
+[RUN] multicast_dispatch_repair_threshold_counts_distinct_receivers_in_window
+[PASS] multicast_dispatch_repair_threshold_counts_distinct_receivers_in_window
+[TIME] multicast_dispatch_repair_threshold_counts_distinct_receivers_in_window 140 us
+[RUN] multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast
+1794154190373200/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast
+[TIME] multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast 779142 us
+[RUN] multicast_dispatch_group_recovers_when_original_and_multicast_repair_are_lost
+1794154191154456/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_group_recovers_when_original_and_multicast_repair_are_lost
+[TIME] multicast_dispatch_group_recovers_when_original_and_multicast_repair_are_lost 503924 us
+[RUN] multicast_dispatch_group_delivers_one_stream_to_several_receivers
+1794154191658055/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_group_delivers_one_stream_to_several_receivers
+[TIME] multicast_dispatch_group_delivers_one_stream_to_several_receivers 1153437 us
+[RUN] multicast_dispatch_group_authenticates_with_aes_gcm_group_key
+1794154192810974/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_group_authenticates_with_aes_gcm_group_key
+[TIME] multicast_dispatch_group_authenticates_with_aes_gcm_group_key 2669495 us
+[RUN] multicast_dispatch_group_encrypts_with_one_group_key_across_rotations
+1794154195480392/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_group_encrypts_with_one_group_key_across_rotations
+[TIME] multicast_dispatch_group_encrypts_with_one_group_key_across_rotations 3747561 us
+[RUN] multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding
+1794154199227752/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154199234661/256317004238944W:connection: handshake rejected socket=366442918 peer=127.0.0.1:52965 peer_socket=985425472 reason=0 name=UNKNOWN wire=1000
+1794154199240127/256317150142560W:connection: connection setup failed socket=985425472 peer=127.0.0.1:40272 peer_socket=0 reason=0 name=UNKNOWN wire=1000
+1794154199252781/256317150142560W:connection: connection setup failed socket=205408504 peer=127.0.0.1:40272 peer_socket=0 reason=15 name=GROUP wire=1015
+1794154199253710/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154199260969/256317041172576W:connection: handshake rejected socket=687683646 peer=127.0.0.1:40044 peer_socket=948025242 reason=11 name=UNSECURE wire=1011
+1794154199266313/256317150142560W:connection: connection setup failed socket=948025242 peer=127.0.0.1:58188 peer_socket=0 reason=11 name=UNSECURE wire=1011
+[PASS] multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding
+[TIME] multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding 44374 us
+[RUN] multicast_dispatch_group_joins_with_a_full_accept_backlog
+1794154199272338/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_group_joins_with_a_full_accept_backlog
+[TIME] multicast_dispatch_group_joins_with_a_full_accept_backlog 1119489 us
+[RUN] multicast_dispatch_multicast_control_does_not_close_receivers
+1794154200391824/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_multicast_control_does_not_close_receivers
+[TIME] multicast_dispatch_multicast_control_does_not_close_receivers 1132362 us
+[RUN] multicast_dispatch_delivery_policy_forced_blackout_recovery_overlap_and_return
+1794154201525295/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154202664126/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154203913036/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_delivery_policy_forced_blackout_recovery_overlap_and_return
+[TIME] multicast_dispatch_delivery_policy_forced_blackout_recovery_overlap_and_return 3759124 us
+[RUN] multicast_dispatch_delivery_policy_committed_unicast_survives_source_error
+1794154205284584/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154205440198/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154205611182/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_delivery_policy_committed_unicast_survives_source_error
+[TIME] multicast_dispatch_delivery_policy_committed_unicast_survives_source_error 597768 us
+[RUN] multicast_dispatch_source_recovery_restores_cached_members_and_continues_canonical_rotations
+1794154205882517/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154206986853/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154208400584/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] multicast_dispatch_source_recovery_restores_cached_members_and_continues_canonical_rotations: <source>/tests/test_multicast_dispatch.cpp:4835: expected recovered.status == PolicyActor::TransitionStatus::applied
+[TIME] multicast_dispatch_source_recovery_restores_cached_members_and_continues_canonical_rotations 2618822 us
+[RUN] multicast_dispatch_source_recovery_preserves_preapproved_survivor_and_refuses_late_join
+1794154208500269/256317229160288W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154208665576/256317032718432W:connection: handshake rejected socket=924265110 peer=127.0.0.1:44338 peer_socket=133192386 reason=15 name=GROUP wire=1015
+1794154208666370/256317150142560W:connection: connection setup failed socket=133192386 peer=127.0.0.1:38723 peer_socket=0 reason=15 name=GROUP wire=1015
+[PASS] multicast_dispatch_source_recovery_preserves_preapproved_survivor_and_refuses_late_join
+[TIME] multicast_dispatch_source_recovery_preserves_preapproved_survivor_and_refuses_late_join 304006 us
+26/27 tests passed
+
+      Start 10: robotweax_srt_multicast_independent_tests
+ 4/17 Test #10: robotweax_srt_multicast_independent_tests ....   Passed   11.94 sec
+      Start 11: robotweax_srt_multicast_coordinated_tests
+ 5/17 Test #11: robotweax_srt_multicast_coordinated_tests ....   Passed   19.52 sec
+      Start 12: robotweax_srt_multicast_startup_tests
+ 6/17 Test #12: robotweax_srt_multicast_startup_tests ........***Failed    7.23 sec
+[RUN] multicast_dispatch_native_startup_setup_waits_for_uc_before_connected_plain_ctr_gcm
+1794154240393333/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154241790035/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154242495669/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_startup_setup_waits_for_uc_before_connected_plain_ctr_gcm
+[TIME] multicast_dispatch_native_startup_setup_waits_for_uc_before_connected_plain_ctr_gcm 2714857 us
+[RUN] multicast_dispatch_native_startup_setup_async_real_join_and_group_encryption
+1794154243104896/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_startup_setup_async_real_join_and_group_encryption
+[TIME] multicast_dispatch_native_startup_setup_async_real_join_and_group_encryption 640681 us
+[RUN] multicast_dispatch_native_startup_setup_rejects_missing_or_bad_credentials
+1794154243745535/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154244069694/260372365766752W:connection: connection setup failed socket=61298509 peer=127.0.0.1:35007 peer_socket=302401956 reason=15 name=GROUP wire=1015
+1794154244084408/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154244416258/260372365766752W:connection: connection setup failed socket=831887757 peer=127.0.0.1:44366 peer_socket=181589506 reason=15 name=GROUP wire=1015
+1794154244426041/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154244468000/260372374220896W:connection: connection setup failed socket=1057221312 peer=127.0.0.1:44042 peer_socket=78602455 reason=15 name=GROUP wire=1015
+[PASS] multicast_dispatch_native_startup_setup_rejects_missing_or_bad_credentials
+[TIME] multicast_dispatch_native_startup_setup_rejects_missing_or_bad_credentials 730575 us
+[RUN] multicast_dispatch_native_startup_setup_rejects_exhausted_sender_budget
+1794154244476173/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154245295635/260372365766752W:connection: connection setup failed socket=660525547 peer=127.0.0.1:48867 peer_socket=168044099 reason=15 name=GROUP wire=1015
+[FAIL] multicast_dispatch_native_startup_setup_rejects_exhausted_sender_budget: <source>/tests/test_multicast_dispatch.cpp:411: requirement failed: connected != SRT_ERROR
+[TIME] multicast_dispatch_native_startup_setup_rejects_exhausted_sender_budget 831514 us
+[RUN] multicast_dispatch_native_startup_setup_close_and_reply_loss_never_publish
+1794154245306692/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154245529598/260372374220896W:connection: connection setup failed socket=432952892 peer=127.0.0.1:33793 peer_socket=35370710 reason=15 name=GROUP wire=1015
+1794154245560137/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_startup_setup_close_and_reply_loss_never_publish
+[TIME] multicast_dispatch_native_startup_setup_close_and_reply_loss_never_publish 362347 us
+[RUN] multicast_dispatch_native_startup_setup_keeps_original_connect_deadline
+1794154245669293/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154245791355/260372374220896W:connection: connection setup failed socket=343304280 peer=127.0.0.1:43595 peer_socket=118105561 reason=16 name=TIMEOUT wire=1016
+[PASS] multicast_dispatch_native_startup_setup_keeps_original_connect_deadline
+[TIME] multicast_dispatch_native_startup_setup_keeps_original_connect_deadline 183889 us
+[RUN] multicast_dispatch_native_startup_setup_preserves_unprovisioned_join_failure
+1794154245853246/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154245871529/260372374220896W:connection: connection setup failed socket=450120662 peer=127.0.0.1:39814 peer_socket=461178058 reason=1 name=SYSTEM wire=1001
+[PASS] multicast_dispatch_native_startup_setup_preserves_unprovisioned_join_failure
+[TIME] multicast_dispatch_native_startup_setup_preserves_unprovisioned_join_failure 20858 us
+[RUN] multicast_dispatch_native_startup_join_retry_fallback_and_return_plain_ctr_gcm
+1794154245874200/260372451813216W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] multicast_dispatch_native_startup_join_retry_fallback_and_return_plain_ctr_gcm: <source>/tests/test_multicast_dispatch.cpp:3632: requirement failed: next < 96
+[TIME] multicast_dispatch_native_startup_join_retry_fallback_and_return_plain_ctr_gcm 1639676 us
+6/8 tests passed
+
+      Start 13: robotweax_srt_multicast_conclusions_tests
+ 7/17 Test #13: robotweax_srt_multicast_conclusions_tests ....   Passed    6.69 sec
+      Start 14: robotweax_srt_multicast_control_tests
+ 8/17 Test #14: robotweax_srt_multicast_control_tests ........***Failed   17.25 sec
+[RUN] multicast_dispatch_native_hybrid_transport_plain_ctr_gcm_keeps_delivery_policy_explicit
+1794154254314387/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154254671625/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154254952737/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_hybrid_transport_plain_ctr_gcm_keeps_delivery_policy_explicit
+[TIME] multicast_dispatch_native_hybrid_transport_plain_ctr_gcm_keeps_delivery_policy_explicit 937308 us
+[RUN] multicast_dispatch_native_hybrid_loss_and_provenance_fences_preserve_control_session
+1794154255248132/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_hybrid_loss_and_provenance_fences_preserve_control_session
+[TIME] multicast_dispatch_native_hybrid_loss_and_provenance_fences_preserve_control_session 229077 us
+[RUN] multicast_dispatch_native_hybrid_expiry_denial_and_reentrant_close_are_visible
+1794154255477407/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154255793771/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154255852079/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_hybrid_expiry_denial_and_reentrant_close_are_visible
+[TIME] multicast_dispatch_native_hybrid_expiry_denial_and_reentrant_close_are_visible 431331 us
+[RUN] multicast_dispatch_native_hybrid_coexists_with_primary_session_authentication_and_km
+1794154255908911/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_hybrid_coexists_with_primary_session_authentication_and_km
+[TIME] multicast_dispatch_native_hybrid_coexists_with_primary_session_authentication_and_km 365525 us
+[RUN] multicast_dispatch_native_coordinator_bridge_fallback_and_lost_commit_plain_ctr_gcm
+1794154256274502/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154256829198/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154257388015/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_coordinator_bridge_fallback_and_lost_commit_plain_ctr_gcm
+[TIME] multicast_dispatch_native_coordinator_bridge_fallback_and_lost_commit_plain_ctr_gcm 1707630 us
+[RUN] multicast_dispatch_native_receiver_reconciles_lost_commits_plain_ctr_gcm
+1794154257982123/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154258669081/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154259375386/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_receiver_reconciles_lost_commits_plain_ctr_gcm
+[TIME] multicast_dispatch_native_receiver_reconciles_lost_commits_plain_ctr_gcm 2235866 us
+[RUN] multicast_dispatch_native_receiver_missing_queries_remain_unknown_without_fallback
+1794154260218071/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_receiver_missing_queries_remain_unknown_without_fallback
+[TIME] multicast_dispatch_native_receiver_missing_queries_remain_unknown_without_fallback 448403 us
+[RUN] multicast_dispatch_native_automatic_fallback_lost_commits_plain_ctr_gcm
+1794154260666557/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154261546988/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154262961781/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_automatic_fallback_lost_commits_plain_ctr_gcm
+[TIME] multicast_dispatch_native_automatic_fallback_lost_commits_plain_ctr_gcm 3612735 us
+[RUN] multicast_dispatch_native_budgeted_overlap_return_lost_commits_plain_ctr_gcm
+1794154264279514/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154265130785/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154265976287/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_budgeted_overlap_return_lost_commits_plain_ctr_gcm
+[TIME] multicast_dispatch_native_budgeted_overlap_return_lost_commits_plain_ctr_gcm 2561419 us
+[RUN] multicast_dispatch_native_automatic_return_lost_commits_plain_ctr_gcm
+1794154266840845/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] multicast_dispatch_native_automatic_return_lost_commits_plain_ctr_gcm: <source>/tests/test_multicast_dispatch.cpp:3480: requirement failed: next < 64
+[TIME] multicast_dispatch_native_automatic_return_lost_commits_plain_ctr_gcm 1293514 us
+[RUN] multicast_dispatch_native_passive_detector_outage_explicit_fallback_and_recovery
+1794154268133491/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] multicast_dispatch_native_passive_detector_outage_explicit_fallback_and_recovery: passive detector: state=0 reason=9
+[TIME] multicast_dispatch_native_passive_detector_outage_explicit_fallback_and_recovery 1172145 us
+[RUN] multicast_dispatch_native_authenticated_reporting_plain_ctr_gcm
+1794154269305747/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154269511817/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154269738166/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_authenticated_reporting_plain_ctr_gcm
+[TIME] multicast_dispatch_native_authenticated_reporting_plain_ctr_gcm 664702 us
+[RUN] multicast_dispatch_native_data_observations_distinguish_late_paths_plain_ctr_gcm
+1794154269970657/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154270313007/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154270716819/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] multicast_dispatch_native_data_observations_distinguish_late_paths_plain_ctr_gcm
+[TIME] multicast_dispatch_native_data_observations_distinguish_late_paths_plain_ctr_gcm 1149424 us
+[RUN] multicast_dispatch_native_data_observations_are_fenced_by_route_and_control_lifetimes
+1794154271120950/279326845060960W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] multicast_dispatch_native_data_observations_are_fenced_by_route_and_control_lifetimes: <source>/tests/test_multicast_dispatch.cpp:3962: requirement failed: owners.sender->data_progress()
+[TIME] multicast_dispatch_native_data_observations_are_fenced_by_route_and_control_lifetimes 313776 us
+11/14 tests passed
+
+      Start 15: robotweax_srt_multicast_source_error_tests
+ 9/17 Test #15: robotweax_srt_multicast_source_error_tests ...   Passed    4.14 sec
+      Start 16: robotweax_srt_multicast_rejoin_tests
+10/17 Test #16: robotweax_srt_multicast_rejoin_tests .........***Failed    4.08 sec
+[RUN] multicast_dispatch_native_rejoin_loss_fallback_and_fresh_return_plain_ctr_gcm
+1794154275708629/269537743406944W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154277409453/269537743406944W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154278957339/269537743406944W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] multicast_dispatch_native_rejoin_loss_fallback_and_fresh_return_plain_ctr_gcm: <source>/tests/test_multicast_dispatch.cpp:5152: expected receiver->request_overlap() == hn::ReceiverBridge::Admission::accepted
+[TIME] multicast_dispatch_native_rejoin_loss_fallback_and_fresh_return_plain_ctr_gcm 4001016 us
+0/1 tests passed
+
+      Start 17: robotweax_srt_hybrid_harness_tests
+11/17 Test #17: robotweax_srt_hybrid_harness_tests ...........   Passed    2.04 sec
+      Start 18: robotweax_srt_hybrid_network_tests
+12/17 Test #18: robotweax_srt_hybrid_network_tests ...........***Failed    8.89 sec
+[RUN] hybrid_network_asymmetric_impairment_preserves_integrated_lifecycle_plain_ctr_gcm
+1794154281821035/264446163015520W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154285378961/264446163015520W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154288763083/264446163015520W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_NETWORK] {"profile":0,"link":0,"messages":177,"aux_accepted":68,"aux_dropped":10,"aux_duplicates":19,"aux_retries":2,"aux_peak":4,"data_accepted":130,"data_dropped":8,"data_duplicates":26,"data_retries":4,"data_peak":4,"reordered":32,"max_lateness_us":1466}
+[HYBRID_NETWORK] {"profile":0,"link":1,"messages":177,"aux_accepted":181,"aux_dropped":16,"aux_duplicates":41,"aux_retries":6,"aux_peak":3,"data_accepted":0,"data_dropped":0,"data_duplicates":0,"data_retries":0,"data_peak":0,"reordered":9,"max_lateness_us":1534}
+[HYBRID_NETWORK] {"profile":0,"link":2,"messages":177,"aux_accepted":0,"aux_dropped":0,"aux_duplicates":0,"aux_retries":0,"aux_peak":0,"data_accepted":136,"data_dropped":11,"data_duplicates":41,"data_retries":4,"data_peak":3,"reordered":36,"max_lateness_us":1422}
+[HYBRID_NETWORK] {"profile":1,"link":0,"messages":177,"aux_accepted":86,"aux_dropped":13,"aux_duplicates":24,"aux_retries":3,"aux_peak":5,"data_accepted":138,"data_dropped":10,"data_duplicates":25,"data_retries":4,"data_peak":6,"reordered":58,"max_lateness_us":1545}
+[HYBRID_NETWORK] {"profile":1,"link":1,"messages":177,"aux_accepted":195,"aux_dropped":17,"aux_duplicates":44,"aux_retries":6,"aux_peak":3,"data_accepted":0,"data_dropped":0,"data_duplicates":0,"data_retries":0,"data_peak":0,"reordered":3,"max_lateness_us":1521}
+[HYBRID_NETWORK] {"profile":1,"link":2,"messages":177,"aux_accepted":0,"aux_dropped":0,"aux_duplicates":0,"aux_retries":0,"aux_peak":0,"data_accepted":136,"data_dropped":11,"data_duplicates":41,"data_retries":4,"data_peak":5,"reordered":42,"max_lateness_us":1412}
+[FAIL] hybrid_network_asymmetric_impairment_preserves_integrated_lifecycle_plain_ctr_gcm: network DATA first=8 expected=21 received=19 error=0 text=dispatch payload 22 mode=0 revision=3 UCdrops=0 MCdrops=3
+[TIME] hybrid_network_asymmetric_impairment_preserves_integrated_lifecycle_plain_ctr_gcm 7851539 us
+[RUN] hybrid_network_delayed_policy_replies_cannot_revive_closed_startup
+1794154289668260/264446163015520W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[PASS] hybrid_network_delayed_policy_replies_cannot_revive_closed_startup
+[TIME] hybrid_network_delayed_policy_replies_cannot_revive_closed_startup 437650 us
+[RUN] hybrid_network_original_connect_deadline_survives_delayed_exchange
+1794154290106849/264446163015520W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154290230961/264446063566944W:connection: connection setup failed socket=676499382 peer=127.0.0.1:36105 peer_socket=686560982 reason=16 name=TIMEOUT wire=1016
+[PASS] hybrid_network_original_connect_deadline_survives_delayed_exchange
+[TIME] hybrid_network_original_connect_deadline_survives_delayed_exchange 505711 us
+2/3 tests passed
+
+      Start 19: robotweax_srt_hybrid_multi_control_tests
+13/17 Test #19: robotweax_srt_hybrid_multi_control_tests .....***Failed    1.83 sec
+[RUN] hybrid_network_multi_receiver_control_loss_does_not_stall_healthy_peers_plain_ctr_gcm
+1794154290710635/257973188650848W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] hybrid_network_multi_receiver_control_loss_does_not_stall_healthy_peers_plain_ctr_gcm: multi control peer=1 next=9 fresh=0 closed=0 mode=1 revision=1
+[TIME] hybrid_network_multi_receiver_control_loss_does_not_stall_healthy_peers_plain_ctr_gcm 1766116 us
+0/1 tests passed
+
+      Start 20: robotweax_srt_hybrid_multi_quota_tests
+14/17 Test #20: robotweax_srt_hybrid_multi_quota_tests .......***Failed    1.99 sec
+[RUN] hybrid_network_multi_receiver_stale_control_retains_quota_until_real_return_plain_ctr_gcm
+1794154292544706/271611718657888W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154294453286/271611620909152W:connection: connection setup failed socket=549461410 peer=127.0.0.1:37226 peer_socket=196246666 reason=15 name=GROUP wire=1015
+[FAIL] hybrid_network_multi_receiver_stale_control_retains_quota_until_real_return_plain_ctr_gcm: <source>/tests/test_multicast_dispatch.cpp:411: requirement failed: connected != SRT_ERROR
+[TIME] hybrid_network_multi_receiver_stale_control_retains_quota_until_real_return_plain_ctr_gcm 1924217 us
+0/1 tests passed
+
+      Start 21: robotweax_srt_hybrid_key_timing_tests
+15/17 Test #21: robotweax_srt_hybrid_key_timing_tests ........***Timeout  30.05 sec
+[RUN] hybrid_key_network_delayed_reordered_requests_preserve_rotation_and_rejoin_ctr_gcm
+1794154294539610/251509676496736W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] hybrid_key_network_delayed_reordered_requests_preserve_rotation_and_rejoin_ctr_gcm: <source>/tests/test_multicast_dispatch.cpp:5971: expected receiver->request_overlap() == hn::ReceiverBridge::Admission::accepted
+[TIME] hybrid_key_network_delayed_reordered_requests_preserve_rotation_and_rejoin_ctr_gcm 1116328 us
+[RUN] hybrid_key_network_old_response_cannot_acknowledge_pending_rotation_ctr_gcm
+1794154295651412/251509676496736W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+1794154297625596/251509676496736W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_KEY] {"scenario":1,"profile":1,"messages":96,"request_material_changes":3,"response_material_changes":3,"request_duplicates":0,"response_drops":0,"request_reordered":0,"request_replays":0,"response_replays":1,"held_responses":14}
+[HYBRID_KEY] {"scenario":1,"profile":2,"messages":96,"request_material_changes":3,"response_material_changes":3,"request_duplicates":0,"response_drops":0,"request_reordered":0,"request_replays":0,"response_replays":1,"held_responses":13}
+[PASS] hybrid_key_network_old_response_cannot_acknowledge_pending_rotation_ctr_gcm
+[TIME] hybrid_key_network_old_response_cannot_acknowledge_pending_rotation_ctr_gcm 3996975 us
+[RUN] hybrid_key_network_multi_receiver_pending_response_preserves_healthy_uc_mc_ctr_gcm
+1794154299649566/251509676496736W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+
+      Start 22: robotweax_srt_hybrid_load_tests
+16/17 Test #22: robotweax_srt_hybrid_load_tests ..............***Failed    2.30 sec
+[RUN] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr
+1794154324589798/268271067649888W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr: multi control peer=0 next=32 fresh=0 closed=0 mode=1 revision=1
+[TIME] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr 1235034 us
+[RUN] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm
+1794154325820205/268271067649888W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm: multi control peer=1 next=22 fresh=0 closed=0 mode=0 revision=3
+[TIME] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm 977208 us
+0/2 tests passed
+
+      Start 23: robotweax_srt_hybrid_soak_tests
+17/17 Test #23: robotweax_srt_hybrid_soak_tests ..............***Failed    3.98 sec
+[RUN] hybrid_soak_network_upper_profile_ctr
+1794154326885781/251675348871008W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":1,"produced":9,"retained_uc":1,"retained_mc":1,"uc_capacity_retries":0}
+[HYBRID_SOAK_FAILURE] crypto=1 peer=0 expected=38 received=39 bytes=1316 canonical=1 offered=56 unique=39 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=0
+[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=16 received=17 bytes=1316 canonical=1 offered=56 unique=17 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=0
+[FAIL] hybrid_soak_network_upper_profile_ctr: soak DATA crypto=1 peer=0 expected=38 bytes=1316
+[TIME] hybrid_soak_network_upper_profile_ctr 1706346 us
+[RUN] hybrid_soak_network_upper_profile_gcm
+1794154328587717/251675348871008W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":1,"produced":9,"retained_uc":1,"retained_mc":1,"uc_capacity_retries":0}
+[HYBRID_SOAK_FAILURE] crypto=2 peer=1 expected=16 received=17 bytes=1316 canonical=1 offered=56 unique=17 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=0
+[HYBRID_SOAK_FAILURE] crypto=2 peer=0 expected=55 received=56 bytes=1316 canonical=1 offered=57 unique=56 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=0
+[FAIL] hybrid_soak_network_upper_profile_gcm: soak DATA crypto=2 peer=0 expected=55 bytes=1316
+[TIME] hybrid_soak_network_upper_profile_gcm 2194254 us
+0/2 tests passed
+
+
+41% tests passed, 10 tests failed out of 17
+
+Label Time Summary:
+fault-injection    =  51.08 sec*proc (7 tests)
+hybrid             = 127.47 sec*proc (14 tests)
+integration        = 151.67 sec*proc (16 tests)
+key-management     =  30.05 sec*proc (1 test)
+lifecycle          =   2.04 sec*proc (1 test)
+load               =   2.30 sec*proc (1 test)
+multicast          =  70.86 sec*proc (7 tests)
+network            = 151.67 sec*proc (16 tests)
+soak               =   3.98 sec*proc (1 test)
+unit               =  25.87 sec*proc (1 test)
+
+Total Test time (real) = 177.55 sec
+
+The following tests FAILED:
+	  9 - robotweax_srt_multicast_dispatch_tests (Failed)
+	 12 - robotweax_srt_multicast_startup_tests (Failed)
+	 14 - robotweax_srt_multicast_control_tests (Failed)
+	 16 - robotweax_srt_multicast_rejoin_tests (Failed)
+	 18 - robotweax_srt_hybrid_network_tests (Failed)
+	 19 - robotweax_srt_hybrid_multi_control_tests (Failed)
+	 20 - robotweax_srt_hybrid_multi_quota_tests (Failed)
+	 21 - robotweax_srt_hybrid_key_timing_tests (Timeout)
+	 22 - robotweax_srt_hybrid_load_tests (Failed)
+	 23 - robotweax_srt_hybrid_soak_tests (Failed)
+Errors while running CTest

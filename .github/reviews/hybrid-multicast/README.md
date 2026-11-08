@@ -4,7 +4,7 @@
 **Draft review only.** The feature is not merge-ready or production-qualified.
 The [complete technical review](https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185) found additional build, Windows,
 canonical DATA and automation issues. [Current follow-up](review-follow-up.md)
-tracks every finding; follow-up fixes build blockers and harness reporting/cleanup.
+tracks every finding; follow-up fixes build blockers, harness reporting/cleanup and test partitions.
 Other protocol, automation and integration findings remain open.
 
 ## Baseline and evidence identity
@@ -165,6 +165,97 @@ One Og CTR mismatch is noncanonical with an undecryptable count of zero. These
 observations do not establish lateness as the sole cause; packet/repair/playout
 and KM activation evidence is still needed. No 30-second GCC run replaces these
 failed smoke gates, and O0 has not been revalidated.
+
+## CI partition and quota follow-up
+
+Initial partition source: `2f31b966378a81c74b375dffcd325a401d6137bd`. Multicast dispatch has common,
+independent and coordinated partitions. HC builds additionally split startup,
+conclusions, control, source errors and rejoin. Hybrid model/investigation cases
+and the two multi-receiver fault scenarios have distinct process budgets.
+Every new partition remains at 30 seconds; the old HC-only 60-second multicast
+exception is removed. The full direct selector/qualification driver is unchanged.
+
+The first matrix below is at 2f31b96, including the complete 111-gate enabled
+Release run. It exposed one residual outer timeout in the old four-case key
+gate on GCC Og. A subsequent CMake/test-guard/documentation-only commit,
+`b2b2a547606684ef7660117371614c03fc3e85eb`, gives each key scenario its own
+30-second process. All six enabled test binaries remain byte-identical. Final
+configuration registers 114 macOS enabled gates (115 in the Linux builds).
+Four key gates are validated separately in each enabled build below; there is
+no claim of a fresh complete 114/115-gate execution. A single GCC Og key case
+still times out after isolation, so its stall is not solved by partitioning.
+Python checks every source case has exactly one owner and that optional
+retransmission-limit CI still selects cases moved from the general aggregate.
+
+The old native requirement for a positive quota-wait count was host-dependent.
+The complete per-submission wire envelope and DATA/member/repair assertions are
+retained. Frozen-clock tests force denied attempts, including an exact wait count
+of two; a new coarse-clock 180-packet test proves zero waits can obey the envelope.
+The existing coordinator test also requires waits with shared original/repair
+credit. Downloaded, SHA-verified before-fix artifacts reproduce the assertion on both
+Windows BCrypt and macOS OpenSSL at 4dcaf04. Windows also records an independent
+environment skip; its full qualification remains open. This corrects assertion
+scope; native Windows after-fix confirmation remains CI work.
+
+Opt-in `ROBOTWEAX_TEST_TIMING=1` prints wall time for each completed case,
+including cleanup. It does not change protocol time or default runner output.
+Diagnostic baseline timings were 33.56 s for the instrumented general aggregate
+(including 11.04 s for six investigation cases) and 60.84 s for all 77 multicast
+cases. Those profiling binaries have the baseline plus a timing-only runner
+change and are identified separately from new-source validation.
+
+| Build | Passed / selected gates | Slowest affected gate | Result |
+| --- | ---: | ---: | --- |
+| mac-default | 88/88 | 9.42 s | pass |
+| mac-release | 111/111 | 20.07 s | pass |
+| mac-san | 18/18 | 20.99 s | pass |
+| linux-release | 17/17 | 18.42 s | pass |
+| linux-llvm | 17/17 | 19.11 s | pass |
+| linux-gcc-o1 | 14/17 | 21.12 s | failures preserved |
+| linux-gcc-og | 7/17 | 30.05 s | failures preserved |
+
+Final key split (same binaries, changed case ownership only):
+
+| Build | Passed / key gates | Longest key gate | Result |
+| --- | ---: | ---: | --- |
+| mac-release | 4/4 | 5.88 s | pass |
+| mac-san | 4/4 | 6.34 s | pass |
+| linux-release | 4/4 | 5.62 s | pass |
+| linux-llvm | 4/4 | 5.66 s | pass |
+| linux-gcc-o1 | 4/4 | 5.75 s | pass |
+| linux-gcc-og | 2/4 | 30.06 s | failures preserved |
+
+The default run's complete console output proves 88/88 gates. A postprocessing
+CTest inventory overwrote its auxiliary LastTest output before correcting a
+parser for hyphenated gate names. That detail loss is explicit in the record;
+per-case counts/times are not reconstructed or claimed for that run. Subsequent
+runs save detail before any new inventory. The console and artifact identities
+remain available; no test rerun substitutes for the lost detail.
+
+A bounded debugger probe locates the remaining GCC Og stall in cleanup:
+`Peers` calls `srt_close`, `ListenerRuntime::close` waits in
+`ListenerHandshakeActor::stop`, and the fault-injection workers are already gone.
+One scheduler shard is executing a runtime poll; worker threads and the other
+shard are idle. A second, deeper probe instead exits normally with a freshness
+failure, so it supplies no additional stopped-state evidence. These observations
+locate close completion waiting, not a proven scheduler deadlock or sole cause.
+The next investigation needs a deterministic close-completion/fairness regression
+and queued actor state, followed by packet/repair/playout/KM/member evidence.
+GDB probes disable leak detection solely for ptrace; they are diagnostic only.
+[Both complete debugger logs](failures/) and their scopes are retained.
+
+GCC ARM64 profiling also found a receive-buffer CPU oracle taking 39.39 s by
+itself; its test and receive-buffer implementation are unchanged from v0.3.2.
+The general GCC timing probe was stopped explicitly and has no complete suite
+result. This is separate from native DATA/KM and freshness failures. This batch
+does not claim the entire GCC sanitizer suite fits a 30-second budget or that
+all hosted timing/rotation/platform failures are fixed.
+
+[Commands, flags, identities, gate results and diagnostic limits](records/review-partitions.json)
+include all failed attempts. Four-second native smoke is not new 30-second
+qualification. Original historical records are untouched. BL-3 remains pending
+hosted checks and any remaining budget failures; BL-5's source correction has
+local deterministic/native validation, with native Windows results pending.
 
 ## Historical results and limits
 

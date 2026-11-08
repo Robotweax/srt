@@ -311,7 +311,7 @@
     "Public C ABI/options/provisioning unchanged; HC/ACP1 default OFF. Primary coordinated Source still rejects primary SESSIONAUTH/ACP1. Runtime KM remains ordinary unauthenticated passphrase control. Shared credentials/no-forward-secrecy/provisional-registry/socket-ID and explicit host loss/source recovery/provisioning limits remain.",
     "Project incomplete. Branch published for independent review in draft PR #387; no merge, release or default enablement."
   ],
-  "next": "Use reliable failure reporting to diagnose remaining DATA/proof failures; partition instrumented suites (BL-3), make Windows quota coverage deterministic (BL-5), enforce artifact identity (BL-6), then canonical DATA/default isolation/automatic-controller regressions.",
+  "next": "Inspect hosted partition/quota results; reproduce listener-close completion with deterministic actor/scheduler state, then obtain packet/repair/playout/KM activation and member-detachment evidence for GCC failures, then canonical DATA/default isolation/automation regressions.",
   "evidence_note": "Full local archive is not published. Curated qualifications, all four long native logs, CTest gate logs, selected sanitizer names/audit, selected CMake settings and original failure logs are included here. Paths and failure memory addresses are redacted. Original binary/cache/log hashes identify unredacted local artifacts; SHA256SUMS and provenance.json identify the published versions.",
   "full_local_archive_manifest_sha256": "58f6b471317ef3b37cc7a625be3481da8da56e6f3f672c0ef218c682dbb97fa9",
   "publication": {
@@ -322,11 +322,11 @@
   },
   "historical_qualification_checkout": "997cfe2438eab1b0e9bdac2c797a7be7daf31c11",
   "historical_scope": "Controlled two-receiver IPv4 loopback; local Ubuntu24.04.4 ARM64 Lima VM on same physical host as macOS ARM64. Same30s/profile CTR/GCM upper fault model on Release and sanitizer builds. Linux sanitizer final configuration explicitly LLVM18 Debug -g -O1, ASan/UBSan with normal default options.",
-  "current_scope": "Harness-only source follow-up at 64591511d588416f55123a05bd598c3ef510c412; actual default 84 gates plus focused native/negative-control evidence in records/review-harness.json. Historical full/long results do not qualify the new head.",
+  "current_scope": "Test/CI follow-up at 2f31b966378a81c74b375dffcd325a401d6137bd plus CMake key split b2b2a547606684ef7660117371614c03fc3e85eb: results in records/review-partitions.json; production source unchanged. Historical full/long records do not qualify the updated head.",
   "review": {
     "url": "https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185",
     "reviewed_head": "4af9c86cc86bd915fb67bda22463bbd0ec068a05",
-    "status": "Build blockers fixed and harness reporting/cleanup addressed; remaining numbered findings and native qualification gaps open.",
+    "status": "Build/harness and test partition/quota follow-ups implemented in recorded scope; hosted CI, DATA/KM and remaining findings open.",
     "tracking": "review-follow-up.md"
   },
   "post_review_validation": {
@@ -358,5 +358,17 @@
       "gcc-og": "not run",
       "gcc-o1": "not run"
     }
+  },
+  "post_review_partitions": {
+    "source_commit": "2f31b966378a81c74b375dffcd325a401d6137bd",
+    "final_key_configuration_commit": "b2b2a547606684ef7660117371614c03fc3e85eb",
+    "fresh_full_enabled_run": 111,
+    "final_registered_mac_enabled_gates": 114,
+    "final_key_gates_per_enabled_build": 4,
+    "record": "records/review-partitions.json",
+    "new_partition_timeout_seconds": 30,
+    "default_ctest": 88,
+    "windows_native_after_fix": "pending hosted CI",
+    "gcc_full_core_profile": "incomplete diagnostic, explicitly stopped; CPU oracle costs and native DATA/KM failures remain separate"
   }
 }

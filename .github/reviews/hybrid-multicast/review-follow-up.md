@@ -41,9 +41,9 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | --- | --- | --- |
 | BL-1 | Fixed in source; local true-default build and 84 gates pass | Inspect fresh hosted default-build jobs |
 | BL-2 | Fixed; hosted Win32/x64 builds and selected provider tests pass at 18b4595 | Broader Windows hybrid failures remain BL-3/BL-4/BL-5; no local Windows claim |
-| BL-3 | Open: instrumented aggregate/native gate durations | Partition growing suites or justify outer suite budgets without widening protocol deadlines |
+| BL-3 | Partitioning implemented at 2f31b96; local results below; hosted and residual budget checks pending | Keep all cases/deadlines; inspect current CI and remaining GCC CPU-oracle/rotation costs |
 | BL-4 | Open: Windows `srt-live-transmit -version` hang | Native debugger/thread evidence and same-base comparison |
-| BL-5 | Open: Windows quota-wait assertion depends on host pacing | Guarantee saturation by construction or isolate rate invariant from injected wait coverage |
+| BL-5 | Native wire bound retained; forced waits checked with injected clock and zero-wait counterexample | Native Windows after-fix CI pending; source fix does not qualify Windows hybrid transport |
 | BL-6 | Partial: scope/labels corrected; matching-cache failure flags recovered | Enforce build/source identity, reject stale binary, test CLI record production; obtain missing platform evidence |
 | L-1 | Open: ACK/NAK versus pending completion fanout | Reproduce genuine early control versus forged/unsubmitted control; preserve actual-submission authorization |
 | L-2 | Open: completion-busy attempt count versus send rate | Production-default send-driven contention regression and time-bounded policy |
@@ -99,6 +99,30 @@ in the record. Hosted build-fix evidence resolves the Win32 compilation blocker,
 not the full Windows hybrid profile. GCC O0 and outstanding canonical DATA,
 suite timing, automation and source/binary attestation findings remain open.
 
+## CI partition and quota follow-up
+
+C++/initial partition commit: `2f31b966378a81c74b375dffcd325a401d6137bd`.
+Final key-case partition commit: `b2b2a547606684ef7660117371614c03fc3e85eb`.
+The [canonical result tables and scopes](README.md#ci-partition-and-quota-follow-up)
+and [complete record](records/review-partitions.json) distinguish full 88/111-gate
+runs from final four-key-gate checks on byte-identical binaries. Final 114/115
+inventories are not represented as new full executions. Every source case has
+one owner; optional retransmission CI includes cases moved from the aggregate.
+
+All new process budgets remain 30 seconds. Quota checks retain the physical wire
+envelope and force waits with an injected clock; a coarse-clock counterexample
+checks valid zero-wait pacing. Downloaded Windows/macOS artifacts reproduce the
+old assertion. Windows also lacks a second assigned IPv4 address, so complete
+native qualification still requires environment evidence and after-fix CI.
+
+GCC freshness/DATA/KM failures remain. One isolated Og key case still times out;
+a debugger snapshot locates close completion waiting in `ListenerHandshakeActor::stop`
+with fault workers already stopped. A second probe exits normally with a freshness
+failure. Scheduler starvation/deadlock causality is not proven. Add a deterministic
+close/actor-state regression before altering runtime scheduling. GCC ARM64 CPU
+oracle costs and the incomplete timing probe are separate diagnostic evidence.
+The Default console proves 88 gates; its lost auxiliary detail is stated explicitly.
+
 ## Remaining harness and evidence work
 
 - Use normal failure reports and membership/control diagnostics to investigate
@@ -106,10 +130,9 @@ suite timing, automation and source/binary attestation findings remain open.
   before attributing a missing canonical sequence to lateness, L-3 or a race.
 - A changed-latency scratch experiment may help diagnose a deadline; it cannot
   count as passing the original 200 ms qualification envelope.
-- Fixed-port dispatch/hybrid gates are serial. Still fix aggregate coverage/time
-  budgets, missing
-  native automatic-controller/transition tests and the validator's binary
-  binding. Preserve original failed logs and genuine repository-default scope.
+- Fixed-port dispatch/hybrid gates are serial and split by case ownership.
+  Inspect hosted/residual suite budgets and rotation, add missing native
+  automatic-controller/transition tests, and enforce the validator's binary binding. Preserve original failed logs and genuine repository-default scope.
 
 The PR remains draft. No finding is marked resolved in GitHub, no review comment
 is altered, and no merge/release/default enablement is authorized by this batch.

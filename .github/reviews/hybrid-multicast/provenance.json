@@ -310,5 +310,154 @@
       "published_sha256": "fde39f146e8a54fedb709a9ef4fe698712befffdbaa635dfa8473f10185a2d80",
       "redacted_or_trimmed": true
     }
+  ],
+  "partition_followup_files": [
+    {
+      "source_artifact": "pr387-partition-mac-default-ctest.log",
+      "published_file": "logs/review-partitions-mac-default.log",
+      "original_sha256": "722c027056aa261ed7c0d866a3afee216c1ab324bbfa8f9d30316c777455bd1b",
+      "published_sha256": "1a49cd8da63ba71c4b3d9f01c2bbb6db1565a51e5161eec008dd065d5f452faa",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-mac-release-ctest.log",
+      "published_file": "logs/review-partitions-mac-release.log",
+      "original_sha256": "749d36ab4eabb7a7e80e44fa56e1471e49e161c53915e8b0c5fa4bbecbfc507c",
+      "published_sha256": "369735c89158667827c7bf3b263772dee735f96dc7aff8fe9954654a07f8f47d",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-mac-san-ctest.log",
+      "published_file": "logs/review-partitions-mac-san.log",
+      "original_sha256": "093e7b7302ee92cdafd3e55a4d825697970d01e290a70fa61f93e54f4dfe0cc1",
+      "published_sha256": "4ef718f71d1855c905b5aba251d67da95e44612e54947af7dd38bd99a7a6c13c",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-release-ctest.log",
+      "published_file": "logs/review-partitions-linux-release.log",
+      "original_sha256": "04e613ef0a6269169b3ef7da37ba648a1a8bd9f89d747065ff67f1a8900744f0",
+      "published_sha256": "2226baabe9f0e6e56797cfa8a027e0a9e3b43f6d4977cf14c27f9be27a4b6d63",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-llvm-ctest.log",
+      "published_file": "logs/review-partitions-linux-llvm.log",
+      "original_sha256": "5486c597acf30db78f53fc810fbcdb6f4134321d6fda6c73f285bf9594d3719f",
+      "published_sha256": "db845957c1d566a0e421abcde25757ab890f075835d340ebabef5d3504e85bba",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-gcc-o1-ctest.log",
+      "published_file": "logs/review-partitions-linux-gcc-o1.log",
+      "original_sha256": "14116d9bfc80079bab4632544ad3e2eed14edb85dc6e13d5c6c83b84d833092b",
+      "published_sha256": "226da27a384765b1b0c8f15429d697120d1038d0541029d1370a11388e412346",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-gcc-og-ctest.log",
+      "published_file": "logs/review-partitions-linux-gcc-og.log",
+      "original_sha256": "374eabf77c602a007f1d14c44e4ad174cf6a042757db401c83f5c2b551b228b9",
+      "published_sha256": "c2fadc7e2f8dc84515bb50f1bd5eb1d45ad16eea11d6092493268ed5dff1d04d",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-before-win-native.log",
+      "published_file": "failures/review-partitions-win-before.log",
+      "original_sha256": "621bb87e7ea3eed7844b03007c92c4a50fff5e6158e6ddcd2b6f905aa3c139d2",
+      "published_sha256": "57b580ae63d55e53d317a5cbbcd778f45609612347fd7afb4b89e3b7f86a6899",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-before-mac-native.log",
+      "published_file": "failures/review-partitions-mac-before.log",
+      "original_sha256": "c37220e2a8c3c94a0c25e8b34db60f8a2a63f4255f1e46eaef36dbc5eaf11627",
+      "published_sha256": "44f34e7cd558b1d350c42209a6441ed757ad3511bde2e1c0f19ce8e20a995995",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-mac-release-key-ctest.log",
+      "published_file": "logs/review-partitions-mac-release-key.log",
+      "original_sha256": "7e71bc02fc171cfd72b73ee8c3f42951af3f25d6b8f650b4d0febd7fcd9c28a2",
+      "published_sha256": "9011ead17966a5d95ea966d453f484ab9fccf416af75f5871fd80485359c1191",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-mac-san-key-ctest.log",
+      "published_file": "logs/review-partitions-mac-san-key.log",
+      "original_sha256": "4dc7f7f508e40b7e8c64617c1ee1574c9c76513146c74a9978c320b214572162",
+      "published_sha256": "41103dc99f016691c9af9a3a8b7b598f53dbf9157cd0063078b374aeca0d5530",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-release-key-ctest.log",
+      "published_file": "logs/review-partitions-linux-release-key.log",
+      "original_sha256": "60497c8d5539005287deaf7ae81548c46220b4449ab72082f3e513a5eb2f41f4",
+      "published_sha256": "b7a3b9c8cf74ed0221b2fbc13363fa4e5a06cc5977e273fb4cd4adab6b708e56",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-llvm-key-ctest.log",
+      "published_file": "logs/review-partitions-linux-llvm-key.log",
+      "original_sha256": "8bca6576ef88803684cdb81d71e1b6815ea32871962ff7f79d7c2589bcbd3928",
+      "published_sha256": "d7ebbf122f744b8d43cefedd0b8c8f762e49b0418268b1ea9f06375ad55e3116",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-gcc-o1-key-ctest.log",
+      "published_file": "logs/review-partitions-linux-gcc-o1-key.log",
+      "original_sha256": "fb619727c7f9845b2c860308a4331f32d83695f7e0897130d6fd240fce862966",
+      "published_sha256": "c06933b7937523125041b75335277addc9efed98c9b3da1f25174df25d90ac3d",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-gcc-og-key-ctest.log",
+      "published_file": "logs/review-partitions-linux-gcc-og-key.log",
+      "original_sha256": "4f7d77b57bcdb17975c9772764052af10fa5ddc7c9655e8b2e431cf2d23f70c6",
+      "published_sha256": "8dc654e07446259ad648ea0496ea75fa9ff95316c1a2558055fcac7d009a060e",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-gcc-og-key-debugger.log",
+      "published_file": "failures/review-partitions-gcc-og-key-debugger.log",
+      "original_sha256": "c1e24a37d31d1b868bec766cc4c97dcd6777a35701e34159e566fb887d1ea5ff",
+      "published_sha256": "04d3bae837c1a386dc51af4411603a06615e7895fd030b543b4c2fb7a573411a",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-gcc-og-key-deep-debugger.log",
+      "published_file": "failures/review-partitions-gcc-og-key-deep-debugger.log",
+      "original_sha256": "f21077223ec11201eed0c571c270b85af8649e0d2588f5026784c7bdd54f42c0",
+      "published_sha256": "f21077223ec11201eed0c571c270b85af8649e0d2588f5026784c7bdd54f42c0",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-partition-build-review-default-compat_group_wire_budget.log",
+      "published_file": "logs/review-partitions-build-review-default-compat_group_wire_budget.log",
+      "original_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "published_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-partition-build-hybrid-control-compat_group_wire_budget.log",
+      "published_file": "logs/review-partitions-build-hybrid-control-compat_group_wire_budget.log",
+      "original_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "published_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-partition-build-hybrid-control-sanitized-compat_group_wire_budget.log",
+      "published_file": "logs/review-partitions-build-hybrid-control-sanitized-compat_group_wire_budget.log",
+      "original_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "published_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-partition-python.log",
+      "published_file": "logs/review-partitions-python.log",
+      "original_sha256": "533912ae7a04fb490d871d32aef0951a9d3cea6f214b0c43f6522a73bee88325",
+      "published_sha256": "967cad131022fdfdd60bf4cdd8b10a7dcd4f580e8ab36fd8c0c125fad6cfa14c",
+      "redacted_or_trimmed": true
+    }
   ]
 }
