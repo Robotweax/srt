@@ -1,0 +1,49 @@
+Internal ctest changing into directory: <source>/build-linux-sanitized-og
+Test project <source>/build-linux-sanitized-og
+    Start 25: robotweax_srt_hybrid_load_tests
+1/2 Test #25: robotweax_srt_hybrid_load_tests ...***Failed    3.11 sec
+[RUN] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr
+1794158521665146/256702265456480W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr: multi control peer=0 next=57 fresh=0 closed=0 mode=1 revision=1
+[TIME] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr 1572679 us
+[RUN] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm
+1794158523233414/256702265456480W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm: multi control peer=0 next=57 fresh=0 closed=0 mode=1 revision=1
+[TIME] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm 1454315 us
+0/2 tests passed
+
+    Start 26: robotweax_srt_hybrid_soak_tests
+2/2 Test #26: robotweax_srt_hybrid_soak_tests ...***Failed    2.77 sec
+[RUN] hybrid_soak_network_upper_profile_ctr
+1794158524770736/263045917697888W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":1,"produced":9,"retained_uc":1,"retained_mc":1,"uc_capacity_retries":0}
+[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=16 received=17 bytes=1316 canonical=1 offered=56 unique=17 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=0
+[HYBRID_SOAK_FAILURE] crypto=1 peer=0 expected=28 received=29 bytes=1316 canonical=1 offered=56 unique=29 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=0
+[FAIL] hybrid_soak_network_upper_profile_ctr: soak DATA crypto=1 peer=0 expected=28 bytes=1316
+[TIME] hybrid_soak_network_upper_profile_ctr 1457892 us
+[RUN] hybrid_soak_network_upper_profile_gcm
+1794158526224165/263045917697888W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_SOAK_SAMPLE] {"profile":2,"sample":1,"produced":9,"retained_uc":1,"retained_mc":1,"uc_capacity_retries":0}
+[HYBRID_SOAK_FAILURE] crypto=2 peer=1 expected=16 received=17 bytes=1316 canonical=1 offered=56 unique=17 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=0
+[HYBRID_SOAK_FAILURE] crypto=2 peer=0 expected=30 received=31 bytes=1316 canonical=1 offered=56 unique=33 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=0
+[FAIL] hybrid_soak_network_upper_profile_gcm: soak DATA crypto=2 peer=0 expected=30 bytes=1316
+[TIME] hybrid_soak_network_upper_profile_gcm 1235011 us
+0/2 tests passed
+
+
+0% tests passed, 2 tests failed out of 2
+
+Label Time Summary:
+fault-injection    =   5.88 sec*proc (2 tests)
+hybrid             =   5.88 sec*proc (2 tests)
+integration        =   5.88 sec*proc (2 tests)
+load               =   3.11 sec*proc (1 test)
+network            =   5.88 sec*proc (2 tests)
+soak               =   2.77 sec*proc (1 test)
+
+Total Test time (real) =   5.89 sec
+
+The following tests FAILED:
+	 25 - robotweax_srt_hybrid_load_tests (Failed)
+	 26 - robotweax_srt_hybrid_soak_tests (Failed)
+Errors while running CTest

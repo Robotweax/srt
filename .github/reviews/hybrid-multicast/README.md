@@ -4,7 +4,8 @@
 **Draft review only.** The feature is not merge-ready or production-qualified.
 The [complete technical review](https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185) found additional build, Windows,
 canonical DATA and automation issues. [Current follow-up](review-follow-up.md)
-tracks every finding; follow-up fixes build blockers, harness reporting/cleanup and test partitions.
+tracks every finding. Follow-up fixes cover build blockers, harness cleanup,
+test partitions and listener-close progress.
 Other protocol, automation and integration findings remain open.
 
 ## Baseline and evidence identity
@@ -165,6 +166,65 @@ One Og CTR mismatch is noncanonical with an undecryptable count of zero. These
 observations do not establish lateness as the sole cause; packet/repair/playout
 and KM activation evidence is still needed. No 30-second GCC run replaces these
 failed smoke gates, and O0 has not been revalidated.
+
+## Deterministic listener-close regression and scheduler fix
+
+Source: `4d59666ebaf54df57b514d1069a5172df440af51`. A real `ListenerHandshakeActor` close can
+remain queued behind continuously overdue timer work. The new four-case
+regression controls dispatch with a barrier and finite eight-turn timer/service
+chains. It covers idle/admission-pending actors with and without persistent
+service work. Close must be terminal by the second timer callback, while timer
+and service work still progress. The pass criterion uses dispatch counts, not
+elapsed time; no socket I/O or sleeps are involved. Finite pressure also makes
+the failing test drain safely.
+
+On `1c2388d` plus the test-only patch, **0/4** pass, all at the same close-progress
+checkpoint. With the scheduler fix, **4/4** pass as part of **78/78** scheduler/
+handshake/executor tests in each of eight builds: macOS Default/opted-in Release,
+ASan/UBSan and fresh TSan, plus Linux GCC Release/O1/Og and LLVM O1 sanitizers.
+These are four unique regressions, not 32 different tests. No selected skips or
+sanitizer diagnostics occur in those focused runs.
+
+Ordinary dispatch now alternates due timers and FIFO work. Persistent services
+keep their alternating ordinary/service turns and round-robin selection. Timer
+and equal-deadline order, FIFO order within each class, reserved capacity and
+idle-wake accounting remain covered by the existing suite. The bound assumes
+callbacks return; it is not preemption or an absolute close deadline. One fixed
+fairness flag per shard replaces no lifecycle barrier and adds no queue/thread.
+The architecture text also corrects an old zero-service-slot statement: code
+already provisioned 128 slots per process shard; this fix changes no capacity.
+
+Fresh committed-source validation:
+
+| Build | Passed / selected CTest gates | Result |
+| --- | ---: | --- |
+| linux-gcc-og | 0/1 | regular failure retained; no timeout |
+| linux-gcc-o1 | 1/1 | pass |
+| linux-llvm | 1/1 | pass |
+| mac-default | 88/88 | pass |
+| mac-release | 114/114 | pass |
+| mac-asan | 22/22 | pass |
+| linux-release | 20/20 | pass |
+
+This includes fresh **88/88 Default** and **114/114 opted-in Release** full
+macOS suites, each retaining eight expected Linux-only reuseport/adoption skips.
+All detailed LastTest files are preserved in the local archive. The former GCC Og key
+case returns a normal freshness failure in about 1.6 s; O1/LLVM pass that case.
+GCC O1 and Og load/soak each fail both CTR/GCM cases in both gates (0/2 +
+0/2), with DATA/freshness errors and no outer timeout or sanitizer report.
+One O1 CTR observation is noncanonical; GCM also records undecryptable packets.
+These checks remain separate in the record; a normal failure is not a
+passing qualification or proof that all prior native hangs are explained.
+C ABI/wire/crypto, 200 ms proof/playout, faults, rates and all operation,
+confirmation/recovery/process deadlines are unchanged. No sanitizers are disabled.
+The new local TSan configuration is explicit in the record.
+
+[Exact before/after inputs, flags, identities, commands and remaining failures](records/review-listener-close.json)
+and [the regression-only patch](records/review-listener-close-regression.patch)
+are separate from historical profiles. Next: packet/KM/member-state evidence for
+remaining GCC DATA/freshness failures, and deterministic extensions if another
+close path still stalls. Source/binary attestation and the other numbered review
+findings remain open; no merge/release/default enablement or blanket GCC pass.
 
 ## CI partition and quota follow-up
 

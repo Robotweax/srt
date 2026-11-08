@@ -311,7 +311,7 @@
     "Public C ABI/options/provisioning unchanged; HC/ACP1 default OFF. Primary coordinated Source still rejects primary SESSIONAUTH/ACP1. Runtime KM remains ordinary unauthenticated passphrase control. Shared credentials/no-forward-secrecy/provisional-registry/socket-ID and explicit host loss/source recovery/provisioning limits remain.",
     "Project incomplete. Branch published for independent review in draft PR #387; no merge, release or default enablement."
   ],
-  "next": "Inspect hosted partition/quota results; reproduce listener-close completion with deterministic actor/scheduler state, then obtain packet/repair/playout/KM activation and member-detachment evidence for GCC failures, then canonical DATA/default isolation/automation regressions.",
+  "next": "Investigate remaining GCC packet/KM/member/freshness failures; preserve close-progress regression and diagnose any distinct stalled close state. Enforce source binding and continue original review findings.",
   "evidence_note": "Full local archive is not published. Curated qualifications, all four long native logs, CTest gate logs, selected sanitizer names/audit, selected CMake settings and original failure logs are included here. Paths and failure memory addresses are redacted. Original binary/cache/log hashes identify unredacted local artifacts; SHA256SUMS and provenance.json identify the published versions.",
   "full_local_archive_manifest_sha256": "58f6b471317ef3b37cc7a625be3481da8da56e6f3f672c0ef218c682dbb97fa9",
   "publication": {
@@ -322,11 +322,11 @@
   },
   "historical_qualification_checkout": "997cfe2438eab1b0e9bdac2c797a7be7daf31c11",
   "historical_scope": "Controlled two-receiver IPv4 loopback; local Ubuntu24.04.4 ARM64 Lima VM on same physical host as macOS ARM64. Same30s/profile CTR/GCM upper fault model on Release and sanitizer builds. Linux sanitizer final configuration explicitly LLVM18 Debug -g -O1, ASan/UBSan with normal default options.",
-  "current_scope": "Test/CI follow-up at 2f31b966378a81c74b375dffcd325a401d6137bd plus CMake key split b2b2a547606684ef7660117371614c03fc3e85eb: results in records/review-partitions.json; production source unchanged. Historical full/long records do not qualify the updated head.",
+  "current_scope": "Listener-close regression/scheduler fairness fix at 4d59666ebaf54df57b514d1069a5172df440af51: records/review-listener-close.json. Historical native profiles do not requalify the current source.",
   "review": {
     "url": "https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185",
     "reviewed_head": "4af9c86cc86bd915fb67bda22463bbd0ec068a05",
-    "status": "Build/harness and test partition/quota follow-ups implemented in recorded scope; hosted CI, DATA/KM and remaining findings open.",
+    "status": "Build/harness, partition/quota and deterministic listener-close fairness fixes implemented in recorded scope; hosted CI, DATA/KM and other findings open.",
     "tracking": "review-follow-up.md"
   },
   "post_review_validation": {
@@ -370,5 +370,16 @@
     "default_ctest": 88,
     "windows_native_after_fix": "pending hosted CI",
     "gcc_full_core_profile": "incomplete diagnostic, explicitly stopped; CPU oracle costs and native DATA/KM failures remain separate"
+  },
+  "listener_close_followup": {
+    "source_commit": "4d59666ebaf54df57b514d1069a5172df440af51",
+    "record": "records/review-listener-close.json",
+    "before_cases_passed": 0,
+    "after_cases_passed": 4,
+    "unique_regression_cases": 4,
+    "focused_cases_per_configuration": 78,
+    "focused_configurations": 8,
+    "fresh_tsan": true,
+    "new_process_queues_threads": 0
   }
 }

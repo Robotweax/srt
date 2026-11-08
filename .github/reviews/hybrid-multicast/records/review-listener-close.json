@@ -1,0 +1,2937 @@
+{
+  "license": "MIT",
+  "source_commit": "4d59666ebaf54df57b514d1069a5172df440af51",
+  "status": "Deterministic listener-close FIFO starvation reproduced and fixed; full feature remains draft.",
+  "before": {
+    "baseline_commit": "1c2388d7ca1782c55e1af32cad26fed26a123519",
+    "source_dirty": "Only tests/test_listener_handshake_sources.cpp added for red control; exact unformatted patch archived. No production changes for the failing run.",
+    "source_binary_binding": "Manual build at baseline plus test-only patch; no embedded commit enforcement, still BL-6.",
+    "binary_sha256": "bfd40193a89acd0cb599b0398d4242ef8e1e400be19a05d138e82dbc972b93ff",
+    "regression_patch_sha256": "ca727fc8a2f6695ac4c01e2153970e31865e3cc1747b5986cb212b5554d314d0",
+    "cache_sha256": "c675533ba24933c841c1da1d2faffe15ddd6cd2615764b29a28477fd7ab9a4e9",
+    "cache_matches_previous_record": true,
+    "cache_settings": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_CXX_FLAGS": "",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+    },
+    "summary": "0/4 deterministic cases pass; each fails at closed_at_checkpoint. Finite pressure drains safely in the failing build; no timeout is needed to expose the defect."
+  },
+  "focused": {
+    "source_commit": "4d59666ebaf54df57b514d1069a5172df440af51",
+    "runs": [
+      {
+        "name": "mac-default",
+        "command": [
+          "./build-review-default/robotweax_srt_scheduler_tests"
+        ],
+        "returncode": 0,
+        "summary": [
+          "78/78 tests passed"
+        ],
+        "regression_names": [
+          "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+          "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+        ],
+        "binary_sha256": "bd535397bcf8e6dda65afa8470f1d993fc7eade8d8a86761db647a372cebb580",
+        "cache_sha256": "982ba257df4fdc42cb4a925a38fd9774e60bf2855ffc9c60448777c76f58c1ad",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "OFF",
+          "ENABLE_MAXREXMITBW": "OFF",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "OFF",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "OFF"
+        },
+        "log": "/tmp/pr387-close-mac-default-scheduler.log",
+        "log_sha256": "c78c94747747834a00af4a06fe360a2701e711a4e11c797f309f998cd6f1677f",
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "mac-release",
+        "command": [
+          "./build-hybrid-control/robotweax_srt_scheduler_tests"
+        ],
+        "returncode": 0,
+        "summary": [
+          "78/78 tests passed"
+        ],
+        "regression_names": [
+          "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+          "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+        ],
+        "binary_sha256": "9bbce63a87d4c33b2a4627998149fdd385c79bd51370237f4a1e400700b040fa",
+        "cache_sha256": "c675533ba24933c841c1da1d2faffe15ddd6cd2615764b29a28477fd7ab9a4e9",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "OFF",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "log": "/tmp/pr387-close-mac-release-scheduler.log",
+        "log_sha256": "a8d3fe781b1d6b40968adc81b36d585a1d3ce5dbe6726f1681c48ea5656f7d88",
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "mac-asan",
+        "command": [
+          "./build-hybrid-control-sanitized/robotweax_srt_scheduler_tests"
+        ],
+        "returncode": 0,
+        "summary": [
+          "78/78 tests passed"
+        ],
+        "regression_names": [
+          "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+          "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+        ],
+        "binary_sha256": "30e02fe8e64e011f876583a914f28b47f699dcdf30419ab1e9bcab297b6a37ee",
+        "cache_sha256": "bf1b3d6503fde1139c004cb011a6e40e0e8e6be88e3fb61524be61f8879c3b9d",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Debug",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "log": "/tmp/pr387-close-mac-asan-scheduler.log",
+        "log_sha256": "bcda598081707b7f30f03a627c6f853c69c5c86b67bef9beec2b075f89a46c21",
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "mac-tsan",
+        "command": [
+          "./build-review-close-tsan/robotweax_srt_scheduler_tests"
+        ],
+        "returncode": 0,
+        "summary": [
+          "78/78 tests passed"
+        ],
+        "regression_names": [
+          "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+          "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+        ],
+        "binary_sha256": "ea091590deb1497a0db53dd71305175f40724865f3c3d12c7f50b2ed5c363e6f",
+        "cache_sha256": "c573725d1f51a7607e9b0ad10914c425034596a37734870764cd309c7a888561",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Debug",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "OFF",
+          "ENABLE_MAXREXMITBW": "OFF",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "OFF",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "OFF"
+        },
+        "log": "/tmp/pr387-close-mac-tsan-scheduler.log",
+        "log_sha256": "e528fd46855fe582170ec3b35a6fe9866dee28c72522beb154615407c3c0e9e5",
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "linux-release",
+        "command": [
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "./build-linux-release/robotweax_srt_scheduler_tests"
+        ],
+        "returncode": 0,
+        "summary": [
+          "78/78 tests passed"
+        ],
+        "regression_names": [
+          "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+          "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+        ],
+        "binary_sha256": "329ce28c688ae8aee5d97937e1953b29e01e880df1e1f4de43ecbeb5d166e9d1",
+        "cache_sha256": "90ffd50803c1d552dbc2737d901c744f5600648a2ff77b5b4ef6dd4dd56c84ec",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "OFF",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "log": "/tmp/pr387-close-linux-release-scheduler.log",
+        "log_sha256": "6a8416763acd879a5baa8719a471aa72419dbcf8ef72f550d7fe0ac42d051020",
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "linux-gcc-o1",
+        "command": [
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "./build-linux-sanitized-o1/robotweax_srt_scheduler_tests"
+        ],
+        "returncode": 0,
+        "summary": [
+          "78/78 tests passed"
+        ],
+        "regression_names": [
+          "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+          "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+        ],
+        "binary_sha256": "ddd319f831ef5a3adac65373dc4db6f38cd07f9ee3315575756dcf0d3f863865",
+        "cache_sha256": "dc0db18e3aaa2bf02bd93a6c4e7f5eaceae0499901e3e8fc81a5f112d5601710",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Debug",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "log": "/tmp/pr387-close-linux-gcc-o1-scheduler.log",
+        "log_sha256": "7f35fe82653204ebac7e8ac5b9116bffb06f84fceca47090b527f6e48ef917b7",
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "linux-gcc-og",
+        "command": [
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "./build-linux-sanitized-og/robotweax_srt_scheduler_tests"
+        ],
+        "returncode": 0,
+        "summary": [
+          "78/78 tests passed"
+        ],
+        "regression_names": [
+          "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+          "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+        ],
+        "binary_sha256": "082041e00f80f967a55fd0e084485446a7dc6f3555c0a383601147b7f753199a",
+        "cache_sha256": "83fd5c38a2a2f9a89efa4a949c3b8e1e2e29109e3fc068772eff08dba371a89d",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Debug",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g -Og",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "log": "/tmp/pr387-close-linux-gcc-og-scheduler.log",
+        "log_sha256": "ed1ce093bd241a8126f53f683d2e2c498490da2671ffba24941667408366fd68",
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "linux-llvm",
+        "command": [
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "./build-linux-sanitized-clang/robotweax_srt_scheduler_tests"
+        ],
+        "returncode": 0,
+        "summary": [
+          "78/78 tests passed"
+        ],
+        "regression_names": [
+          "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+          "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+          "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+        ],
+        "binary_sha256": "14fa860eb91619b438f00ba6d7c40d7ac5f7529aebe0e84a516a30d580084020",
+        "cache_sha256": "5bafb39d0dba9c509b0c9aa3018b9dae06587a867234c1e6c1a83eec9313a60a",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Debug",
+          "CMAKE_CXX_COMPILER": "<lab>/llvm-toolchain/clang++",
+          "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "log": "/tmp/pr387-close-linux-llvm-scheduler.log",
+        "log_sha256": "0f784e256247870a8e0ebe463075f16fabf45ad490da8d4262dd1e3261699865",
+        "sanitizer_diagnostics": []
+      }
+    ]
+  },
+  "integration": {
+    "source_commit": "4d59666ebaf54df57b514d1069a5172df440af51",
+    "embedded_source_binding": false,
+    "runs": [
+      {
+        "name": "linux-gcc-og",
+        "mode": "former-hang",
+        "selected_count": 1,
+        "inventory_count": 115,
+        "command": [
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ctest",
+          "--test-dir",
+          "build-linux-sanitized-og",
+          "-j1",
+          "--output-on-failure",
+          "-R",
+          "^(robotweax_srt_hybrid_key_multi_receiver_tests)$"
+        ],
+        "returncode": 8,
+        "binary_sha256": "15d56e85a6070164ac139916e4cb71afa7a48070419ab6ddb64d5c1674999b8e",
+        "cache_sha256": "83fd5c38a2a2f9a89efa4a949c3b8e1e2e29109e3fc068772eff08dba371a89d",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Debug",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g -Og",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "gates": [
+          {
+            "name": "robotweax_srt_hybrid_key_multi_receiver_tests",
+            "passed": false,
+            "seconds": 1.57,
+            "summaries": [
+              "0/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": [
+              "[FAIL] hybrid_key_network_multi_receiver_pending_response_preserves_healthy_uc_mc_ctr_gcm: multi control peer=0 next=20 fresh=0 closed=0 mode=1 revision=1"
+            ]
+          }
+        ],
+        "log": "/tmp/pr387-close-linux-gcc-og-ctest.log",
+        "last_log": "/tmp/pr387-close-linux-gcc-og-last.log",
+        "log_sha256": "39039747311fc3f4b15c7c7352276aaa0a9c46ec0ef9a121b63c4089d3bf80ae",
+        "last_log_sha256": "7d2bebb6db23d6707c73e822ef3efb1f48dc414741227f202a0a8cd8958dde01",
+        "timeouts": [],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "linux-gcc-o1",
+        "mode": "former-hang",
+        "selected_count": 1,
+        "inventory_count": 115,
+        "command": [
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ctest",
+          "--test-dir",
+          "build-linux-sanitized-o1",
+          "-j1",
+          "--output-on-failure",
+          "-R",
+          "^(robotweax_srt_hybrid_key_multi_receiver_tests)$"
+        ],
+        "returncode": 0,
+        "binary_sha256": "88cd72b94db8679d3026dcf5b278e7d635143d4c4206a064911b29ab22ebb2f0",
+        "cache_sha256": "dc0db18e3aaa2bf02bd93a6c4e7f5eaceae0499901e3e8fc81a5f112d5601710",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Debug",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "gates": [
+          {
+            "name": "robotweax_srt_hybrid_key_multi_receiver_tests",
+            "passed": true,
+            "seconds": 5.73,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          }
+        ],
+        "log": "/tmp/pr387-close-linux-gcc-o1-ctest.log",
+        "last_log": "/tmp/pr387-close-linux-gcc-o1-last.log",
+        "log_sha256": "d82e7537b617949e405ad21e22d31b056385ff319cc95c30b100ed683c0b812b",
+        "last_log_sha256": "7e03790ba4dedd5a4ad138c53ea14cb61b7a97f5b6414a7305589bffd65cef50",
+        "timeouts": [],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "linux-llvm",
+        "mode": "former-hang",
+        "selected_count": 1,
+        "inventory_count": 115,
+        "command": [
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ctest",
+          "--test-dir",
+          "build-linux-sanitized-clang",
+          "-j1",
+          "--output-on-failure",
+          "-R",
+          "^(robotweax_srt_hybrid_key_multi_receiver_tests)$"
+        ],
+        "returncode": 0,
+        "binary_sha256": "227ed99ae49e3c76dba7ed201c18be99b701ccaf40d9ef0e18dd8333ad89187a",
+        "cache_sha256": "5bafb39d0dba9c509b0c9aa3018b9dae06587a867234c1e6c1a83eec9313a60a",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Debug",
+          "CMAKE_CXX_COMPILER": "<lab>/llvm-toolchain/clang++",
+          "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "gates": [
+          {
+            "name": "robotweax_srt_hybrid_key_multi_receiver_tests",
+            "passed": true,
+            "seconds": 4.82,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          }
+        ],
+        "log": "/tmp/pr387-close-linux-llvm-ctest.log",
+        "last_log": "/tmp/pr387-close-linux-llvm-last.log",
+        "log_sha256": "880face65dc6cf08637ae7719edf521f4e41403e06a8edfa006147f0333a44ff",
+        "last_log_sha256": "b2345584a0b21d32f4adcc839ff4ddc0b1e0ec67e74a3e8dc31edfedb6481d27",
+        "timeouts": [],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "mac-default",
+        "mode": "full",
+        "selected_count": 88,
+        "inventory_count": 88,
+        "command": [
+          "ctest",
+          "--test-dir",
+          "build-review-default",
+          "-j1",
+          "--output-on-failure",
+          "-R",
+          "^(robotweax_srt_connection_affinity_model_tests|robotweax_srt_connection_affinity_allocation_tests|robotweax_srt_connection_publication_tests|robotweax_srt_tests|robotweax_srt_hybrid_model_tests|robotweax_srt_hybrid_investigation_tests|robotweax_srt_arq_transport_tests|robotweax_srt_multicast_dispatch_tests|robotweax_srt_multicast_independent_tests|robotweax_srt_multicast_coordinated_tests|robotweax_srt_idle_readiness_tests|robotweax_srt_tsbpd_rtt_tests|robotweax_srt_socket_api_tests|robotweax_srt_session_auth_admission_tests|robotweax_srt_acp1_tests|robotweax_srt_acp1_group_rendezvous_tests|robotweax_srt_standby_rtt_plain_group_tests|robotweax_srt_standby_rtt_ctr_group_tests|robotweax_srt_standby_rtt_session_auth_group_tests|robotweax_srt_standby_rtt_one_sided_opt_in_rejects_without_downgrade_tests|robotweax_srt_group_join_rollover_tests|robotweax_srt_transport_runtime_tests|robotweax_srt_stale_drop_coverage_tests|robotweax_srt_stale_nak_tests|robotweax_srt_native_reuseport_tests|robotweax_srt_group_acquire_tests|robotweax_srt_local_address_tests|robotweax_srt_group_pathid_tests|robotweax_srt_key_length_tests|robotweax_srt_delayed_key_response_tests|robotweax_srt_rotation_tests|robotweax_srt_group_retention_prefix_tests|robotweax_srt_group_retention_oversized_tests|robotweax_srt_rejects_empty_test_selection|robotweax_srt_rejects_empty_exclusion_selection|robotweax_srt_rejects_invalid_test_arguments|robotweax_srt_rejects_incomplete_include_selection|robotweax_srt_rejects_empty_include_exclusion_selection|robotweax_srt_scheduler_service_tests|robotweax_srt_lifecycle_tests|robotweax_srt_process_exit_tests|robotweax_srt_global_lifecycle_tests|robotweax_srt_late_cleanup_socket|robotweax_srt_late_cleanup_startup\\-only|robotweax_srt_late_cleanup_retained|robotweax_srt_late_cleanup_epoll|robotweax_srt_late_cleanup_group|robotweax_srt_late_cleanup_restart|robotweax_srt_late_cleanup_explicit|robotweax_srt_late_cleanup_implicit\\-socket|robotweax_srt_late_cleanup_implicit\\-group|robotweax_srt_late_cleanup_implicit\\-epoll|robotweax_srt_embedded_cleanup_socket|robotweax_srt_embedded_cleanup_startup\\-only|robotweax_srt_embedded_cleanup_retained|robotweax_srt_embedded_cleanup_epoll|robotweax_srt_embedded_cleanup_group|robotweax_srt_embedded_cleanup_restart|robotweax_srt_embedded_cleanup_explicit|robotweax_srt_embedded_cleanup_implicit\\-socket|robotweax_srt_embedded_cleanup_implicit\\-group|robotweax_srt_embedded_cleanup_implicit\\-epoll|robotweax_srt_crypto_setup_0_0_0|robotweax_srt_crypto_setup_0_0_3|robotweax_srt_crypto_setup_0_0_4|robotweax_srt_crypto_setup_0_0_5|robotweax_srt_crypto_setup_0_0_6|robotweax_srt_crypto_setup_0_1_0|robotweax_srt_crypto_setup_0_1_3|robotweax_srt_crypto_setup_0_1_4|robotweax_srt_crypto_setup_0_1_5|robotweax_srt_crypto_setup_0_1_6|robotweax_srt_crypto_setup_optional_fallback|robotweax_srt_random_identity_failure_tests|robotweax_srt_fork_tests|robotweax_srt_c_api_test|robotweax_srt_compatible_header_test|robotweax_srt_remote_harness_tests|robotweax_srt_group_throughput_smoke|robotweax_srt_many_socket_scalability_smoke|robotweax_srt_identity_interop|robotweax_srt_live_nak_gap_recovery|robotweax_srt_live_delayed_ack_no_retransmission|robotweax_srt_live_timing_smoke|robotweax_srt_crypto_soak_smoke|robotweax_srt_fec_chain_soak_smoke|robotweax_srt_abi_baseline_tests|robotweax_srt_package_consumer_tests)$"
+        ],
+        "returncode": 0,
+        "binary_sha256": "1777b53b0b757c6b288d7ce35521d2510eab33875aa618e3a60b111669d76d6b",
+        "cache_sha256": "982ba257df4fdc42cb4a925a38fd9774e60bf2855ffc9c60448777c76f58c1ad",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "OFF",
+          "ENABLE_MAXREXMITBW": "OFF",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "OFF",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "OFF"
+        },
+        "gates": [
+          {
+            "name": "robotweax_srt_connection_affinity_model_tests",
+            "passed": true,
+            "seconds": 0.47,
+            "summaries": [
+              "16/16 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_connection_affinity_allocation_tests",
+            "passed": true,
+            "seconds": 0.27,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_connection_publication_tests",
+            "passed": true,
+            "seconds": 1.2,
+            "summaries": [
+              "5/5 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_tests",
+            "passed": true,
+            "seconds": 8.6,
+            "summaries": [
+              "1150/1150 tests passed"
+            ],
+            "regression_passes": [
+              "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+              "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+              "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+              "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+            ],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_model_tests",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [
+              "75/75 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_investigation_tests",
+            "passed": true,
+            "seconds": 7.95,
+            "summaries": [
+              "5/5 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_arq_transport_tests",
+            "passed": true,
+            "seconds": 5.35,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_dispatch_tests",
+            "passed": true,
+            "seconds": 6.59,
+            "summaries": [
+              "26/26 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_independent_tests",
+            "passed": true,
+            "seconds": 4.17,
+            "summaries": [
+              "10/10 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_coordinated_tests",
+            "passed": true,
+            "seconds": 9.43,
+            "summaries": [
+              "10/10 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_idle_readiness_tests",
+            "passed": true,
+            "seconds": 0.21,
+            "summaries": [
+              "9/9 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_tsbpd_rtt_tests",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [
+              "8/8 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_socket_api_tests",
+            "passed": true,
+            "seconds": 6.45,
+            "summaries": [
+              "74/74 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_session_auth_admission_tests",
+            "passed": true,
+            "seconds": 2.92,
+            "summaries": [
+              "5/5 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_acp1_tests",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_acp1_group_rendezvous_tests",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_standby_rtt_plain_group_tests",
+            "passed": true,
+            "seconds": 1.13,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_standby_rtt_ctr_group_tests",
+            "passed": true,
+            "seconds": 0.24,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_standby_rtt_session_auth_group_tests",
+            "passed": true,
+            "seconds": 0.24,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_standby_rtt_one_sided_opt_in_rejects_without_downgrade_tests",
+            "passed": true,
+            "seconds": 0.03,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_join_rollover_tests",
+            "passed": true,
+            "seconds": 2.68,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_transport_runtime_tests",
+            "passed": true,
+            "seconds": 0.4,
+            "summaries": [
+              "162/162 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_stale_drop_coverage_tests",
+            "passed": true,
+            "seconds": 0.02,
+            "summaries": [
+              "5/5 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_stale_nak_tests",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [
+              "5/5 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_native_reuseport_tests",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [
+              "3/11 tests passed (8 skipped)"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_acquire_tests",
+            "passed": true,
+            "seconds": 1.27,
+            "summaries": [
+              "12/12 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_local_address_tests",
+            "passed": true,
+            "seconds": 2.25,
+            "summaries": [
+              "7/7 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_pathid_tests",
+            "passed": true,
+            "seconds": 0.55,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_key_length_tests",
+            "passed": true,
+            "seconds": 5.28,
+            "summaries": [
+              "6/6 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_delayed_key_response_tests",
+            "passed": true,
+            "seconds": 0.15,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rotation_tests",
+            "passed": true,
+            "seconds": 0.39,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_retention_prefix_tests",
+            "passed": true,
+            "seconds": 0.47,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_retention_oversized_tests",
+            "passed": true,
+            "seconds": 0.48,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rejects_empty_test_selection",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [
+              "0/0 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rejects_empty_exclusion_selection",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [
+              "0/0 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rejects_invalid_test_arguments",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rejects_incomplete_include_selection",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rejects_empty_include_exclusion_selection",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [
+              "0/0 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_scheduler_service_tests",
+            "passed": true,
+            "seconds": 0.48,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_lifecycle_tests",
+            "passed": true,
+            "seconds": 1.28,
+            "summaries": [
+              "31/31 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_process_exit_tests",
+            "passed": true,
+            "seconds": 0.35,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_global_lifecycle_tests",
+            "passed": true,
+            "seconds": 0.3,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_socket",
+            "passed": true,
+            "seconds": 0.29,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_startup-only",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_retained",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_epoll",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_group",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_restart",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_explicit",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_implicit-socket",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_implicit-group",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_implicit-epoll",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_socket",
+            "passed": true,
+            "seconds": 0.57,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_startup-only",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_retained",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_epoll",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_group",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_restart",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_explicit",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_implicit-socket",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_implicit-group",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_implicit-epoll",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_0_0",
+            "passed": true,
+            "seconds": 0.29,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_0_3",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_0_4",
+            "passed": true,
+            "seconds": 0.05,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_0_5",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_0_6",
+            "passed": true,
+            "seconds": 0.05,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_1_0",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_1_3",
+            "passed": true,
+            "seconds": 5.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_1_4",
+            "passed": true,
+            "seconds": 5.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_1_5",
+            "passed": true,
+            "seconds": 5.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_1_6",
+            "passed": true,
+            "seconds": 5.05,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_optional_fallback",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_random_identity_failure_tests",
+            "passed": true,
+            "seconds": 0.3,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_fork_tests",
+            "passed": true,
+            "seconds": 0.29,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_c_api_test",
+            "passed": true,
+            "seconds": 0.26,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_compatible_header_test",
+            "passed": true,
+            "seconds": 0.29,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_remote_harness_tests",
+            "passed": true,
+            "seconds": 53.88,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_throughput_smoke",
+            "passed": true,
+            "seconds": 4.78,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_many_socket_scalability_smoke",
+            "passed": true,
+            "seconds": 3.07,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_identity_interop",
+            "passed": true,
+            "seconds": 7.88,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_live_nak_gap_recovery",
+            "passed": true,
+            "seconds": 10.66,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_live_delayed_ack_no_retransmission",
+            "passed": true,
+            "seconds": 10.67,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_live_timing_smoke",
+            "passed": true,
+            "seconds": 0.88,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_soak_smoke",
+            "passed": true,
+            "seconds": 0.29,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_fec_chain_soak_smoke",
+            "passed": true,
+            "seconds": 0.28,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_abi_baseline_tests",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_package_consumer_tests",
+            "passed": true,
+            "seconds": 4.91,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          }
+        ],
+        "log": "/tmp/pr387-close-mac-default-ctest.log",
+        "last_log": "/tmp/pr387-close-mac-default-last.log",
+        "log_sha256": "240517e148311bebf97ec6a8675daab2dfaa3fc1789d2da09d8c02c9d1988e2a",
+        "last_log_sha256": "64ab13175dd9979a5506640fd61c3eaa9aea1e6d2d949d021cb1f0d84b13b556",
+        "timeouts": [],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "mac-release",
+        "mode": "full",
+        "selected_count": 114,
+        "inventory_count": 114,
+        "command": [
+          "ctest",
+          "--test-dir",
+          "build-hybrid-control",
+          "-j1",
+          "--output-on-failure",
+          "-R",
+          "^(robotweax_srt_connection_affinity_model_tests|robotweax_srt_connection_affinity_allocation_tests|robotweax_srt_connection_publication_tests|robotweax_srt_tests|robotweax_srt_hybrid_model_tests|robotweax_srt_hybrid_investigation_tests|robotweax_srt_arq_transport_tests|robotweax_srt_multicast_dispatch_tests|robotweax_srt_multicast_independent_tests|robotweax_srt_multicast_coordinated_tests|robotweax_srt_multicast_startup_tests|robotweax_srt_multicast_conclusions_tests|robotweax_srt_multicast_control_tests|robotweax_srt_multicast_source_error_tests|robotweax_srt_multicast_rejoin_tests|robotweax_srt_hybrid_harness_tests|robotweax_srt_hybrid_network_tests|robotweax_srt_hybrid_multi_control_tests|robotweax_srt_hybrid_multi_quota_tests|robotweax_srt_hybrid_key_timing_tests|robotweax_srt_hybrid_key_response_tests|robotweax_srt_hybrid_key_multi_receiver_tests|robotweax_srt_hybrid_key_admission_tests|robotweax_srt_hybrid_load_tests|robotweax_srt_hybrid_soak_tests|robotweax_srt_idle_readiness_tests|robotweax_srt_tsbpd_rtt_tests|robotweax_srt_socket_api_tests|robotweax_srt_session_auth_admission_tests|robotweax_srt_acp1_tests|robotweax_srt_acp1_group_rendezvous_tests|robotweax_srt_acp1_rendezvous_tests|robotweax_srt_acp1_groups_tests|robotweax_srt_standby_rtt_plain_group_tests|robotweax_srt_standby_rtt_ctr_group_tests|robotweax_srt_standby_rtt_session_auth_group_tests|robotweax_srt_standby_rtt_one_sided_opt_in_rejects_without_downgrade_tests|robotweax_srt_standby_rtt_gcm_group_tests|robotweax_srt_group_join_rollover_tests|robotweax_srt_transport_runtime_tests|robotweax_srt_stale_drop_coverage_tests|robotweax_srt_stale_nak_tests|robotweax_srt_native_reuseport_tests|robotweax_srt_group_acquire_tests|robotweax_srt_local_address_tests|robotweax_srt_group_pathid_tests|robotweax_srt_gcm_profile_tests|robotweax_srt_sensor_gcm_aes128_tests|robotweax_srt_sensor_gcm_aes192_tests|robotweax_srt_sensor_gcm_aes256_tests|robotweax_srt_key_length_tests|robotweax_srt_delayed_key_response_tests|robotweax_srt_rotation_tests|robotweax_srt_group_retention_prefix_tests|robotweax_srt_group_retention_oversized_tests|robotweax_srt_rejects_empty_test_selection|robotweax_srt_rejects_empty_exclusion_selection|robotweax_srt_rejects_invalid_test_arguments|robotweax_srt_rejects_incomplete_include_selection|robotweax_srt_rejects_empty_include_exclusion_selection|robotweax_srt_scheduler_service_tests|robotweax_srt_lifecycle_tests|robotweax_srt_process_exit_tests|robotweax_srt_global_lifecycle_tests|robotweax_srt_late_cleanup_socket|robotweax_srt_late_cleanup_startup\\-only|robotweax_srt_late_cleanup_retained|robotweax_srt_late_cleanup_epoll|robotweax_srt_late_cleanup_group|robotweax_srt_late_cleanup_restart|robotweax_srt_late_cleanup_explicit|robotweax_srt_late_cleanup_implicit\\-socket|robotweax_srt_late_cleanup_implicit\\-group|robotweax_srt_late_cleanup_implicit\\-epoll|robotweax_srt_embedded_cleanup_socket|robotweax_srt_embedded_cleanup_startup\\-only|robotweax_srt_embedded_cleanup_retained|robotweax_srt_embedded_cleanup_epoll|robotweax_srt_embedded_cleanup_group|robotweax_srt_embedded_cleanup_restart|robotweax_srt_embedded_cleanup_explicit|robotweax_srt_embedded_cleanup_implicit\\-socket|robotweax_srt_embedded_cleanup_implicit\\-group|robotweax_srt_embedded_cleanup_implicit\\-epoll|robotweax_srt_crypto_setup_0_0_0|robotweax_srt_crypto_setup_0_0_3|robotweax_srt_crypto_setup_0_0_4|robotweax_srt_crypto_setup_0_0_5|robotweax_srt_crypto_setup_0_0_6|robotweax_srt_crypto_setup_0_1_0|robotweax_srt_crypto_setup_0_1_3|robotweax_srt_crypto_setup_0_1_4|robotweax_srt_crypto_setup_0_1_5|robotweax_srt_crypto_setup_0_1_6|robotweax_srt_crypto_setup_1_0_0|robotweax_srt_crypto_setup_1_0_3|robotweax_srt_crypto_setup_1_0_4|robotweax_srt_crypto_setup_1_0_5|robotweax_srt_crypto_setup_1_0_6|robotweax_srt_crypto_setup_1_1_0|robotweax_srt_crypto_setup_1_1_3|robotweax_srt_crypto_setup_1_1_4|robotweax_srt_crypto_setup_1_1_5|robotweax_srt_crypto_setup_1_1_6|robotweax_srt_crypto_setup_optional_fallback|robotweax_srt_random_identity_failure_tests|robotweax_srt_fork_tests|robotweax_srt_c_api_test|robotweax_srt_compatible_header_test|robotweax_srt_remote_harness_tests|robotweax_srt_group_throughput_smoke|robotweax_srt_many_socket_scalability_smoke|robotweax_srt_abi_baseline_tests|robotweax_srt_package_consumer_tests)$"
+        ],
+        "returncode": 0,
+        "binary_sha256": "acfb845079e7dbe0551b76e1cac6504a36e9d415ebbc5f68a0ac8b11e2bc4044",
+        "cache_sha256": "c675533ba24933c841c1da1d2faffe15ddd6cd2615764b29a28477fd7ab9a4e9",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "OFF",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "gates": [
+          {
+            "name": "robotweax_srt_connection_affinity_model_tests",
+            "passed": true,
+            "seconds": 0.15,
+            "summaries": [
+              "16/16 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_connection_affinity_allocation_tests",
+            "passed": true,
+            "seconds": 0.15,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_connection_publication_tests",
+            "passed": true,
+            "seconds": 1.2,
+            "summaries": [
+              "5/5 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_tests",
+            "passed": true,
+            "seconds": 8.57,
+            "summaries": [
+              "1155/1155 tests passed"
+            ],
+            "regression_passes": [
+              "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+              "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+              "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+              "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+            ],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_model_tests",
+            "passed": true,
+            "seconds": 0.85,
+            "summaries": [
+              "232/232 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_investigation_tests",
+            "passed": true,
+            "seconds": 10.54,
+            "summaries": [
+              "6/6 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_arq_transport_tests",
+            "passed": true,
+            "seconds": 7.14,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_dispatch_tests",
+            "passed": true,
+            "seconds": 8.94,
+            "summaries": [
+              "27/27 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_independent_tests",
+            "passed": true,
+            "seconds": 5.15,
+            "summaries": [
+              "11/11 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_coordinated_tests",
+            "passed": true,
+            "seconds": 11.74,
+            "summaries": [
+              "11/11 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_startup_tests",
+            "passed": true,
+            "seconds": 5.54,
+            "summaries": [
+              "8/8 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_conclusions_tests",
+            "passed": true,
+            "seconds": 4.09,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_control_tests",
+            "passed": true,
+            "seconds": 9.47,
+            "summaries": [
+              "14/14 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_source_error_tests",
+            "passed": true,
+            "seconds": 2.49,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_rejoin_tests",
+            "passed": true,
+            "seconds": 2.8,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_harness_tests",
+            "passed": true,
+            "seconds": 1.4,
+            "summaries": [
+              "4/4 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_network_tests",
+            "passed": true,
+            "seconds": 9.11,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_multi_control_tests",
+            "passed": true,
+            "seconds": 7.95,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_multi_quota_tests",
+            "passed": true,
+            "seconds": 6.29,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_timing_tests",
+            "passed": true,
+            "seconds": 6.01,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_response_tests",
+            "passed": true,
+            "seconds": 4.09,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_multi_receiver_tests",
+            "passed": true,
+            "seconds": 4.95,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_admission_tests",
+            "passed": true,
+            "seconds": 4.96,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_load_tests",
+            "passed": true,
+            "seconds": 13.72,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_soak_tests",
+            "passed": true,
+            "seconds": 10.93,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_idle_readiness_tests",
+            "passed": true,
+            "seconds": 0.21,
+            "summaries": [
+              "9/9 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_tsbpd_rtt_tests",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [
+              "8/8 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_socket_api_tests",
+            "passed": true,
+            "seconds": 6.71,
+            "summaries": [
+              "77/77 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_session_auth_admission_tests",
+            "passed": true,
+            "seconds": 3.74,
+            "summaries": [
+              "5/5 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_acp1_tests",
+            "passed": true,
+            "seconds": 0.53,
+            "summaries": [
+              "13/13 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_acp1_group_rendezvous_tests",
+            "passed": true,
+            "seconds": 23.9,
+            "summaries": [
+              "10/10 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_acp1_rendezvous_tests",
+            "passed": true,
+            "seconds": 3.84,
+            "summaries": [
+              "9/9 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_acp1_groups_tests",
+            "passed": true,
+            "seconds": 13.11,
+            "summaries": [
+              "8/8 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_standby_rtt_plain_group_tests",
+            "passed": true,
+            "seconds": 0.27,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_standby_rtt_ctr_group_tests",
+            "passed": true,
+            "seconds": 0.23,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_standby_rtt_session_auth_group_tests",
+            "passed": true,
+            "seconds": 0.25,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_standby_rtt_one_sided_opt_in_rejects_without_downgrade_tests",
+            "passed": true,
+            "seconds": 0.03,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_standby_rtt_gcm_group_tests",
+            "passed": true,
+            "seconds": 2.24,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_join_rollover_tests",
+            "passed": true,
+            "seconds": 2.68,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_transport_runtime_tests",
+            "passed": true,
+            "seconds": 0.41,
+            "summaries": [
+              "168/168 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_stale_drop_coverage_tests",
+            "passed": true,
+            "seconds": 0.02,
+            "summaries": [
+              "5/5 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_stale_nak_tests",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [
+              "5/5 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_native_reuseport_tests",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [
+              "3/11 tests passed (8 skipped)"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_acquire_tests",
+            "passed": true,
+            "seconds": 1.28,
+            "summaries": [
+              "12/12 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_local_address_tests",
+            "passed": true,
+            "seconds": 2.22,
+            "summaries": [
+              "7/7 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_pathid_tests",
+            "passed": true,
+            "seconds": 0.81,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_gcm_profile_tests",
+            "passed": true,
+            "seconds": 2.46,
+            "summaries": [
+              "5/5 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_sensor_gcm_aes128_tests",
+            "passed": true,
+            "seconds": 2.6,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_sensor_gcm_aes192_tests",
+            "passed": true,
+            "seconds": 2.58,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_sensor_gcm_aes256_tests",
+            "passed": true,
+            "seconds": 2.65,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_key_length_tests",
+            "passed": true,
+            "seconds": 5.24,
+            "summaries": [
+              "6/6 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_delayed_key_response_tests",
+            "passed": true,
+            "seconds": 0.29,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rotation_tests",
+            "passed": true,
+            "seconds": 0.39,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_retention_prefix_tests",
+            "passed": true,
+            "seconds": 0.47,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_retention_oversized_tests",
+            "passed": true,
+            "seconds": 0.47,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rejects_empty_test_selection",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [
+              "0/0 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rejects_empty_exclusion_selection",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [
+              "0/0 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rejects_invalid_test_arguments",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rejects_incomplete_include_selection",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_rejects_empty_include_exclusion_selection",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [
+              "0/0 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_scheduler_service_tests",
+            "passed": true,
+            "seconds": 0.49,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_lifecycle_tests",
+            "passed": true,
+            "seconds": 1.36,
+            "summaries": [
+              "31/31 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_process_exit_tests",
+            "passed": true,
+            "seconds": 0.35,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_global_lifecycle_tests",
+            "passed": true,
+            "seconds": 0.29,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_socket",
+            "passed": true,
+            "seconds": 0.28,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_startup-only",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_retained",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_epoll",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_group",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_restart",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_explicit",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_implicit-socket",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_implicit-group",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_late_cleanup_implicit-epoll",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_socket",
+            "passed": true,
+            "seconds": 0.54,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_startup-only",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_retained",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_epoll",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_group",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_restart",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_explicit",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_implicit-socket",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_implicit-group",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_embedded_cleanup_implicit-epoll",
+            "passed": true,
+            "seconds": 0.0,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_0_0",
+            "passed": true,
+            "seconds": 0.31,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_0_3",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_0_4",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_0_5",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_0_6",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_1_0",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_1_3",
+            "passed": true,
+            "seconds": 5.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_1_4",
+            "passed": true,
+            "seconds": 5.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_1_5",
+            "passed": true,
+            "seconds": 5.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_0_1_6",
+            "passed": true,
+            "seconds": 5.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_1_0_0",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_1_0_3",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_1_0_4",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_1_0_5",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_1_0_6",
+            "passed": true,
+            "seconds": 0.05,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_1_1_0",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_1_1_3",
+            "passed": true,
+            "seconds": 5.05,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_1_1_4",
+            "passed": true,
+            "seconds": 5.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_1_1_5",
+            "passed": true,
+            "seconds": 5.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_1_1_6",
+            "passed": true,
+            "seconds": 5.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_crypto_setup_optional_fallback",
+            "passed": true,
+            "seconds": 0.04,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_random_identity_failure_tests",
+            "passed": true,
+            "seconds": 0.29,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_fork_tests",
+            "passed": true,
+            "seconds": 0.33,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_c_api_test",
+            "passed": true,
+            "seconds": 0.25,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_compatible_header_test",
+            "passed": true,
+            "seconds": 0.28,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_remote_harness_tests",
+            "passed": true,
+            "seconds": 54.5,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_group_throughput_smoke",
+            "passed": true,
+            "seconds": 4.86,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_many_socket_scalability_smoke",
+            "passed": true,
+            "seconds": 3.06,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_abi_baseline_tests",
+            "passed": true,
+            "seconds": 0.01,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_package_consumer_tests",
+            "passed": true,
+            "seconds": 5.5,
+            "summaries": [],
+            "regression_passes": [],
+            "failures": []
+          }
+        ],
+        "log": "/tmp/pr387-close-mac-release-ctest.log",
+        "last_log": "/tmp/pr387-close-mac-release-last.log",
+        "log_sha256": "62105fc663ea404fd249aaf67d515e5ec494cb4409f7b03f33e6ecfc6f31a3b7",
+        "last_log_sha256": "599823608a9a94538acf0c4fb3c655c7bf99e7256a0b393b7a962178bf60178e",
+        "timeouts": [],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "mac-asan",
+        "mode": "asan",
+        "selected_count": 22,
+        "inventory_count": 114,
+        "command": [
+          "ctest",
+          "--test-dir",
+          "build-hybrid-control-sanitized",
+          "-j1",
+          "--output-on-failure",
+          "-R",
+          "^(robotweax_srt_tests|robotweax_srt_hybrid_model_tests|robotweax_srt_hybrid_investigation_tests|robotweax_srt_multicast_dispatch_tests|robotweax_srt_multicast_independent_tests|robotweax_srt_multicast_coordinated_tests|robotweax_srt_multicast_startup_tests|robotweax_srt_multicast_conclusions_tests|robotweax_srt_multicast_control_tests|robotweax_srt_multicast_source_error_tests|robotweax_srt_multicast_rejoin_tests|robotweax_srt_hybrid_harness_tests|robotweax_srt_hybrid_network_tests|robotweax_srt_hybrid_multi_control_tests|robotweax_srt_hybrid_multi_quota_tests|robotweax_srt_hybrid_key_timing_tests|robotweax_srt_hybrid_key_response_tests|robotweax_srt_hybrid_key_multi_receiver_tests|robotweax_srt_hybrid_key_admission_tests|robotweax_srt_hybrid_load_tests|robotweax_srt_hybrid_soak_tests|robotweax_srt_transport_runtime_tests)$"
+        ],
+        "returncode": 0,
+        "binary_sha256": "5b5f90c65c75a5d8e07715c1d6d71149af7e3012fd12e468276399b50bef5c2d",
+        "cache_sha256": "bf1b3d6503fde1139c004cb011a6e40e0e8e6be88e3fb61524be61f8879c3b9d",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Debug",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "gates": [
+          {
+            "name": "robotweax_srt_tests",
+            "passed": true,
+            "seconds": 20.98,
+            "summaries": [
+              "1160/1160 tests passed"
+            ],
+            "regression_passes": [
+              "listener_handshake_actor_close_progresses_under_due_timer_pressure",
+              "listener_handshake_actor_close_pending_admission_under_due_timer_pressure",
+              "listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure",
+              "listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure"
+            ],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_model_tests",
+            "passed": true,
+            "seconds": 2.03,
+            "summaries": [
+              "232/232 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_investigation_tests",
+            "passed": true,
+            "seconds": 10.75,
+            "summaries": [
+              "6/6 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_dispatch_tests",
+            "passed": true,
+            "seconds": 10.69,
+            "summaries": [
+              "27/27 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_independent_tests",
+            "passed": true,
+            "seconds": 6.29,
+            "summaries": [
+              "11/11 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_coordinated_tests",
+            "passed": true,
+            "seconds": 13.77,
+            "summaries": [
+              "11/11 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_startup_tests",
+            "passed": true,
+            "seconds": 6.61,
+            "summaries": [
+              "8/8 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_conclusions_tests",
+            "passed": true,
+            "seconds": 4.69,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_control_tests",
+            "passed": true,
+            "seconds": 12.2,
+            "summaries": [
+              "14/14 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_source_error_tests",
+            "passed": true,
+            "seconds": 3.18,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_rejoin_tests",
+            "passed": true,
+            "seconds": 3.33,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_harness_tests",
+            "passed": true,
+            "seconds": 1.58,
+            "summaries": [
+              "4/4 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_network_tests",
+            "passed": true,
+            "seconds": 9.93,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_multi_control_tests",
+            "passed": true,
+            "seconds": 8.87,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_multi_quota_tests",
+            "passed": true,
+            "seconds": 6.87,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_timing_tests",
+            "passed": true,
+            "seconds": 6.35,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_response_tests",
+            "passed": true,
+            "seconds": 4.37,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_multi_receiver_tests",
+            "passed": true,
+            "seconds": 5.33,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_admission_tests",
+            "passed": true,
+            "seconds": 5.28,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_load_tests",
+            "passed": true,
+            "seconds": 14.37,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_soak_tests",
+            "passed": true,
+            "seconds": 11.13,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_transport_runtime_tests",
+            "passed": true,
+            "seconds": 2.24,
+            "summaries": [
+              "168/168 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          }
+        ],
+        "log": "/tmp/pr387-close-mac-asan-ctest.log",
+        "last_log": "/tmp/pr387-close-mac-asan-last.log",
+        "log_sha256": "dbfe00f7740c42691fa2ecd936b705eb16137d397d1f6465e87e8fd879a7d3fd",
+        "last_log_sha256": "f683f21ffdfe08328aef083b8caf73757cb2d4b057d8f1b9b4810fa0f858f995",
+        "timeouts": [],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "name": "linux-release",
+        "mode": "native",
+        "selected_count": 20,
+        "inventory_count": 115,
+        "command": [
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ctest",
+          "--test-dir",
+          "build-linux-release",
+          "-j1",
+          "--output-on-failure",
+          "-R",
+          "^(robotweax_srt_hybrid_model_tests|robotweax_srt_hybrid_investigation_tests|robotweax_srt_multicast_dispatch_tests|robotweax_srt_multicast_independent_tests|robotweax_srt_multicast_coordinated_tests|robotweax_srt_multicast_startup_tests|robotweax_srt_multicast_conclusions_tests|robotweax_srt_multicast_control_tests|robotweax_srt_multicast_source_error_tests|robotweax_srt_multicast_rejoin_tests|robotweax_srt_hybrid_harness_tests|robotweax_srt_hybrid_network_tests|robotweax_srt_hybrid_multi_control_tests|robotweax_srt_hybrid_multi_quota_tests|robotweax_srt_hybrid_key_timing_tests|robotweax_srt_hybrid_key_response_tests|robotweax_srt_hybrid_key_multi_receiver_tests|robotweax_srt_hybrid_key_admission_tests|robotweax_srt_hybrid_load_tests|robotweax_srt_hybrid_soak_tests)$"
+        ],
+        "returncode": 0,
+        "binary_sha256": "8f1321f2a46e9adb140688a3e769f7ceabde5df5ff23517849f688583d389c50",
+        "cache_sha256": "90ffd50803c1d552dbc2737d901c744f5600648a2ff77b5b4ef6dd4dd56c84ec",
+        "flags": {
+          "CMAKE_BUILD_TYPE": "Release",
+          "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+          "CMAKE_CXX_FLAGS": "",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "ENABLE_AEAD_API_PREVIEW": "ON",
+          "ENABLE_MAXREXMITBW": "OFF",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+          "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+        },
+        "gates": [
+          {
+            "name": "robotweax_srt_hybrid_model_tests",
+            "passed": true,
+            "seconds": 1.37,
+            "summaries": [
+              "232/232 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_investigation_tests",
+            "passed": true,
+            "seconds": 10.62,
+            "summaries": [
+              "6/6 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_dispatch_tests",
+            "passed": true,
+            "seconds": 9.58,
+            "summaries": [
+              "27/27 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_independent_tests",
+            "passed": true,
+            "seconds": 5.51,
+            "summaries": [
+              "11/11 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_coordinated_tests",
+            "passed": true,
+            "seconds": 12.18,
+            "summaries": [
+              "11/11 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_startup_tests",
+            "passed": true,
+            "seconds": 5.84,
+            "summaries": [
+              "8/8 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_conclusions_tests",
+            "passed": true,
+            "seconds": 4.49,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_control_tests",
+            "passed": true,
+            "seconds": 10.01,
+            "summaries": [
+              "14/14 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_source_error_tests",
+            "passed": true,
+            "seconds": 2.69,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_multicast_rejoin_tests",
+            "passed": true,
+            "seconds": 2.9,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_harness_tests",
+            "passed": true,
+            "seconds": 1.46,
+            "summaries": [
+              "4/4 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_network_tests",
+            "passed": true,
+            "seconds": 9.24,
+            "summaries": [
+              "3/3 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_multi_control_tests",
+            "passed": true,
+            "seconds": 8.09,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_multi_quota_tests",
+            "passed": true,
+            "seconds": 6.69,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_timing_tests",
+            "passed": true,
+            "seconds": 5.53,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_response_tests",
+            "passed": true,
+            "seconds": 3.62,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_multi_receiver_tests",
+            "passed": true,
+            "seconds": 4.62,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_key_admission_tests",
+            "passed": true,
+            "seconds": 4.59,
+            "summaries": [
+              "1/1 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_load_tests",
+            "passed": true,
+            "seconds": 13.95,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          },
+          {
+            "name": "robotweax_srt_hybrid_soak_tests",
+            "passed": true,
+            "seconds": 11.0,
+            "summaries": [
+              "2/2 tests passed"
+            ],
+            "regression_passes": [],
+            "failures": []
+          }
+        ],
+        "log": "/tmp/pr387-close-linux-release-ctest.log",
+        "last_log": "/tmp/pr387-close-linux-release-last.log",
+        "log_sha256": "f231cd55fd31b53828d79b44b1e3f8c80f4fb92e5749b0706a83c27346fb5a6a",
+        "last_log_sha256": "5807976d01a6b055c89beeba64b39a0aeb77654ceb532400b4cf1b5a76e21b1b",
+        "timeouts": [],
+        "sanitizer_diagnostics": []
+      }
+    ]
+  },
+  "remaining_gcc_data": {
+    "source_commit": "4d59666ebaf54df57b514d1069a5172df440af51",
+    "scope": "After-fix first GCC load/soak checks, unchanged strict four-second profiles; separate from close liveness and not qualification if any case fails.",
+    "runs": [
+      {
+        "name": "linux-gcc-o1",
+        "command": [
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ctest",
+          "--test-dir",
+          "build-linux-sanitized-o1",
+          "--output-on-failure",
+          "-j1",
+          "-R",
+          "^robotweax_srt_hybrid_(load|soak)_tests$"
+        ],
+        "returncode": 8,
+        "summary": [
+          "0/2 tests passed",
+          "0/2 tests passed"
+        ],
+        "failures": [
+          "[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr: multi control peer=1 next=102 fresh=0 closed=0 mode=0 revision=3",
+          "[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm: load DATA row=1 crypto=2 position=62 bytes=1316",
+          "[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=58 received=15722209107125412300 bytes=1316 canonical=0 offered=120 unique=67 dropped=0 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=1",
+          "[FAIL] hybrid_soak_network_upper_profile_ctr: soak DATA crypto=1 peer=1 expected=58 bytes=1316",
+          "[HYBRID_SOAK_FAILURE] crypto=2 peer=1 expected=26 received=32 bytes=1316 canonical=1 offered=88 unique=46 dropped=27 undecryptable=21 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=1",
+          "[HYBRID_SOAK_FAILURE] crypto=2 peer=0 expected=31 received=32 bytes=1316 canonical=1 offered=88 unique=84 dropped=5 undecryptable=4 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=1",
+          "[FAIL] hybrid_soak_network_upper_profile_gcm: soak DATA crypto=2 peer=0 expected=31 bytes=1316"
+        ],
+        "timeouts": [],
+        "sanitizer_diagnostics": [],
+        "binary_sha256": "88cd72b94db8679d3026dcf5b278e7d635143d4c4206a064911b29ab22ebb2f0",
+        "log": "/tmp/pr387-close-linux-gcc-o1-data-ctest.log",
+        "last_log": "/tmp/pr387-close-linux-gcc-o1-data-last.log",
+        "log_sha256": "5b07d196e2e858eba76602620ddbd052113c180aa3aa91e0751a754956b6f03e",
+        "last_log_sha256": "c4bfe62c645ff77833d7d786a3d0513b055ffc86815a2c3be37076f2ce50ce9c"
+      },
+      {
+        "name": "linux-gcc-og",
+        "command": [
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ctest",
+          "--test-dir",
+          "build-linux-sanitized-og",
+          "--output-on-failure",
+          "-j1",
+          "-R",
+          "^robotweax_srt_hybrid_(load|soak)_tests$"
+        ],
+        "returncode": 8,
+        "summary": [
+          "0/2 tests passed",
+          "0/2 tests passed"
+        ],
+        "failures": [
+          "[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr: multi control peer=0 next=57 fresh=0 closed=0 mode=1 revision=1",
+          "[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm: multi control peer=0 next=57 fresh=0 closed=0 mode=1 revision=1",
+          "[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=16 received=17 bytes=1316 canonical=1 offered=56 unique=17 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=0",
+          "[HYBRID_SOAK_FAILURE] crypto=1 peer=0 expected=28 received=29 bytes=1316 canonical=1 offered=56 unique=29 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=0",
+          "[FAIL] hybrid_soak_network_upper_profile_ctr: soak DATA crypto=1 peer=0 expected=28 bytes=1316",
+          "[HYBRID_SOAK_FAILURE] crypto=2 peer=1 expected=16 received=17 bytes=1316 canonical=1 offered=56 unique=17 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=0",
+          "[HYBRID_SOAK_FAILURE] crypto=2 peer=0 expected=30 received=31 bytes=1316 canonical=1 offered=56 unique=33 dropped=1 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=0",
+          "[FAIL] hybrid_soak_network_upper_profile_gcm: soak DATA crypto=2 peer=0 expected=30 bytes=1316"
+        ],
+        "timeouts": [],
+        "sanitizer_diagnostics": [],
+        "binary_sha256": "15d56e85a6070164ac139916e4cb71afa7a48070419ab6ddb64d5c1674999b8e",
+        "log": "/tmp/pr387-close-linux-gcc-og-data-ctest.log",
+        "last_log": "/tmp/pr387-close-linux-gcc-og-data-last.log",
+        "log_sha256": "c49684ab3151954b7ca4b72d781ac5d0c4b1e873fdd9cb3a98fd697d824b7c8b",
+        "last_log_sha256": "02cf595a4736c86422b68c1d8eadd6a3b88012f2a5b0026a2a12ab2db853bfb2"
+      }
+    ]
+  },
+  "mechanism": "A shard previously dispatched every due timer before FIFO work. A timer that immediately rearms could postpone a queued ListenerHandshakeActor close indefinitely, including stop waiting for terminal. New ordinary turns alternate due timers and FIFO jobs; persistent services retain their alternating turns and round-robin selection.",
+  "regression_design": "One blocked shard publishes one real actor close, one already-due timer and optionally one persistent service. Finite eight-turn chains drain on failure. The actor must be terminal at the second timer checkpoint. Idle and admission-pending actors, each with/without services, make four unique regressions. No network, sleeps or measured-latency pass criterion; a two-second CV guard only bounds the harness. Actual actor stop/result/inbox closure are checked.",
+  "preserved_contracts": "Timer deadline/equal-deadline insertion order and FIFO order within each class; service reservation/retirement; clock-wake metadata. No preemption or absolute wall-clock guarantee for a callback that does not return. No new queues, threads, per-dispatch allocation or capacity changes. C ABI, wire, crypto and all protocol/qualification deadlines unchanged.",
+  "native_causal_limit": "The former GCC Og isolated key case returned normally with a freshness failure after the fix. This is consistent with removing close starvation, but does not prove that every prior native close stall had this cause or qualify GCC DATA/KM under instrumentation.",
+  "binary_source_binding": "Clean committed rebuilds and binary/cache/log identities recorded manually; no embedded/enforced source binding. BL-6 remains open.",
+  "supplemental_checks": {
+    "python_unittests": 854,
+    "registration_audit_cases": 12,
+    "installed_markdown_files": 97,
+    "pinned_clang_format": "22.1.8",
+    "changed_cpp_files_from_base": 98,
+    "full_mac_suites_expected_linux_only_skips_each": 8,
+    "raw_check_logs": "Preserved in the external listener-close milestone archive; prior evidence remains immutable."
+  }
+}

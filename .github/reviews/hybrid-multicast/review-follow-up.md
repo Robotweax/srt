@@ -99,6 +99,24 @@ in the record. Hosted build-fix evidence resolves the Win32 compilation blocker,
 not the full Windows hybrid profile. GCC O0 and outstanding canonical DATA,
 suite timing, automation and source/binary attestation findings remain open.
 
+## Deterministic listener-close follow-up
+
+`4d59666ebaf54df57b514d1069a5172df440af51` adds four deterministic real-actor close cases:
+idle/admission pending, with/without service pressure, each behind overdue timers.
+All four fail before the fix and pass afterward; existing timer/FIFO/service
+ordering and lifecycle checks remain. Ordinary timer/FIFO dispatch now alternates
+so queued close work progresses. Tests use a callback-count checkpoint and finite
+pressure, without network timing or sleeps. The bound assumes callbacks return.
+
+[Current result tables](README.md#deterministic-listener-close-regression-and-scheduler-fix)
+and [record](records/review-listener-close.json) include eight 78-case focused
+builds, ASan/UBSan/TSan, fresh full macOS 88/114-gate runs and the native probes.
+The former Og key case now reports a regular freshness failure; DATA/KM and wider
+GCC qualification remain open. This confirms a starvation mechanism, not sole
+causality for every prior native hang. The earlier debugger observations below
+remain historical. Continue packet/KM/member diagnostics and capture any other
+blocked close state before changing further lifecycle code.
+
 ## CI partition and quota follow-up
 
 C++/initial partition commit: `2f31b966378a81c74b375dffcd325a401d6137bd`.
@@ -115,11 +133,12 @@ checks valid zero-wait pacing. Downloaded Windows/macOS artifacts reproduce the
 old assertion. Windows also lacks a second assigned IPv4 address, so complete
 native qualification still requires environment evidence and after-fix CI.
 
-GCC freshness/DATA/KM failures remain. One isolated Og key case still times out;
+GCC freshness/DATA/KM failures remain. Before the listener-close fix, one
+isolated Og key case timed out;
 a debugger snapshot locates close completion waiting in `ListenerHandshakeActor::stop`
 with fault workers already stopped. A second probe exits normally with a freshness
-failure. Scheduler starvation/deadlock causality is not proven. Add a deterministic
-close/actor-state regression before altering runtime scheduling. GCC ARM64 CPU
+failure. These were pre-fix observations; the deterministic close follow-up above now
+reproduces and corrects timer/FIFO starvation. Other native causes remain open. GCC ARM64 CPU
 oracle costs and the incomplete timing probe are separate diagnostic evidence.
 The Default console proves 88 gates; its lost auxiliary detail is stated explicitly.
 
