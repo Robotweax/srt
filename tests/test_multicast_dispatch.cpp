@@ -220,8 +220,12 @@ constexpr std::uint16_t multicast_port = 25'999;
 
 struct Peers {
     std::vector<SRTSOCKET> handles;
+    void (*before_close)(void*) noexcept = nullptr;
+    void* close_context = nullptr;
     ~Peers()
     {
+        if (before_close)
+            before_close(close_context);
         for (const SRTSOCKET handle : handles) {
             (void)srt_close(handle);
         }
@@ -1909,8 +1913,12 @@ struct CoordinatedNative {
         int latency = 120, bool coordinated = true,
         bool session_authentication = false,
         void (*configure)(void*, SRTSOCKET, bool) = nullptr,
-        void* context = nullptr)
+        void* context = nullptr, void (*before_close)(void*) noexcept = nullptr)
     {
+        // Register cleanup before configuration can install a fault worker,
+        // including failures partway through this constructor.
+        peers.before_close = before_close;
+        peers.close_context = context;
         listener = peers.keep(srt_create_socket());
         const bool enabled = true;
         auto local = ipv4_sockaddr({127, 0, 0, 1}, 0);
@@ -5213,7 +5221,16 @@ TEST(
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 namespace {
+struct HybridHarnessAudit {
+    unsigned workers = 0, peak_workers = 0, closes = 0, reader_joins = 0;
+    bool stopped_before_close = true;
+    void started()
+    {
+        peak_workers = std::max(peak_workers, ++workers);
+    }
+};
 struct HybridFaultLink {
+    HybridHarnessAudit* audit = nullptr;
     using Queue = robotweax::srt::test::HybridFaultQueue;
     std::shared_ptr<robotweax::srt::compat::DatagramChannel> channel;
     mutable std::mutex mutex;
@@ -5258,7 +5275,6 @@ struct HybridFaultLink {
     {
         REQUIRE(!channel);
         channel = std::move(c);
-        channel->set_send_hook_for_testing(send, this);
         worker = std::jthread([this](std::stop_token stop) {
             while (!stop.stop_requested()) {
                 for (unsigned i = 0; i < 16; ++i) {
@@ -5292,6 +5308,10 @@ struct HybridFaultLink {
                 std::this_thread::sleep_for(std::chrono::milliseconds {1});
             }
         });
+        if (audit)
+            audit->started();
+        // Thread construction may throw; publish its callback only afterward.
+        channel->set_send_hook_for_testing(send, this);
     }
     void rules(Queue::Rules aux, Queue::Rules payload)
     {
@@ -5378,21 +5398,31 @@ struct HybridFaultLink {
         return {.error = r == Queue::Result::retry ? Error::would_block
                                                    : Error::io_error};
     }
-    ~HybridFaultLink()
+    void stop() noexcept
     {
         if (channel)
             channel->set_send_hook_for_testing(nullptr, nullptr);
         if (worker.joinable()) {
             worker.request_stop();
             worker.join();
+            if (audit)
+                --audit->workers;
         }
+    }
+    ~HybridFaultLink()
+    {
+        stop();
     }
 };
 struct HybridNetworkFixture {
     StartupHooks startup;
     HybridFaultLink source, caller, multicast;
-    HybridNetworkFixture()
+    HybridHarnessAudit* audit = nullptr;
+    SRTSOCKET listener = SRT_INVALID_SOCK;
+    explicit HybridNetworkFixture(HybridHarnessAudit* observer = nullptr)
+        : audit(observer)
     {
+        source.audit = caller.audit = multicast.audit = audit;
         startup.network_timing = true;
         startup.maximum_recoveries = 1;
         startup.reporting = {20'000, 600'000};
@@ -5403,12 +5433,26 @@ struct HybridNetworkFixture {
         caller.rules({1'000, 2'000, 11, 4, 31}, {});
         multicast.rules({}, {2'000, 6'000, 11, 3, 29});
     }
+    static void before_close(void* p) noexcept
+    {
+        auto& self = *static_cast<HybridNetworkFixture*>(p);
+        self.multicast.stop();
+        self.caller.stop();
+        self.source.stop();
+        if (self.audit) {
+            ++self.audit->closes;
+            self.audit->stopped_before_close &= self.audit->workers == 0
+                && srt_getsockstate(self.listener) != SRTS_NONEXIST;
+        }
+    }
     static void configure(void* p, SRTSOCKET id, bool is_caller)
     {
         auto& self = *static_cast<HybridNetworkFixture*>(p);
         StartupHooks::configure(&self.startup, id, is_caller);
-        if (!is_caller)
+        if (!is_caller) {
+            self.listener = id;
             self.source.install(self.startup.wire.channel);
+        }
     }
     void install_caller(SRTSOCKET id)
     {
@@ -5427,13 +5471,15 @@ struct HybridNetworkFixture {
         caller.install(std::move(c));
     }
 };
-template <class F> void hybrid_network_wait(F predicate)
+template <class F>
+void hybrid_network_wait(F predicate, const char* stage = "network condition")
 {
     const auto until =
         std::chrono::steady_clock::now() + std::chrono::seconds {3};
     while (!predicate() && std::chrono::steady_clock::now() < until)
         std::this_thread::sleep_for(std::chrono::milliseconds {1});
-    REQUIRE(predicate());
+    if (!predicate())
+        throw std::runtime_error(std::string("hybrid wait: ") + stage);
 }
 }
 TEST(
@@ -5447,7 +5493,8 @@ TEST(
 #endif
         HybridNetworkFixture net;
         CoordinatedNative f(1'000'000, mode != 0, mode == 2, 0, 200, true,
-            false, HybridNetworkFixture::configure, &net);
+            false, HybridNetworkFixture::configure, &net,
+            HybridNetworkFixture::before_close);
         net.install_caller(f.receiver);
         net.multicast.install(f.source());
         auto owner = startup_owner(f.receiver);
@@ -5650,6 +5697,9 @@ TEST(hybrid_network_delayed_policy_replies_cannot_revive_closed_startup)
     net.source.drop_commits = false;
     net.source.policy_delay_us = 250'000;
     StartupServer server(&net.startup);
+    net.listener = server.listener;
+    server.peers.before_close = HybridNetworkFixture::before_close;
+    server.peers.close_context = &net;
     net.source.install(net.startup.wire.channel);
     int result = 0;
     const auto receiver =
@@ -5719,6 +5769,9 @@ TEST(hybrid_network_original_connect_deadline_survives_delayed_exchange)
     net.source.drop_commits = false;
     net.source.rules({200'000}, {});
     StartupServer server(&net.startup);
+    net.listener = server.listener;
+    server.peers.before_close = HybridNetworkFixture::before_close;
+    server.peers.close_context = &net;
     net.source.install(net.startup.wire.channel);
     int result = 0;
     const auto begin = std::chrono::steady_clock::now();
@@ -5755,15 +5808,18 @@ struct HybridMultiScenario {
     unsigned healthy_checks = 0;
     std::vector<std::size_t> monitored;
     explicit HybridMultiScenario(unsigned profile,
-        std::int64_t rate = 1'000'000, std::uint64_t grant_us = 10'000'000)
-        : mode(profile)
+        std::int64_t rate = 1'000'000, std::uint64_t grant_us = 10'000'000,
+        HybridHarnessAudit* audit = nullptr)
+        : net(audit)
+        , mode(profile)
         , grant_lifetime_us(grant_us)
     {
         net.startup.source->expiry =
             hn::NativeService::monotonic_now() + grant_lifetime_us;
         net.startup.caller->expiry = net.startup.source->expiry;
         stream = std::make_unique<CoordinatedNative>(rate, mode != 0, mode == 2,
-            0, 200, true, false, HybridNetworkFixture::configure, &net);
+            0, 200, true, false, HybridNetworkFixture::configure, &net,
+            HybridNetworkFixture::before_close);
         peers.push_back(describe(stream->receiver, net.startup.caller));
         net.install_caller(stream->receiver);
         net.multicast.install(stream->source());
@@ -5773,9 +5829,11 @@ struct HybridMultiScenario {
     {
         auto owner = startup_owner(id);
         REQUIRE(owner);
-        hybrid_network_wait([&] {
-            return owner->membership()->snapshot().joined;
-        });
+        hybrid_network_wait(
+            [&] {
+                return owner->membership()->snapshot().joined;
+            },
+            "receiver membership join");
         const auto data = owner->receiver()->data_progress();
         REQUIRE(data);
         return {id, owner, std::move(provider), data->origin, data->origin,
@@ -5839,9 +5897,11 @@ struct HybridMultiScenario {
         const auto id = attempt();
         auto p = describe(id, net.startup.caller);
         REQUIRE_EQ(p.first, static_cast<std::uint64_t>(next));
-        hybrid_network_wait([&] {
-            return key_ready(id);
-        });
+        hybrid_network_wait(
+            [&] {
+                return key_ready(id);
+            },
+            "receiver key ready");
         peers.push_back(std::move(p));
     }
     void monitor()
@@ -5908,24 +5968,30 @@ struct HybridMultiScenario {
         net.multicast.rules({}, {2'000, 6'000, 0, 3, 29});
         REQUIRE_EQ(receiver->request_overlap(),
             hn::ReceiverBridge::Admission::accepted);
-        hybrid_network_wait([&] {
-            auto s = receiver->snapshot();
-            return s.fresh && s.mode == hn::Mode::overlap;
-        });
+        hybrid_network_wait(
+            [&] {
+                auto s = receiver->snapshot();
+                return s.fresh && s.mode == hn::Mode::overlap;
+            },
+            "receiver overlap");
         const auto b = receiver->snapshot().commit_position;
         REQUIRE_EQ(b, static_cast<std::uint64_t>(next));
         burst(8, false);
         std::optional<hn::CoverageProof> proof;
-        hybrid_network_wait([&] {
-            proof = receiver->coverage_proof(b + 8, 200'000);
-            return proof.has_value();
-        });
+        hybrid_network_wait(
+            [&] {
+                proof = receiver->coverage_proof(b + 8, 200'000);
+                return proof.has_value();
+            },
+            "receiver coverage proof");
         REQUIRE_EQ(receiver->request_multicast(*proof),
             hn::ReceiverBridge::Admission::accepted);
-        hybrid_network_wait([&] {
-            auto s = receiver->snapshot();
-            return s.fresh && s.mode == hn::Mode::multicast;
-        });
+        hybrid_network_wait(
+            [&] {
+                auto s = receiver->snapshot();
+                return s.fresh && s.mode == hn::Mode::multicast;
+            },
+            "receiver multicast");
         read_all();
         net.multicast.rules({}, {2'000, 6'000, 11, 3, 29});
     }
@@ -5933,9 +5999,11 @@ struct HybridMultiScenario {
     {
         net.source.select_aux_peer(endpoint(peers[0].id));
         net.source.drop_selected_aux = true;
-        hybrid_network_wait([&] {
-            return !peers[0].owner->receiver()->snapshot().fresh;
-        });
+        hybrid_network_wait(
+            [&] {
+                return !peers[0].owner->receiver()->snapshot().fresh;
+            },
+            "receiver freshness loss");
         REQUIRE(net.source.selected_aux_drops.load() > 0);
     }
     void check_links()
@@ -6124,7 +6192,6 @@ struct HybridKeyFaultLink {
     {
         REQUIRE(normal.channel);
         REQUIRE(Queue::valid(rules));
-        normal.channel->set_send_hook_for_testing(send, this);
         worker = std::jthread([this](std::stop_token stop) {
             std::uint64_t last = 0;
             while (!stop.stop_requested()) {
@@ -6147,6 +6214,9 @@ struct HybridKeyFaultLink {
                 std::this_thread::sleep_for(std::chrono::milliseconds {1});
             }
         });
+        if (normal.audit)
+            normal.audit->started();
+        normal.channel->set_send_hook_for_testing(send, this);
     }
     UdpIoResult forward(const Queue::Packet& p)
     {
@@ -6283,6 +6353,8 @@ struct HybridKeyFaultLink {
             HybridFaultLink::send, &normal);
         worker.request_stop();
         worker.join();
+        if (normal.audit)
+            --normal.audit->workers;
     }
 };
 struct HybridKeyScenario : HybridMultiScenario {
@@ -6945,20 +7017,47 @@ unsigned hybrid_soak_seconds()
             "ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS must be 4..300");
     return value;
 }
-void hybrid_upper_soak(unsigned mode)
+enum class HybridSoakFailure { none, before_fixture, active_readers, reader };
+struct HybridSoakReaders {
+    HybridHarnessAudit* audit = nullptr;
+    std::atomic<bool> done = false;
+    std::array<std::jthread, 2> threads;
+    void finish(bool cancel = false) noexcept
+    {
+        done = true;
+        for (auto& thread : threads)
+            if (thread.joinable()) {
+                if (cancel)
+                    thread.request_stop();
+                thread.join();
+                if (audit)
+                    ++audit->reader_joins;
+            }
+    }
+    ~HybridSoakReaders()
+    {
+        finish(true);
+    }
+};
+void hybrid_upper_soak(unsigned mode,
+    HybridSoakFailure failure = HybridSoakFailure::none,
+    HybridHarnessAudit* audit = nullptr)
 {
     const auto seconds = hybrid_soak_seconds();
+    if (failure == HybridSoakFailure::before_fixture)
+        throw std::runtime_error("harness failure: before fixture");
     const auto count = seconds * 500U;
     const auto cfg = hybrid_load_profiles.back();
     const auto wall_budget_seconds = (seconds * 4ULL + 2) / 3;
     HybridKeyScenario f(
-        mode, 4'000'000, (wall_budget_seconds + 15) * 1'000'000);
+        mode, 4'000'000, (wall_budget_seconds + 15) * 1'000'000, audit);
     f.net.source.rules({}, f.net.source.payload_rules());
     f.net.caller.rules({}, {});
     f.add();
     f.multicast(1);
     f.monitored = {0, 1};
     HybridFaultLink other_caller;
+    other_caller.audit = audit;
     const auto group = GroupRegistry::instance().find(f.peers[1].id);
     SRTSOCKET child;
     {
@@ -7015,16 +7114,20 @@ void hybrid_upper_soak(unsigned mode)
     const auto stream = [&](unsigned frames) {
         const auto first = f.next;
         std::atomic<int> offered = first;
-        std::atomic<bool> done = false, failed = false;
+        std::atomic<bool> failed = false;
         std::array<std::exception_ptr, 2> errors;
-        std::array<std::jthread, 2> readers;
-        for (unsigned peer = 0; peer < readers.size(); ++peer) {
-            readers[peer] = std::jthread([&, peer](std::stop_token stop) {
+        HybridSoakReaders readers;
+        readers.audit = audit;
+        for (unsigned peer = 0; peer < readers.threads.size(); ++peer) {
+            readers.threads[peer] = std::jthread([&, peer](
+                                                     std::stop_token stop) {
                 auto next = first;
                 try {
+                    if (peer == 0 && failure == HybridSoakFailure::reader)
+                        throw std::runtime_error("harness failure: reader");
                     while (!stop.stop_requested()) {
                         if (next >= offered.load()) {
-                            if (done.load() && next >= offered.load())
+                            if (readers.done.load() && next >= offered.load())
                                 break;
                             std::this_thread::sleep_for(
                                 std::chrono::milliseconds {1});
@@ -7045,6 +7148,10 @@ void hybrid_upper_soak(unsigned mode)
                                 hybrid_runtime(f.peers[peer].id)
                                     ->statistics(false, false)
                                     .total;
+                            const auto membership =
+                                f.peers[peer].owner->membership()->snapshot();
+                            const auto control =
+                                f.peers[peer].owner->receiver()->snapshot();
                             const auto sent =
                                 senders[peer]->statistics(false, false).total;
                             std::fprintf(stderr,
@@ -7053,7 +7160,9 @@ void hybrid_upper_soak(unsigned mode)
                                 "received=%llu bytes=%d canonical=%u "
                                 "offered=%d "
                                 "unique=%llu dropped=%llu undecryptable=%llu "
-                                "sender_dropped=%llu\n",
+                                "sender_dropped=%llu joined=%u "
+                                "route_epoch=%llu "
+                                "mode=%u revision=%llu fresh=%u\n",
                                 mode, peer, next,
                                 static_cast<unsigned long long>(identity), n,
                                 static_cast<unsigned>(
@@ -7066,7 +7175,14 @@ void hybrid_upper_soak(unsigned mode)
                                 static_cast<unsigned long long>(
                                     received.receiver_undecryptable.packets),
                                 static_cast<unsigned long long>(
-                                    sent.sender_tlpktdrop_dropped.packets));
+                                    sent.sender_tlpktdrop_dropped.packets),
+                                static_cast<unsigned>(membership.joined),
+                                static_cast<unsigned long long>(
+                                    membership.route_epoch),
+                                static_cast<unsigned>(control.mode),
+                                static_cast<unsigned long long>(
+                                    control.revision),
+                                static_cast<unsigned>(control.fresh));
                             throw std::runtime_error(
                                 "soak DATA crypto=" + std::to_string(mode)
                                 + " peer=" + std::to_string(peer)
@@ -7082,6 +7198,8 @@ void hybrid_upper_soak(unsigned mode)
                 }
             });
         }
+        if (failure == HybridSoakFailure::active_readers)
+            throw std::runtime_error("harness failure: active readers");
         const auto begin = HybridFaultLink::now();
         auto deadline = std::chrono::steady_clock::now();
         const auto gap = std::chrono::microseconds {2'000};
@@ -7108,9 +7226,7 @@ void hybrid_upper_soak(unsigned mode)
             std::this_thread::sleep_until(deadline);
         }
         loaded_us += HybridFaultLink::now() - begin;
-        done = true;
-        for (auto& reader : readers)
-            reader.join();
+        readers.finish();
         for (auto& error : errors)
             if (error)
                 std::rethrow_exception(error);
@@ -7129,16 +7245,20 @@ void hybrid_upper_soak(unsigned mode)
     REQUIRE(owner->membership()->report_loss());
     REQUIRE_EQ(owner->receiver()->request_fallback(f.next),
         hn::ReceiverBridge::Admission::accepted);
-    hybrid_network_wait([&] {
-        const auto s = owner->receiver()->snapshot();
-        return s.fresh && s.mode == hn::Mode::unicast;
-    });
+    hybrid_network_wait(
+        [&] {
+            const auto s = owner->receiver()->snapshot();
+            return s.fresh && s.mode == hn::Mode::unicast;
+        },
+        "soak fallback");
     const auto fallback_us = HybridFaultLink::now() - loss;
     REQUIRE(fallback_us < 600'000);
-    hybrid_network_wait([&] {
-        const auto s = owner->membership()->snapshot();
-        return s.joined && s.route_epoch > epoch;
-    });
+    hybrid_network_wait(
+        [&] {
+            const auto s = owner->membership()->snapshot();
+            return s.joined && s.route_epoch > epoch;
+        },
+        "soak membership rejoin");
     const auto rejoin_us = HybridFaultLink::now() - loss;
     REQUIRE(rejoin_us < 1'000'000);
     REQUIRE_EQ(owner->membership()->snapshot().failures, 1U);
@@ -7148,34 +7268,42 @@ void hybrid_upper_soak(unsigned mode)
     f.net.multicast.payload_rules(reliable);
     REQUIRE_EQ(owner->receiver()->request_overlap(),
         hn::ReceiverBridge::Admission::accepted);
-    hybrid_network_wait([&] {
-        const auto s = owner->receiver()->snapshot();
-        return s.fresh && s.mode == hn::Mode::overlap;
-    });
+    hybrid_network_wait(
+        [&] {
+            const auto s = owner->receiver()->snapshot();
+            return s.fresh && s.mode == hn::Mode::overlap;
+        },
+        "soak return overlap");
     const auto boundary = static_cast<std::uint64_t>(f.next);
     REQUIRE_EQ(owner->receiver()->snapshot().commit_position, boundary);
     f.burst(8, false);
     std::optional<hn::CoverageProof> proof;
-    hybrid_network_wait([&] {
-        proof = owner->receiver()->coverage_proof(boundary + 8, 200'000);
-        return proof.has_value();
-    });
+    hybrid_network_wait(
+        [&] {
+            proof = owner->receiver()->coverage_proof(boundary + 8, 200'000);
+            return proof.has_value();
+        },
+        "soak return coverage proof");
     REQUIRE_EQ(owner->receiver()->request_multicast(*proof),
         hn::ReceiverBridge::Admission::accepted);
-    hybrid_network_wait([&] {
-        const auto s = owner->receiver()->snapshot();
-        return s.fresh && s.mode == hn::Mode::multicast;
-    });
+    hybrid_network_wait(
+        [&] {
+            const auto s = owner->receiver()->snapshot();
+            return s.fresh && s.mode == hn::Mode::multicast;
+        },
+        "soak return multicast");
     f.read_all();
     const auto return_us = HybridFaultLink::now() - return_at;
     REQUIRE(return_us < 600'000);
     f.net.multicast.payload_rules(data);
     stream(count - count / 2);
-    hybrid_network_wait([&] {
-        return senders[0]->sender_buffer_status().packets <= 16
-            && senders[1]->sender_buffer_status().packets <= 16
-            && f.key_ready(f.peers[0].id) && f.key_ready(f.peers[1].id);
-    });
+    hybrid_network_wait(
+        [&] {
+            return senders[0]->sender_buffer_status().packets <= 16
+                && senders[1]->sender_buffer_status().packets <= 16
+                && f.key_ready(f.peers[0].id) && f.key_ready(f.peers[1].id);
+        },
+        "soak final retention/key drain");
     const auto observations = requests.observations();
     REQUIRE_EQ(observations.overflows, 0U);
     REQUIRE_EQ(observations.switches, (count + 15U) / 32U);
@@ -7220,6 +7348,82 @@ void hybrid_upper_soak(unsigned mode)
         static_cast<unsigned long long>(rejoin_us),
         static_cast<unsigned long long>(return_us));
 }
+}
+TEST(hybrid_harness_network_exception_before_fixture_is_catchable)
+{
+    HybridHarnessAudit audit;
+    bool caught = false;
+    try {
+        hybrid_upper_soak(1, HybridSoakFailure::before_fixture, &audit);
+    } catch (const std::runtime_error& error) {
+        REQUIRE_EQ(
+            std::string(error.what()), "harness failure: before fixture");
+        caught = true;
+    }
+    REQUIRE(caught);
+    REQUIRE_EQ(audit.peak_workers, 0U);
+    REQUIRE_EQ(audit.closes, 0U);
+}
+TEST(hybrid_harness_network_producer_exception_joins_readers_and_fault_workers)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    HybridHarnessAudit audit;
+    bool caught = false;
+    try {
+        hybrid_upper_soak(1, HybridSoakFailure::active_readers, &audit);
+    } catch (const std::runtime_error& error) {
+        REQUIRE_EQ(
+            std::string(error.what()), "harness failure: active readers");
+        caught = true;
+    }
+    REQUIRE(caught);
+    REQUIRE_EQ(audit.peak_workers, 6U);
+    REQUIRE_EQ(audit.workers, 0U);
+    REQUIRE_EQ(audit.reader_joins, 2U);
+    REQUIRE_EQ(audit.closes, 1U);
+    REQUIRE(audit.stopped_before_close);
+}
+TEST(hybrid_harness_network_partial_constructor_stops_worker_before_close)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    HybridHarnessAudit audit;
+    HybridNetworkFixture net(&audit);
+    const auto fail_configuration = [](void* context, SRTSOCKET id,
+                                        bool caller) {
+        HybridNetworkFixture::configure(context, id, caller);
+        if (!caller)
+            throw std::runtime_error("harness failure: constructor");
+    };
+    bool caught = false;
+    try {
+        CoordinatedNative stream(1'000'000, false, false, 0, 200, true, false,
+            fail_configuration, &net, HybridNetworkFixture::before_close);
+    } catch (const std::runtime_error& error) {
+        REQUIRE_EQ(std::string(error.what()), "harness failure: constructor");
+        caught = true;
+    }
+    REQUIRE(caught);
+    REQUIRE_EQ(audit.peak_workers, 1U);
+    REQUIRE_EQ(audit.workers, 0U);
+    REQUIRE_EQ(audit.closes, 1U);
+    REQUIRE(audit.stopped_before_close);
+}
+TEST(hybrid_harness_network_reader_exception_reaches_runner_after_join)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    HybridHarnessAudit audit;
+    bool caught = false;
+    try {
+        hybrid_upper_soak(1, HybridSoakFailure::reader, &audit);
+    } catch (const std::runtime_error& error) {
+        REQUIRE_EQ(std::string(error.what()), "harness failure: reader");
+        caught = true;
+    }
+    REQUIRE(caught);
+    REQUIRE_EQ(audit.reader_joins, 2U);
+    REQUIRE_EQ(audit.workers, 0U);
+    REQUIRE_EQ(audit.closes, 1U);
+    REQUIRE(audit.stopped_before_close);
 }
 TEST(hybrid_soak_network_upper_profile_ctr)
 {

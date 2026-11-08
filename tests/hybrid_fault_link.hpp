@@ -4,6 +4,7 @@
 #include <array>
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 
@@ -68,7 +69,7 @@ public:
             ++state_.duplicates;
         for (unsigned copy = 0; copy < copies; ++copy) {
             auto& p = *std::find_if(
-                packets_.begin(), packets_.end(), [](const auto& p) {
+                packets_->begin(), packets_->end(), [](const auto& p) {
                     return !p.occupied;
                 });
             std::copy(bytes.begin(), bytes.end(), p.bytes.begin());
@@ -85,7 +86,7 @@ public:
     [[nodiscard]] std::optional<Packet> take(std::uint64_t now) noexcept
     {
         Packet* first = nullptr;
-        for (auto& p : packets_)
+        for (auto& p : *packets_)
             if (p.occupied && p.due_us <= now
                 && (!first || p.due_us < first->due_us
                     || (p.due_us == first->due_us
@@ -105,7 +106,11 @@ public:
     }
 
 private:
-    std::array<Packet, capacity> packets_ {};
+    // Allocate the fixed pool once, before installing any send hook. Multiple
+    // links otherwise put nearly 1 MiB in a sanitizer-instrumented stack frame.
+    // Enqueue/take still allocate nothing and retain the same hard capacity.
+    std::unique_ptr<std::array<Packet, capacity>> packets_ =
+        std::make_unique<std::array<Packet, capacity>>();
     Snapshot state_;
     std::uint64_t ordinal_ = 0;
 };

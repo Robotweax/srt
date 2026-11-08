@@ -638,7 +638,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover
-            tsbpd_rtt multicast_dispatch hybrid_network_ hybrid_key_network_ hybrid_load_network_ hybrid_soak_network_ compat_idle_readiness_ arq_transport_)
+            tsbpd_rtt multicast_dispatch hybrid_network_ hybrid_key_network_ hybrid_load_network_ hybrid_soak_network_ hybrid_harness_network_ compat_idle_readiness_ arq_transport_)
     add_test(NAME robotweax_srt_arq_transport_tests
         COMMAND robotweax_srt_tests --include arq_transport_)
     set_tests_properties(robotweax_srt_arq_transport_tests
@@ -647,7 +647,14 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     # do not charge all platform setup costs to the aggregate unit timeout.
     add_test(NAME robotweax_srt_multicast_dispatch_tests
         COMMAND robotweax_srt_tests --include multicast_dispatch)
+    # This fixture and the hybrid partitions bind the same loopback group/port.
+    set_tests_properties(robotweax_srt_multicast_dispatch_tests PROPERTIES RUN_SERIAL TRUE)
     if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
+        add_test(NAME robotweax_srt_hybrid_harness_tests
+            COMMAND robotweax_srt_tests --include hybrid_harness_network_)
+        set_tests_properties(robotweax_srt_hybrid_harness_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection;lifecycle"
+            ENVIRONMENT "ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS=4")
         add_test(NAME robotweax_srt_hybrid_network_tests
             COMMAND robotweax_srt_tests --include hybrid_network_)
         set_tests_properties(robotweax_srt_hybrid_network_tests PROPERTIES
