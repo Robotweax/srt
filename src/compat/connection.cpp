@@ -1391,32 +1391,32 @@ void set_key_material_state_response(
     return listener.state == SRTS_LISTENING;
 }
 
-// Called with only the individual SocketRecord mutex held. No registry/group
-// lock is held during native socket setup. This socket is send-only: no watch,
-// route or scheduler task is installed on it.
-[[nodiscard]] int prepare_multicast_transmitter(SocketRecord& owner,
-    std::shared_ptr<DatagramChannel>& channel, IpEndpoint& bound) noexcept
+// Called without any lock, from a snapshot of the bound socket's options and
+// control endpoint: the native socket setup (socket, setsockopt, bind,
+// getsockname) must not run under the record mutex. No registry/group lock is
+// involved either. The result is send-only: no watch, route or scheduler task
+// is installed on it.
+[[nodiscard]] int prepare_multicast_transmitter(
+    const PublicSocketOptions& options, const SocketOptions& native,
+    const IpEndpoint& control, std::shared_ptr<DatagramChannel>& channel,
+    IpEndpoint& bound) noexcept
 {
-    const auto& options = owner.public_options;
     if (options.multicast_coordinated
         && (!options.multicast_independent
             || options.maximum_bandwidth_bytes_per_second <= 0
-            || owner.native_options.experimental_acp1()
-            || owner.native_options.session_authentication()))
+            || native.experimental_acp1() || native.session_authentication()))
         return fail(SRT_EINVPARAM);
     if (!options.multicast_independent)
         return options.multicast_source_set ? fail(SRT_EINVPARAM) : 0;
     if (!options.multicast_group_set || !options.multicast_source_set
         || !options.message_api || !options.tsbpd_mode
         || options.transmission_type != SRTT_LIVE
-        || owner.native_options.congestion_controller()
-            != CongestionController::live
-        || owner.native_options.packet_filter_configuration().enabled)
+        || native.congestion_controller() != CongestionController::live
+        || native.packet_filter_configuration().enabled)
         return fail(SRT_EINVPARAM);
     // Independent IPv6/mixed-family paths retain a separate qualification gate.
     if (!options.multicast_source.is_ipv4()
-        || !options.multicast_group.is_ipv4()
-        || !owner.local_endpoint.is_ipv4())
+        || !options.multicast_group.is_ipv4() || !control.is_ipv4())
         return fail(SRT_EINVOP);
     if (options.multicast_interface_set
         && !options.multicast_interface.is_ipv4())
@@ -1471,8 +1471,11 @@ int listen_socket(
     IpEndpoint multicast_source;
     std::shared_ptr<HandshakeInbox> inbox;
     std::shared_ptr<ListenerRuntime> listener_runtime;
-    {
-        std::lock_guard lock(socket->mutex);
+    // Profile checks and the bound-socket requirement, under the record mutex.
+    // They run twice: before the native transmitter setup, which must not hold
+    // the mutex, and again before the commit, since a post option or the state
+    // may have changed meanwhile.
+    const auto validate_locked = [&]() -> int {
         if (socket->native_options.experimental_acp1()
             && (!socket->native_options.session_authentication()
                 || !socket->native_options.encryption_enabled()
@@ -1504,39 +1507,7 @@ int listen_socket(
             if (socket->channel == nullptr || !socket->has_local_endpoint) {
                 return fail(SRT_EUNBOUNDSOCK);
             }
-            if (prepare_multicast_transmitter(
-                    *socket, multicast_transmitter, multicast_source)
-                == SRT_ERROR)
-                return SRT_ERROR;
-            if (!generate_listener_cookie_secret(
-                    socket->listener_cookie_secret)) {
-                return fail(SRT_ESECFAIL);
-            }
-            try {
-                const std::size_t requested = std::min<std::size_t>(
-                    static_cast<std::size_t>(backlog), 512U) * 8U;
-                inbox = std::make_shared<HandshakeInbox>(
-                    std::clamp<std::size_t>(requested, 16U, 4'096U));
-                listener_runtime = std::make_shared<ListenerRuntime>(
-                    socket, std::min<std::size_t>(
-                        static_cast<std::size_t>(backlog), 4'096U));
-            } catch (const std::bad_alloc&) {
-                default_crypto_provider().secure_erase(
-                    socket->listener_cookie_secret);
-                return fail(SRT_ENOBUF);
-            } catch (...) {
-                default_crypto_provider().secure_erase(
-                    socket->listener_cookie_secret);
-                return fail(SRT_ESYSOBJ);
-            }
-            channel = socket->channel;
-            socket->listener_inbox = inbox;
-            socket->listener_runtime = listener_runtime;
-            socket->listen_backlog = backlog;
-            socket->multicast_transmit_channel = multicast_transmitter;
-            socket->multicast_transmit_source = multicast_source;
-            socket->state = SRTS_LISTENING;
-            break;
+            return 0;
         case SRTS_LISTENING:
             return fail(SRT_EDUPLISTEN);
         case SRTS_CONNECTING:
@@ -1547,6 +1518,61 @@ int listen_socket(
         default:
             return fail(SRT_EINVOP);
         }
+    };
+    PublicSocketOptions public_options;
+    SocketOptions native_options;
+    IpEndpoint control_endpoint;
+    {
+        std::lock_guard lock(socket->mutex);
+        if (validate_locked() == SRT_ERROR)
+            return SRT_ERROR;
+        public_options = socket->public_options;
+        native_options = socket->native_options;
+        control_endpoint = socket->local_endpoint;
+    }
+    // Native socket setup from the snapshot, without the record mutex. The
+    // multicast and source options are frozen once the socket is bound; the
+    // one transmitter input that can still change is the post option
+    // SRTO_MAXBW, which the commit below checks again.
+    if (prepare_multicast_transmitter(public_options, native_options,
+            control_endpoint, multicast_transmitter, multicast_source)
+        == SRT_ERROR)
+        return SRT_ERROR;
+    {
+        std::lock_guard lock(socket->mutex);
+        if (validate_locked() == SRT_ERROR)
+            return SRT_ERROR;
+        if (socket->public_options.multicast_coordinated
+            && socket->public_options.maximum_bandwidth_bytes_per_second <= 0)
+            return fail(SRT_EINVPARAM);
+        if (!generate_listener_cookie_secret(socket->listener_cookie_secret)) {
+            return fail(SRT_ESECFAIL);
+        }
+        try {
+            const std::size_t requested =
+                std::min<std::size_t>(static_cast<std::size_t>(backlog), 512U)
+                * 8U;
+            inbox = std::make_shared<HandshakeInbox>(
+                std::clamp<std::size_t>(requested, 16U, 4'096U));
+            listener_runtime = std::make_shared<ListenerRuntime>(socket,
+                std::min<std::size_t>(
+                    static_cast<std::size_t>(backlog), 4'096U));
+        } catch (const std::bad_alloc&) {
+            default_crypto_provider().secure_erase(
+                socket->listener_cookie_secret);
+            return fail(SRT_ENOBUF);
+        } catch (...) {
+            default_crypto_provider().secure_erase(
+                socket->listener_cookie_secret);
+            return fail(SRT_ESYSOBJ);
+        }
+        channel = socket->channel;
+        socket->listener_inbox = inbox;
+        socket->listener_runtime = listener_runtime;
+        socket->listen_backlog = backlog;
+        socket->multicast_transmit_channel = multicast_transmitter;
+        socket->multicast_transmit_source = multicast_source;
+        socket->state = SRTS_LISTENING;
     }
 
     if (!channel->set_listener_inbox(inbox)) {
