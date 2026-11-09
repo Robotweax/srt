@@ -644,6 +644,8 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
         Frame& frame = **available;
         Publication tx {*this, frame, {}, {}};
         bool retry = false;
+        // A member detached below although its session is still established.
+        bool lost_connected_member = false;
         frame.count = 0;
         const DataHeader header {.sequence = state_.next_sequence,
             .message_number = state_.next_message,
@@ -697,6 +699,11 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
                 break;
             }
             if (reason != Detachment::none) {
+                // A closed or replaced runtime has already left; it is the
+                // late discovery of a member that was gone before this call.
+                lost_connected_member = lost_connected_member
+                    || (reason != Detachment::closed
+                        && reason != Detachment::stale);
                 detach(member.state.id, reason);
                 continue;
             }
@@ -713,9 +720,18 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
             }
             return Status::busy;
         }
-        // The enclosing scope releases source/runtime guards before unused advance.
+        // No member remains for this message. If all of them had already
+        // left, the group was empty in effect and the timeline advances
+        // unused, as for a group that is empty on entry; the enclosing scope
+        // releases source/runtime guards before that advance. If a member
+        // whose session is still established was detached here, the message
+        // reaches nobody and must not be accepted: report the loss and leave
+        // the sequence, message number, source reservation and key position
+        // untouched. Such a member may still listen to the multicast group
+        // and expects this sequence from the next original.
         if (frame.count == 0)
-            return Status::advanced_without_receivers;
+            return lost_connected_member ? Status::receivers_lost
+                                         : Status::advanced_without_receivers;
         if (!manual_
             && scheduler_->notify_service(service_)
                 != RuntimeScheduler::SubmitStatus::accepted) {

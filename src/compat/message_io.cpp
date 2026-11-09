@@ -1156,6 +1156,12 @@ int send_group_message_implementation(
                     group, control, requested_data, requested_capacity, true);
                 return length;
             }
+            if (result == Status::receivers_lost) {
+                // Publish the detachments this call caused before reporting
+                // that the message reached no member.
+                GroupRegistry::refresh_coordinated_members(group);
+                return fail(SRT_ECONNLOST);
+            }
             if (result == Status::closed)
                 return fail(SRT_ESCLOSED);
             if (result == Status::failed)

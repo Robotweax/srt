@@ -718,7 +718,13 @@ again; later ACKs do not restore its skipped history. It may still observe
 multicast DATA, with no repair-retention guarantee after detachment.
 
 With no eligible members, sends succeed and advance the stream without emitting
-DATA. Pause production until the receiver's join has completed and, for encrypted
+DATA. Members that have closed or left count as absent even when the sender
+first notices during a send. A send that instead detaches its last members
+while their unicast sessions are still established, for example because the
+last member's repair history is full, fails with `SRT_ECONNLOST`. It emits
+nothing and consumes no sequence number; the group stays connected, the group
+data shows the detached members, and the next send finds no eligible members.
+Pause production until the receiver's join has completed and, for encrypted
 streams, wait for that member's `SRTO_SNDKMSTATE` to become `SRT_KM_S_SECURED`
 before resuming. An admission
 whose advertised ISN became stale is rejected instead of silently rebasing the

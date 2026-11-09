@@ -47,7 +47,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | BL-6 | Partial: scope/labels corrected; matching-cache failure flags recovered | Enforce build/source identity, reject stale binary, test CLI record production; obtain missing platform evidence |
 | L-1 | Open: ACK/NAK versus pending completion fanout | Reproduce genuine early control versus forged/unsubmitted control; preserve actual-submission authorization |
 | L-2 | Open: completion-busy attempt count versus send rate | Production-default send-driven contention regression and time-bounded policy |
-| L-3 | Open: detach-last-member during one send | Assert no silent successful un-emitted sequence on mid-admission detachment |
+| L-3 | Fixed in source: such a send fails with `SRT_ECONNLOST` and consumes nothing; see below | Hosted default and enabled builds |
 | L-4 | Open: one member admission contention/backpressure | Quantify retry/liveness with healthy-peer traffic and bounded work |
 | L-5 | Open: per-message TTL causing permanent detachment | Deterministic expiry rollback/member-state test |
 | L-6 | Open: prepared crypto generation advances on aborted admission | Cancelled-guard/prefix-recovery reproduction |
@@ -225,6 +225,54 @@ keeps equal to the listener's (fixed before listen, refused in the callback).
 Bonding and uncoordinated dispatch admissions are back on the path they have
 on `main`. The close race is not deterministic, so there is no dedicated
 regression; the existing suites cover both directions.
+
+## Canonical DATA path: L-3
+
+A coordinated send that began with eligible members and detached every one of
+them during admission returned `advanced_without_receivers`: the emitter,
+encoder and cursor advanced, no datagram left, and `srt_send*` reported
+success. A member detached for a full history, a stalled admission, an expired
+message or a crypto error keeps its unicast session, can still listen to the
+multicast group, and then expects a sequence the next original no longer
+carries.
+
+Decision by the maintainer on 9 November 2026: such a send fails and consumes
+nothing. The coordinator returns the new `Status::receivers_lost` without the
+unused advance; `srt_send*` publishes the detachments to the group data and
+fails with `SRT_ECONNLOST`. The group stays connected. The following send
+finds no eligible members and takes the documented empty advance, unchanged.
+No packet format or other socket type is involved.
+
+Scope, corrected during implementation. Failing every send that ends without
+a member was too broad: when receivers close, the coordinator learns it during
+the next send, and three existing public tests
+(`multicast_dispatch_coordinated_*_public_*`) rightly expect that send to
+succeed, as documented for a group whose receivers have left. The loss is
+therefore reported only when at least one member detached in the call is still
+connected, that is for every detachment reason except `closed` and `stale`.
+Members that had already left keep the empty advance.
+
+Regressions, each failing before the change:
+
+- `compat_group_coordinator_send_losing_its_last_connected_members_fails_and_consumes_nothing`
+  (plain, CTR, GCM): a history-full member next to a closed one; status,
+  unchanged sequence, message number and key frontier, no further output, then
+  the empty advance.
+- the persistent rows of
+  `compat_group_coordinator_busy_grace_retries_before_sealing_and_bounds_stalled_admission`
+  now expect the loss and an unchanged sequence.
+- `multicast_dispatch_coordinated_send_losing_its_only_receiver_reports_connection_lost`
+  through the public API: a receiver that stops acknowledging fills its repair
+  history; the send that detaches it returns `SRT_ECONNLOST`, the sequence is
+  unchanged, the group data shows `SRT_GST_BROKEN`, and the next send succeeds.
+
+Controls that pass before and after:
+`compat_group_coordinator_all_unavailable_members_advance_without_emission`
+(closed member, unchanged) and
+`compat_group_coordinator_send_losing_one_of_two_members_is_accepted`.
+L-5 (a per-message expiry detaching a member permanently) is separate and
+still open; with this change such an expiry on the last member now also fails
+the send instead of reporting success.
 
 ## Source layout change
 

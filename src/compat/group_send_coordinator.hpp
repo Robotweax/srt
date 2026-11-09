@@ -46,7 +46,13 @@ public:
     };
     enum class Status : std::uint8_t {
         accepted,
+        // No member could take the message because none existed or all had
+        // already left: the timeline advances and no datagram is emitted.
         advanced_without_receivers,
+        // No member remains, and at least one was detached during this call
+        // although its session is still established. Nothing is consumed or
+        // emitted; the message is not sent.
+        receivers_lost,
         full,
         busy,
         expired,

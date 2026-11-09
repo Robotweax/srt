@@ -4252,6 +4252,71 @@ TEST(
     REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
 }
 
+// The only receiver stops acknowledging, so its repair history fills and the
+// send that finds it full detaches it. That send began with a member and
+// delivered to nobody: it fails with SRT_ECONNLOST and consumes no sequence.
+// The group stays connected, and the next send is the documented empty one.
+TEST(
+    multicast_dispatch_coordinated_send_losing_its_only_receiver_reports_connection_lost)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    CoordinatedNative f(1'000'000, false, false, 32);
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+    {
+        const auto record = GroupRegistry::instance().find(f.receiver);
+        std::lock_guard lock(record->mutex);
+        control = record->dispatch->control_channel.lock();
+    }
+    REQUIRE(control);
+    SendHookReset cleanup {control};
+    control->set_send_hook_for_testing(
+        +[](std::span<const std::byte> bytes, IpEndpoint peer,
+             void* p) noexcept {
+            const auto decoded = decode_packet(bytes);
+            if (decoded && decoded.packet.kind == PacketKind::control
+                && (decoded.packet.control.type == ControlType::acknowledgement
+                    || decoded.packet.control.type
+                        == ControlType::negative_acknowledgement))
+                return UdpIoResult {.bytes_transferred = bytes.size()};
+            return static_cast<robotweax::srt::compat::DatagramChannel*>(p)
+                ->socket.send_to(bytes, peer);
+        },
+        control.get());
+    const auto actor = f.actor();
+    int accepted = 0;
+    int failed_at = -1;
+    auto before = actor->snapshot().next_sequence;
+    for (int i = 0; i < 96 && failed_at < 0; ++i) {
+        before = actor->snapshot().next_sequence;
+        const int result = f.send(i);
+        if (result == SRT_ERROR) {
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
+            failed_at = i;
+        } else {
+            REQUIRE_EQ(result, static_cast<int>(message(i).size()));
+            ++accepted;
+            std::this_thread::sleep_for(std::chrono::milliseconds {5});
+        }
+    }
+    REQUIRE(failed_at >= 0);
+    REQUIRE(accepted > 0);
+    REQUIRE_EQ(actor->snapshot().next_sequence, before);
+    REQUIRE_EQ(actor->snapshot().active_members, 0U);
+    REQUIRE_EQ(actor->snapshot().detached_members, 1U);
+    SRT_SOCKGROUPDATA data[1] {};
+    std::size_t count = 1;
+    REQUIRE_EQ(srt_group_data(f.sender, data, &count), 1);
+    REQUIRE_EQ(data[0].sockstate, SRTS_CONNECTED);
+    REQUIRE_EQ(data[0].memberstate, SRT_GST_BROKEN);
+    REQUIRE_EQ(data[0].result, SRT_ECONNLOST);
+    REQUIRE_EQ(srt_getsockstate(f.sender), SRTS_CONNECTED);
+    REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+
+    REQUIRE_EQ(f.send(failed_at), static_cast<int>(message(failed_at).size()));
+    REQUIRE_EQ(actor->snapshot().next_sequence, before.next());
+}
+
 TEST(
     multicast_dispatch_coordinated_validation_requires_fixed_source_and_positive_wire_rate)
 {

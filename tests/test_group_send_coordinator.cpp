@@ -691,6 +691,8 @@ TEST(
     }
 }
 
+// Members whose runtimes are already closed have left the group; finding that
+// out during a send is the same as finding the group empty.
 TEST(compat_group_coordinator_all_unavailable_members_advance_without_emission)
 {
     Fixture f;
@@ -701,6 +703,73 @@ TEST(compat_group_coordinator_all_unavailable_members_advance_without_emission)
     REQUIRE_EQ(reason(f, a.id), Actor::Detachment::closed);
     f.pump();
     REQUIRE_EQ(f.output.size(), 0U);
+}
+
+// A send that detaches its last members while their sessions are still
+// established reports the loss. It consumes no sequence, message number or
+// key position, so the next emitted original still carries the number those
+// multicast listeners expect. A closed member alongside does not change that.
+TEST(
+    compat_group_coordinator_send_losing_its_last_connected_members_fails_and_consumes_nothing)
+{
+    for (auto mode :
+        {CryptoMode::automatic, CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+        Fixture f(mode);
+        Receiver slow(f, 1), gone(f);
+        slow.exchange_keys();
+        gone.exchange_keys();
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.pump();
+        REQUIRE_EQ(f.output.size(), 1U);
+        gone.runtime->close();
+        f.now += 1ms;
+        slow.now += 1'000;
+        const auto message = f.actor->snapshot().next_message;
+
+        const auto key_frontier =
+            f.schedule ? f.schedule->frontier_position() : 0U;
+
+        // The unacknowledged original fills the slow member's history.
+        REQUIRE_EQ(f.send(), Status::receivers_lost);
+        REQUIRE_EQ(f.actor->snapshot().next_sequence, initial.next());
+        REQUIRE_EQ(f.actor->snapshot().next_message, message);
+        REQUIRE_EQ(f.actor->snapshot().active_members, 0U);
+        REQUIRE_EQ(reason(f, slow.id), Actor::Detachment::history_full);
+        REQUIRE_EQ(reason(f, gone.id), Actor::Detachment::closed);
+        if (f.schedule)
+            REQUIRE_EQ(f.schedule->frontier_position(), key_frontier);
+        f.pump();
+        REQUIRE_EQ(f.output.size(), 1U);
+        REQUIRE(!f.actor->snapshot().failed);
+
+        // The group is empty now, which is the documented unused advance.
+        REQUIRE_EQ(f.send(), Status::advanced_without_receivers);
+        REQUIRE_EQ(f.actor->snapshot().next_sequence, initial.advanced(2));
+        if (f.schedule)
+            REQUIRE_EQ(f.schedule->frontier_position(), 2U);
+        f.pump();
+        REQUIRE_EQ(f.output.size(), 1U);
+        f.actor->close();
+    }
+}
+
+// One member lost during a send does not fail it while another remains.
+TEST(compat_group_coordinator_send_losing_one_of_two_members_is_accepted)
+{
+    Fixture f;
+    Receiver slow(f, 1), healthy(f);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    f.pump();
+    healthy.ack(initial.next());
+    f.now += 1ms;
+    slow.now += 1'000;
+    healthy.now += 1'000;
+    REQUIRE_EQ(f.send(), Status::accepted);
+    REQUIRE_EQ(f.actor->snapshot().next_sequence, initial.advanced(2));
+    REQUIRE_EQ(reason(f, slow.id), Actor::Detachment::history_full);
+    REQUIRE_EQ(reason(f, healthy.id), Actor::Detachment::none);
+    f.pump();
+    REQUIRE_EQ(f.output.size(), 2U);
 }
 
 TEST(compat_group_coordinator_retry_exhaustion_never_becomes_submission)
@@ -970,7 +1039,9 @@ TEST(
         });
         REQUIRE_EQ(attempt.wait_for(2s), std::future_status::ready);
         REQUIRE_EQ(attempt.get(),
-            persistent ? Status::advanced_without_receivers : Status::accepted);
+            persistent ? Status::receivers_lost : Status::accepted);
+        REQUIRE_EQ(f.actor->snapshot().next_sequence,
+            persistent ? initial : initial.next());
         held.release();
         REQUIRE_EQ(reason(f, a.id),
             persistent ? Actor::Detachment::admission_busy
