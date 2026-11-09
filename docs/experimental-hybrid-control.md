@@ -447,7 +447,13 @@ exhaustion explicitly refuses attachment; no worker or scheduler limit is added.
 It owns a 16-job input queue, processes at most eight jobs per turn and exposes
 an eight-event output queue. The complete owner is below 64 KiB, including its
 bounded Exchange and inline Session. Input overflow drops/refuses work; event
-overflow closes the service. Consumers must drain events. Scheduler notifications
+overflow closes the service. Consumers must drain events. Inputs are
+authenticated only when processed, so unauthenticated datagrams that pass the
+subtype filter can occupy the input slots and starve genuine exchange records
+until the attempt's deadline; the service then refuses the attempt as the
+documented explicit failure, without crashing or leaking. This is an
+availability limit of the experimental component, not a security boundary.
+Scheduler notifications
 coalesce, and a reserved timer services setup retries and grant expiry without
 depending on the ordinary datagram retry queue. Cached setup retries retain the
 existing stage limits and exact bodies, including after transient UDP failures.
