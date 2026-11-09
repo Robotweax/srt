@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <limits>
 #include <utility>
 
@@ -592,16 +593,25 @@ void CryptoSession::erase_receive_history(
 {
     for (auto& generation : history.generations) {
         erase_slot(generation.slot);
+        generation.accepted = {};
         generation.sequence_ceiling_known = false;
         generation.sequence_ceiling_position = 0;
+        generation.lifetime_anchor_known = false;
+        generation.lifetime_anchor_position = 0;
+        generation.install_batch = 0;
+        generation.companion_batch_at_retirement = 0;
+        generation.open_above_ceiling = false;
     }
     history.size = 0;
     history.discarded_sequence_ceiling_known = false;
     history.discarded_sequence_ceiling_position = 0;
+    history.current_accepted = {};
+    history.current_install_batch = 0;
 }
 
-void CryptoSession::remember_receive_key(
-    ReceiveKeyHistory& history, KeySlot& slot) noexcept
+void CryptoSession::remember_receive_key(ReceiveKeyHistory& history,
+    KeySlot& slot, bool open_above_ceiling,
+    std::uint64_t companion_batch) noexcept
 {
     const std::size_t last =
         std::min(history.size, history.generations.size() - 1U);
@@ -625,11 +635,18 @@ void CryptoSession::remember_receive_key(
     erase_slot(newest.slot);
     newest.slot = std::move(slot);
     erase_slot(slot);
+    newest.accepted = history.current_accepted;
+    history.current_accepted = {};
     newest.sequence_ceiling_known =
         newest.slot.ready() && highest_receive_sequence_known_;
     if (newest.sequence_ceiling_known) {
         newest.sequence_ceiling_position = highest_receive_position_;
     }
+    newest.lifetime_anchor_known = newest.sequence_ceiling_known;
+    newest.lifetime_anchor_position = newest.sequence_ceiling_position;
+    newest.install_batch = history.current_install_batch;
+    newest.companion_batch_at_retirement = companion_batch;
+    newest.open_above_ceiling = open_above_ceiling;
     history.size =
         std::min(history.size + 1U, history.generations.size());
 }
@@ -761,8 +778,13 @@ Error CryptoSession::install_receive_key(EncryptionKey key_selection,
             break;
         }
     }
+    std::uint64_t install_batch = receive_install_batch_;
     if (restored != history->size) {
         const std::size_t removed = restored + 1U;
+        // The restored generation keeps the positions it already received
+        // and its place in the generation order.
+        history->current_accepted = history->generations[restored].accepted;
+        install_batch = history->generations[restored].install_batch;
         for (std::size_t index = 0; index < removed; ++index) {
             erase_slot(history->generations[index].slot);
         }
@@ -774,12 +796,36 @@ Error CryptoSession::install_receive_key(EncryptionKey key_selection,
         history->size -= removed;
         erase_slot(*current);
     } else if (current->ready()) {
-        remember_receive_key(*history, *current);
+        // A rotation replaces a selector while the companion selector holds
+        // the generation announced after the retiring one. Delayed packets of
+        // the retiring generation may still arrive above the receive
+        // frontier, so that frontier must not route them to the replacement.
+        // Without such a companion, because it is older than the retiring
+        // generation or is replaced by this same announcement (a fresh key
+        // pair), the replacement is a re-key and the frontier closes the
+        // retired generation as before.
+        const EncryptionKey companion_selector =
+            key_selection == EncryptionKey::even ? EncryptionKey::odd
+                                                 : EncryptionKey::even;
+        const KeySlot* companion = receive_slot(companion_selector);
+        const ReceiveKeyHistory* companion_history =
+            receive_history(companion_selector);
+        const bool open_above_ceiling = companion != nullptr
+            && companion_history != nullptr && companion->ready()
+            && companion_history->current_install_batch
+                >= history->current_install_batch
+            && companion_history->current_install_batch != install_batch;
+        remember_receive_key(*history, *current, open_above_ceiling,
+            companion_history != nullptr
+                ? companion_history->current_install_batch
+                : 0U);
     } else {
         erase_slot(*current);
+        history->current_accepted = {};
     }
     *current = std::move(replacement);
     erase_slot(replacement);
+    history->current_install_batch = install_batch;
     return Error::none;
 }
 
@@ -801,10 +847,14 @@ Error CryptoSession::clone_transmit_keys_to_receive() noexcept
     erase_receive_history(receive_odd_history_);
     highest_receive_position_ = 0;
     highest_receive_sequence_known_ = false;
+    last_ctr_route_known_ = false;
     Error result = clone_key(transmit_even_, receive_even_);
     if (result != Error::none) return result;
     result = clone_key(transmit_odd_, receive_odd_);
     if (result != Error::none) return result;
+    ++receive_install_batch_;
+    receive_even_history_.current_install_batch = receive_install_batch_;
+    receive_odd_history_.current_install_batch = receive_install_batch_;
     receiver_state_ = CryptoState::secured;
     return Error::none;
 }
@@ -1338,6 +1388,7 @@ Error CryptoSession::accept_key_material(
         provider_.secure_erase(salt);
         return reject(Error::invalid_key_material, CryptoState::bad_secret);
     }
+    ++receive_install_batch_;
     if (has_even) {
         result = install_receive_key(
             EncryptionKey::even, even_key, salt, selection.effective_mode);
@@ -1752,62 +1803,357 @@ Error CryptoSession::encrypt(
     return result;
 }
 
-CryptoSession::KeySlot* CryptoSession::receive_slot_for_packet(
-    EncryptionKey key, SequenceNumber sequence, bool commit_sequence) noexcept
+CryptoSession::ReceiveSelection CryptoSession::select_receive_generation(
+    EncryptionKey key, SequenceNumber sequence) noexcept
 {
+    ReceiveSelection selection;
     KeySlot* current = receive_slot(key);
     ReceiveKeyHistory* history = receive_history(key);
     if (current == nullptr || history == nullptr) {
-        return nullptr;
+        return selection;
     }
+    selection.slot = current;
+    selection.accepted = &history->current_accepted;
+    selection.unique = true;
+    if (!highest_receive_sequence_known_) {
+        // Nothing has been accepted, so no position separates the
+        // generations. Policy keeps the current key; authenticated reception
+        // may verify the tag against the retained generations as well.
+        for (std::size_t index = 0; index < history->size; ++index) {
+            auto& generation = history->generations[index];
+            if (generation.slot.ready()) {
+                selection.alternatives[selection.alternative_count] =
+                    &generation.slot;
+                selection.alternative_accepted[selection.alternative_count] =
+                    &generation.accepted;
+                ++selection.alternative_count;
+            }
+        }
+        selection.unique = selection.alternative_count == 0U;
+        return selection;
+    }
+    const EncryptionKey companion_selector =
+        key == EncryptionKey::even ? EncryptionKey::odd : EncryptionKey::even;
+    const ReceiveKeyHistory* companion = receive_history(companion_selector);
 
-    KeySlot* selected = current;
     // Haivision stores encrypted packets in its send buffer. A
     // retransmission therefore retains both its original selector and
     // ciphertext even after that selector has been reused several times.
-    // Search oldest to newest so the first ceiling containing the sequence
-    // identifies the exact generation independently of arrival order.
-    // Modular comparisons against an old ceiling reverse direction after
-    // half the sequence space. Compare positions relative to the receive
-    // frontier instead, and only route through ceilings still within that
-    // half range.
-    const std::int64_t position = highest_receive_position_
-        + sequence.distance_from(highest_receive_sequence_);
-    const auto ceiling_is_recent = [this](std::int64_t ceiling) {
-        return ceiling > highest_receive_position_ - SequenceNumber::half_range;
+    // Generations occupy disjoint sequence ranges in installation order and
+    // the companion selector's generation lies between two generations of
+    // this selector. Positions accepted under retained generations therefore
+    // decide, without inspecting ciphertext or plaintext, which generation a
+    // delayed packet can belong to. Modular comparisons against an old
+    // position reverse direction after half the sequence space. Compare
+    // positions relative to the receive frontier instead, and only use
+    // positions still within that half range.
+    const std::int64_t frontier = highest_receive_position_;
+    const std::int64_t position =
+        frontier + sequence.distance_from(highest_receive_sequence_);
+    selection.position = position;
+    const auto recent = [frontier](std::int64_t value) {
+        return value > frontier - SequenceNumber::half_range;
     };
-    const bool may_be_historical = highest_receive_sequence_known_
-        && history->size != 0U && history->generations[0].sequence_ceiling_known
-        && ceiling_is_recent(history->generations[0].sequence_ceiling_position)
-        && position <= history->generations[0].sequence_ceiling_position;
-    if (may_be_historical) {
-        if (history->discarded_sequence_ceiling_known
-            && ceiling_is_recent(history->discarded_sequence_ceiling_position)
-            && position <= history->discarded_sequence_ceiling_position) {
-            return nullptr;
+    const auto bounded = [&recent](const ReceivePositionBounds& bounds) {
+        return bounds.known && recent(bounds.highest);
+    };
+    if (history->discarded_sequence_ceiling_known
+        && recent(history->discarded_sequence_ceiling_position)
+        && position <= history->discarded_sequence_ceiling_position) {
+        selection.slot = nullptr;
+        selection.accepted = nullptr;
+        return selection;
+    }
+
+    // Candidate generations of this selector, oldest first. Each knows the
+    // generation it replaced, whose ceiling is the candidate's floor.
+    struct Candidate {
+        KeySlot* slot = nullptr;
+        ReceivePositionBounds* accepted = nullptr;
+        const ReceiveKeyGeneration* retired = nullptr;
+        const ReceiveKeyGeneration* predecessor = nullptr;
+        std::uint64_t batch = 0;
+    };
+    std::array<Candidate, receive_key_history_capacity + 1U> candidates {};
+    std::size_t candidate_count = 0;
+    for (std::size_t index = history->size; index > 0U; --index) {
+        auto& generation = history->generations[index - 1U];
+        if (!generation.slot.ready()) {
+            continue;
         }
-        for (std::size_t index = history->size;
-             index > 0U; --index) {
-            auto& generation = history->generations[index - 1U];
-            if (generation.slot.ready() && generation.sequence_ceiling_known
-                && ceiling_is_recent(generation.sequence_ceiling_position)
-                && position <= generation.sequence_ceiling_position) {
-                selected = &generation.slot;
-                break;
+        candidates[candidate_count++] = {&generation.slot, &generation.accepted,
+            &generation,
+            index < history->size ? &history->generations[index] : nullptr,
+            generation.install_batch};
+    }
+    if (current->ready()) {
+        candidates[candidate_count++] = {current, &history->current_accepted,
+            nullptr, history->size != 0U ? &history->generations[0] : nullptr,
+            history->current_install_batch};
+    }
+
+    // Accepted ranges of the companion selector's generations, with the
+    // batch that installed each generation's key.
+    struct CompanionRange {
+        const ReceivePositionBounds* bounds = nullptr;
+        std::uint64_t batch = 0;
+    };
+    std::array<CompanionRange, receive_key_history_capacity + 1U>
+        companion_bounds {};
+    std::size_t companion_count = 0;
+    if (companion != nullptr) {
+        if (bounded(companion->current_accepted)) {
+            companion_bounds[companion_count++] = {
+                &companion->current_accepted, companion->current_install_batch};
+        }
+        for (std::size_t index = 0; index < companion->size; ++index) {
+            const auto& generation = companion->generations[index];
+            if (generation.slot.ready() && bounded(generation.accepted)) {
+                companion_bounds[companion_count++] = {
+                    &generation.accepted, generation.install_batch};
             }
         }
     }
 
-    if (commit_sequence) {
-        note_authenticated_receive_sequence(sequence);
+    const auto inside = [position](const ReceivePositionBounds& bounds) {
+        return position >= bounds.lowest && position <= bounds.highest;
+    };
+    // Whether a generation with `bounds` lies strictly between the
+    // candidate's accepted range and the packet position.
+    const auto separates = [position](const ReceivePositionBounds& own,
+                               const ReceivePositionBounds& bounds) {
+        if (position > own.highest) {
+            return bounds.lowest > own.highest && bounds.highest < position;
+        }
+        if (position < own.lowest) {
+            return bounds.highest < own.lowest && bounds.lowest > position;
+        }
+        return false;
+    };
+    const auto possible = [&](std::size_t index) {
+        const Candidate& candidate = candidates[index];
+        const ReceiveKeyGeneration* predecessor = candidate.predecessor;
+        if (predecessor != nullptr && predecessor->sequence_ceiling_known
+            && recent(predecessor->sequence_ceiling_position)
+            && position <= predecessor->sequence_ceiling_position) {
+            return false;
+        }
+        // A retired generation stays eligible only while its lifetime anchor
+        // lies within half the sequence space of the frontier: beyond that
+        // its finite sequences are being reused and an old packet, even one
+        // that authenticates, must not be accepted as new data. A re-key
+        // without a rotated companion also closes the generation at its
+        // ceiling.
+        const ReceiveKeyGeneration* retired = candidate.retired;
+        if (retired != nullptr
+            && (!retired->lifetime_anchor_known
+                || !recent(retired->lifetime_anchor_position)
+                || (!retired->open_above_ceiling
+                    && (!retired->sequence_ceiling_known
+                        || position > retired->sequence_ceiling_position)))) {
+            return false;
+        }
+        // Keys installed in distinct batches are ordered: a generation
+        // installed before a companion generation ends before that
+        // generation's first accepted position, one installed after it
+        // starts after its last. Keys installed together carry no order.
+        for (std::size_t other = 0; other < companion_count; ++other) {
+            const CompanionRange& range = companion_bounds[other];
+            if ((candidate.batch < range.batch
+                    && position >= range.bounds->lowest)
+                || (candidate.batch > range.batch
+                    && position <= range.bounds->highest)) {
+                return false;
+            }
+        }
+        const ReceivePositionBounds& own = *candidate.accepted;
+        if (bounded(own)) {
+            for (std::size_t other = 0; other < candidate_count; ++other) {
+                const ReceivePositionBounds& bounds =
+                    *candidates[other].accepted;
+                if (other != index && bounded(bounds)
+                    && (inside(bounds) || separates(own, bounds))) {
+                    return false;
+                }
+            }
+            for (std::size_t other = 0; other < companion_count; ++other) {
+                const ReceivePositionBounds& bounds =
+                    *companion_bounds[other].bounds;
+                if (inside(bounds) || separates(own, bounds)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        // Nothing accepted under this generation yet: it lies above every
+        // older and below every newer accepted generation of its selector.
+        bool floor_known = false;
+        bool limit_known = false;
+        std::int64_t floor = 0;
+        std::int64_t limit = 0;
+        for (std::size_t other = 0; other < candidate_count; ++other) {
+            const ReceivePositionBounds& bounds = *candidates[other].accepted;
+            if (other == index || !bounded(bounds)) {
+                continue;
+            }
+            if (other < index) {
+                floor = floor_known ? std::max(floor, bounds.highest)
+                                    : bounds.highest;
+                floor_known = true;
+            } else {
+                limit = limit_known ? std::min(limit, bounds.lowest)
+                                    : bounds.lowest;
+                limit_known = true;
+            }
+        }
+        if ((floor_known && position <= floor)
+            || (limit_known && position >= limit)) {
+            return false;
+        }
+        for (std::size_t other = 0; other < companion_count; ++other) {
+            const ReceivePositionBounds& bounds =
+                *companion_bounds[other].bounds;
+            if (inside(bounds)
+                || (floor_known && bounds.highest <= floor
+                    && position < bounds.lowest)
+                || (limit_known && bounds.lowest >= limit
+                    && position > bounds.highest)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    std::size_t possible_count = 0;
+    std::size_t chosen = candidate_count;
+    std::size_t newest_possible = candidate_count;
+    std::array<bool, receive_key_history_capacity + 1U> is_possible {};
+    for (std::size_t index = 0; index < candidate_count; ++index) {
+        if (!possible(index)) {
+            continue;
+        }
+        is_possible[index] = true;
+        ++possible_count;
+        newest_possible = index;
+        // Several generations remain possible only until a companion
+        // position separates them. While the companion generation that
+        // followed a retired generation is still current, a missing
+        // retransmission of that retired generation, already seen at the
+        // frontier, is the smallest loss that explains such a packet; prefer
+        // it over a never-seen generation. Once that companion is retired as
+        // well, the whole companion generation was missed and the newest key
+        // is preferred, as it always is otherwise.
+        const Candidate& candidate = candidates[index];
+        const bool companion_unchanged = candidate.retired == nullptr
+            || (companion != nullptr
+                && candidate.retired->companion_batch_at_retirement
+                    == companion->current_install_batch);
+        if (chosen == candidate_count && bounded(*candidate.accepted)
+            && companion_unchanged) {
+            chosen = index;
+        }
     }
-    return selected;
+    if (possible_count == 0U) {
+        selection.slot = nullptr;
+        selection.accepted = nullptr;
+        return selection;
+    }
+    if (chosen == candidate_count) {
+        chosen = newest_possible;
+    }
+    selection.slot = candidates[chosen].slot;
+    selection.accepted = candidates[chosen].accepted;
+    selection.unique = possible_count == 1U;
+    for (std::size_t index = candidate_count; index > 0U; --index) {
+        const std::size_t other = index - 1U;
+        if (other != chosen && is_possible[other]) {
+            selection.alternatives[selection.alternative_count] =
+                candidates[other].slot;
+            selection.alternative_accepted[selection.alternative_count] =
+                candidates[other].accepted;
+            ++selection.alternative_count;
+        }
+    }
+    return selection;
+}
+
+CryptoSession::KeySlot* CryptoSession::receive_slot_for_packet(
+    EncryptionKey key, SequenceNumber sequence) noexcept
+{
+    return select_receive_generation(key, sequence).slot;
+}
+
+void CryptoSession::pin_unanchored_retirements() noexcept
+{
+    // A generation retired before any DATA was accepted has no retirement
+    // position. Anchor its lifetime at the first known frontier so it expires
+    // like every other retired generation. Its routing ceiling stays unknown:
+    // the first accepted packet says nothing about where its DATA ends.
+    for (auto* history : {&receive_even_history_, &receive_odd_history_}) {
+        for (std::size_t index = 0; index < history->size; ++index) {
+            auto& generation = history->generations[index];
+            if (generation.slot.ready() && !generation.lifetime_anchor_known) {
+                generation.lifetime_anchor_known = true;
+                generation.lifetime_anchor_position = highest_receive_position_;
+            }
+        }
+    }
+}
+
+void CryptoSession::commit_accepted_receive_position(
+    const ReceiveSelection& selection, SequenceNumber sequence) noexcept
+{
+    if (!highest_receive_sequence_known_) {
+        highest_receive_sequence_ = sequence;
+        highest_receive_position_ = 0;
+        highest_receive_sequence_known_ = true;
+        pin_unanchored_retirements();
+    }
+    // Only an unambiguous routing may extend a generation's accepted range:
+    // a policy choice between still-possible generations would otherwise
+    // record a wrong position and exclude genuine packets later.
+    if (selection.unique && selection.accepted != nullptr) {
+        const std::int64_t position = highest_receive_position_
+            + sequence.distance_from(highest_receive_sequence_);
+        ReceivePositionBounds& bounds = *selection.accepted;
+        if (!bounds.known) {
+            bounds.known = true;
+            bounds.lowest = position;
+            bounds.highest = position;
+        } else {
+            bounds.lowest = std::min(bounds.lowest, position);
+            bounds.highest = std::max(bounds.highest, position);
+        }
+    }
+    note_authenticated_receive_sequence(sequence);
 }
 
 void CryptoSession::note_accepted_receive_sequence(
     SequenceNumber sequence) noexcept
 {
+    if (last_ctr_route_known_ && last_ctr_route_sequence_ == sequence) {
+        note_accepted_receive_sequence(last_ctr_route_key_, sequence);
+        return;
+    }
     note_authenticated_receive_sequence(sequence);
+}
+
+void CryptoSession::note_accepted_receive_sequence(
+    EncryptionKey key, SequenceNumber sequence) noexcept
+{
+    last_ctr_route_known_ = false;
+    if (key == EncryptionKey::none || effective_mode_ == CryptoMode::aes_gcm) {
+        note_authenticated_receive_sequence(sequence);
+        return;
+    }
+    // Route again exactly as decrypt() did for this packet; no key state
+    // changes between a decrypt and the transport's acceptance of it.
+    const ReceiveSelection selection = select_receive_generation(key, sequence);
+    if (selection.slot == nullptr) {
+        note_authenticated_receive_sequence(sequence);
+        return;
+    }
+    commit_accepted_receive_position(selection, sequence);
 }
 
 void CryptoSession::note_authenticated_receive_sequence(
@@ -1817,6 +2163,7 @@ void CryptoSession::note_authenticated_receive_sequence(
         highest_receive_sequence_ = sequence;
         highest_receive_position_ = 0;
         highest_receive_sequence_known_ = true;
+        pin_unanchored_retirements();
         return;
     }
     const std::int32_t advance =
@@ -1827,7 +2174,20 @@ void CryptoSession::note_authenticated_receive_sequence(
         // slots retained for KMREQ replay detection.
         if (highest_receive_position_ > std::numeric_limits<std::int64_t>::max()
                 - advance - SequenceNumber::half_range) {
-            const auto rebase = [this](ReceiveKeyHistory& history) {
+            const auto rebase_bounds = [this](ReceivePositionBounds& bounds) {
+                if (!bounds.known) {
+                    return;
+                }
+                if (bounds.highest
+                    <= highest_receive_position_ - SequenceNumber::half_range) {
+                    bounds = {};
+                } else {
+                    bounds.lowest -= highest_receive_position_;
+                    bounds.highest -= highest_receive_position_;
+                }
+            };
+            const auto rebase = [this, &rebase_bounds](
+                                    ReceiveKeyHistory& history) {
                 for (auto& generation : history.generations) {
                     if (generation.sequence_ceiling_known) {
                         if (generation.sequence_ceiling_position
@@ -1839,7 +2199,19 @@ void CryptoSession::note_authenticated_receive_sequence(
                                 highest_receive_position_;
                         }
                     }
+                    if (generation.lifetime_anchor_known) {
+                        if (generation.lifetime_anchor_position
+                            <= highest_receive_position_
+                                - SequenceNumber::half_range) {
+                            generation.lifetime_anchor_known = false;
+                        } else {
+                            generation.lifetime_anchor_position -=
+                                highest_receive_position_;
+                        }
+                    }
+                    rebase_bounds(generation.accepted);
                 }
+                rebase_bounds(history.current_accepted);
                 if (history.discarded_sequence_ceiling_known) {
                     if (history.discarded_sequence_ceiling_position
                         <= highest_receive_position_
@@ -1881,7 +2253,8 @@ Error CryptoSession::decrypt(
         provider_.secure_erase(plaintext);
         return Error::unsupported;
     }
-    KeySlot* slot = receive_slot_for_packet(key, sequence, false);
+    last_ctr_route_known_ = false;
+    KeySlot* slot = receive_slot_for_packet(key, sequence);
     if (slot == nullptr || !slot->ready()) {
         return Error::cryptographic_failure;
     }
@@ -1895,6 +2268,9 @@ Error CryptoSession::decrypt(
     const auto result = slot->ctr_cipher->transform(iv, ciphertext, plaintext);
     if (result == Error::none) {
         slot->received_payload = true;
+        last_ctr_route_known_ = true;
+        last_ctr_route_key_ = key;
+        last_ctr_route_sequence_ = sequence;
     }
     return result;
 }
@@ -1947,27 +2323,97 @@ Error CryptoSession::open(const DataHeader& header,
     std::span<const std::byte> authentication_tag,
     std::span<std::byte> plaintext) noexcept
 {
+    // A failed open leaves the encrypted input available for another attempt,
+    // including when the destination overlaps either input span. Destination
+    // bytes outside the inputs are erased.
+    const auto reject = [&](Error error) noexcept {
+        const auto contains = [](std::span<const std::byte> input,
+                                  const std::byte* byte) noexcept {
+            const auto address = reinterpret_cast<std::uintptr_t>(byte);
+            const auto begin = reinterpret_cast<std::uintptr_t>(input.data());
+            return address >= begin && address - begin < input.size();
+        };
+        std::size_t run = 0;
+        for (std::size_t index = 0; index < plaintext.size(); ++index) {
+            if (contains(ciphertext, plaintext.data() + index)
+                || contains(authentication_tag, plaintext.data() + index)) {
+                if (index != run) {
+                    provider_.secure_erase(plaintext.subspan(run, index - run));
+                }
+                run = index + 1U;
+            }
+        }
+        if (run != plaintext.size()) {
+            provider_.secure_erase(plaintext.subspan(run));
+        }
+        return error;
+    };
     if (!enabled() || !authenticated_data_enabled()) {
-        provider_.secure_erase(plaintext);
-        return Error::unsupported;
+        return reject(Error::unsupported);
     }
-    KeySlot* slot =
-        receive_slot_for_packet(header.encryption_key, header.sequence, false);
+    ReceiveSelection selection =
+        select_receive_generation(header.encryption_key, header.sequence);
+    KeySlot* slot = selection.slot;
     if (slot == nullptr || slot->mode != CryptoMode::aes_gcm
         || slot->authenticated_cipher == nullptr) {
-        provider_.secure_erase(plaintext);
-        return Error::cryptographic_failure;
+        return reject(Error::cryptographic_failure);
     }
-    const auto iv =
-        make_srt_gcm_initialization_vector(header.sequence, slot->salt);
+    if (ciphertext.size() > maximum_data_payload_size) {
+        return reject(Error::invalid_payload_size);
+    }
+    if (plaintext.size() < ciphertext.size()) {
+        return reject(Error::buffer_too_small);
+    }
+    if (authentication_tag.size() != srt_gcm_authentication_tag_size) {
+        return reject(Error::authentication_failure);
+    }
     const auto aad = make_srt_gcm_additional_authenticated_data(header);
-    const Error result = slot->authenticated_cipher->open(
-        iv, aad, ciphertext, authentication_tag, plaintext);
+    // Providers may write unauthenticated output before reporting failure.
+    // Decrypt into bounded scratch and publish plaintext only after a tag
+    // verified; the caller's destination may overlap the inputs.
+    std::array<std::byte, maximum_data_payload_size> scratch {};
+    const auto output = std::span {scratch}.first(ciphertext.size());
+    const auto attempt = [&](KeySlot& candidate) noexcept {
+        const auto iv =
+            make_srt_gcm_initialization_vector(header.sequence, candidate.salt);
+        return candidate.authenticated_cipher->open(
+            iv, aad, ciphertext, authentication_tag, output);
+    };
+    Error result = attempt(*slot);
+    // Until a companion position separates them, several retained
+    // generations of one selector can remain possible and the routing above
+    // chose one by policy. The authentication tag identifies the key among
+    // exactly those still-eligible generations, so verify it against the
+    // others in order. Keys outside the position and lifetime rules are never
+    // tried, CTR never tries anything, and only an authentication failure
+    // continues; a provider error stops.
+    for (std::size_t index = 0; result == Error::authentication_failure
+        && index < selection.alternative_count;
+        ++index) {
+        KeySlot* alternative = selection.alternatives[index];
+        if (alternative == nullptr || alternative->mode != CryptoMode::aes_gcm
+            || alternative->authenticated_cipher == nullptr) {
+            continue;
+        }
+        provider_.secure_erase(output);
+        result = attempt(*alternative);
+        if (result == Error::none) {
+            slot = alternative;
+            selection.accepted = selection.alternative_accepted[index];
+        }
+    }
     if (result == Error::none) {
+        std::copy(output.begin(), output.end(), plaintext.begin());
         slot->received_payload = true;
-        note_authenticated_receive_sequence(header.sequence);
-    } else {
-        provider_.secure_erase(plaintext);
+        // A verified tag identifies the generation even where the position
+        // alone left several possible.
+        selection.slot = slot;
+        selection.unique = true;
+        commit_accepted_receive_position(selection, header.sequence);
+    }
+    provider_.secure_erase(output);
+    if (result != Error::none) {
+        return reject(result);
     }
     return result;
 }

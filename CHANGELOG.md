@@ -4,6 +4,25 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
+## Unreleased
+
+- Route delayed DATA that arrives after the KMREQ replacing its key selector by
+  accepted sequence position instead of the receive frontier alone. A burst
+  loss or delay longer than the pre-announcement window no longer decrypts
+  retired-generation packets with the replacement key (wrong CTR plaintext,
+  GCM authentication failure). Wire format and KM messages are unchanged.
+- A retired receive key generation is no longer eligible once the receive
+  frontier has advanced half the sequence space past its retirement, so an
+  old packet is rejected after its sequence is reused. Where an entire
+  companion generation was lost, AES-GCM verifies the tag against the
+  generations the position rules still allow; AES-CTR applies a documented
+  policy until a companion packet is accepted or the companion generation is
+  retired.
+- A failed authenticated open preserves the ciphertext and tag, including an
+  overlapping destination buffer, erases only destination bytes outside them,
+  and never publishes unauthenticated output. Direct `CryptoSession::open`
+  callers now receive `invalid_payload_size` above the maximum DATA payload.
+
 ## 0.3.2 — Multicast and Recovery Stabilization
 
 See the [release notes](docs/release-notes-0.3.2.md) for upgrade behavior and limits.

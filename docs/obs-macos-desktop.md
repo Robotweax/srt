@@ -28,6 +28,16 @@ application test. It does not install into `/Applications`, sign for
 distribution, archive, package, or upload the app. The CI job uploads text
 logs, frame hashes, CMake cache and window/provider observations only.
 
+The desktop form builds OBS 32.2.2 against the Qt archive of obs-deps
+`2026-10-23` instead of the `2026-07-15` archive that OBS 32.2.2 pins. Both
+contain Qt 6.11.1; the later one, pinned by OBS 33.0.1, backports the fix for
+QTBUG-147602. Without it Qt releases the color space of an ICC-tagged image
+before Core Graphics reads it, and OBS stops with `EXC_BREAKPOINT` on its first
+wait cursor on macOS 26.7 and later. The build verifies the archive hash and
+fails if CMake resolves any Qt package from another prefix. The OBS source, its
+other prebuilt dependencies, FFmpeg and Robotweax SRT are unchanged, and the
+module-only profile does not use Qt.
+
 The desktop test creates a fresh private macOS Application Support directory
 for every launch. It sets both `HOME` and `CFFIXED_USER_HOME`; macOS Foundation
 does not necessarily honor `HOME` alone for Application Support. It never reads

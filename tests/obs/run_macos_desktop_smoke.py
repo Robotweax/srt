@@ -277,12 +277,33 @@ def obs_log(config: Path, destination: Path) -> str:
     return text
 
 
-def wait_for(child: subprocess.Popen, condition, label: str, timeout: int = 40):
+def wait_for(
+    child: subprocess.Popen,
+    condition,
+    label: str,
+    timeout: int = 40,
+    *,
+    status: Path | None = None,
+):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if condition():
             return
         if child.poll() is not None:
+            if status is not None:
+                # collect_macos_failure.py matches crash reports by these PIDs.
+                status.write_text(
+                    json.dumps(
+                        {
+                            "label": label,
+                            "observed_at": time.time(),
+                            "desktop_pid": child.pid,
+                            "desktop_exit": child.returncode,
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
             raise RuntimeError(f"{label}: OBS exited with {child.returncode}")
         time.sleep(0.2)
     raise RuntimeError(f"{label}: timeout")
@@ -514,6 +535,7 @@ def qualify(args: argparse.Namespace) -> None:
                 child, probe, args.artifacts / "idle-window.txt", idle_config
             ),
             "visible idle OBS window",
+            status=args.artifacts / "idle-startup-endpoint-status.json",
         )
         baseline = stop_desktop(child, idle_config, stdout, args.artifacts, "idle")
     print(
@@ -538,6 +560,7 @@ def qualify(args: argparse.Namespace) -> None:
                     child, probe, args.artifacts / "native-window.txt", config
                 ),
                 "visible streaming OBS window",
+                status=args.artifacts / "native-startup-endpoint-status.json",
             )
             wait_decoded(child, receiver, ffmpeg, output, args.artifacts, "native")
             verify_maps(child, args, args.artifacts / "native-maps.txt")
@@ -608,6 +631,7 @@ def qualify(args: argparse.Namespace) -> None:
                         child, probe, args.artifacts / "source-window.txt", config
                     ),
                     "visible OBS source window",
+                    status=args.artifacts / "source-startup-endpoint-status.json",
                 )
                 module.until(source, sender_log, "QUEUED", 35)
                 wait_decoded(

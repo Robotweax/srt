@@ -600,13 +600,18 @@ public:
     // AES-CTR carries no integrity. decrypt() therefore never records the
     // packet sequence for key-generation routing; the caller reports it
     // through note_accepted_receive_sequence() once the reliability layer
-    // has accepted the packet inside its receive window.
+    // has accepted the packet inside its receive window. Passing the
+    // packet's selector attributes the accepted position to the key
+    // generation that decrypted it; the selector-less form attributes it
+    // only when the sequence matches the most recent decrypt() call.
     [[nodiscard]] Error decrypt(
         EncryptionKey key,
         SequenceNumber sequence,
         std::span<const std::byte> ciphertext,
         std::span<std::byte> plaintext) noexcept;
     void note_accepted_receive_sequence(SequenceNumber sequence) noexcept;
+    void note_accepted_receive_sequence(
+        EncryptionKey key, SequenceNumber sequence) noexcept;
 
     // Authenticated DATA binds the complete canonical SRT data header to the
     // ciphertext. The caller must stamp the active selector into header before
@@ -615,6 +620,10 @@ public:
         std::span<const std::byte> plaintext, std::span<std::byte> ciphertext,
         std::span<std::byte> authentication_tag, EncryptionKey& key) noexcept;
 
+    // Accepts at most maximum_data_payload_size ciphertext bytes. On failure,
+    // preserves both input spans, including exact/partial destination overlap,
+    // and erases destination bytes outside them. On success, writes only the
+    // ciphertext-sized prefix of the destination.
     [[nodiscard]] Error open(const DataHeader& header,
         std::span<const std::byte> ciphertext,
         std::span<const std::byte> authentication_tag,
@@ -694,14 +703,50 @@ private:
         }
     };
 
+    // Lowest and highest receive positions accepted under one key
+    // generation. Generations occupy disjoint, ordered sequence ranges, so
+    // accepted positions of a companion generation separate the generations
+    // that share a selector without inspecting ciphertext or plaintext.
+    struct ReceivePositionBounds {
+        bool known = false;
+        std::int64_t lowest = 0;
+        std::int64_t highest = 0;
+    };
+
     struct ReceiveKeyGeneration {
         // A peer may announce a replacement for an even/odd selector while
         // packets encrypted with the previous generation are still eligible
-        // for retransmission. The receive frontier at replacement separates
-        // this generation from the newer one without inspecting ciphertext.
+        // for retransmission. The receive frontier at replacement is a floor
+        // for the replacement: nothing below it belongs to the newer key.
         KeySlot slot{};
+        ReceivePositionBounds accepted {};
         bool sequence_ceiling_known = false;
         std::int64_t sequence_ceiling_position = 0;
+        // Receive position at retirement, or the first known frontier for a
+        // generation retired before any DATA was accepted. The generation is
+        // eligible only while this anchor is within half the sequence space
+        // of the frontier; unlike the ceiling it never bounds other
+        // generations.
+        bool lifetime_anchor_known = false;
+        std::int64_t lifetime_anchor_position = 0;
+        // Installation batch of this generation's key. Generations of both
+        // selectors are ordered by batch: a generation installed earlier
+        // than a companion generation lies entirely below its accepted
+        // positions, one installed later entirely above them.
+        std::uint64_t install_batch = 0;
+        // Installation batch of the companion selector's current key when
+        // this generation was retired. While that companion generation is
+        // still current, a packet above the frontier that could belong to
+        // either this generation or its replacement is more likely a late
+        // packet of this generation; once the companion is retired as well,
+        // the replacement is preferred.
+        std::uint64_t companion_batch_at_retirement = 0;
+        // A rotation retires a generation while the companion selector
+        // carries the generation that follows it; packets of the retired
+        // generation may then still arrive above the frontier. Without such
+        // a companion the replacement is a re-key and the ceiling also
+        // bounds the retired generation from above.
+        bool open_above_ceiling = false;
     };
 
     // Key selectors are reused on every other rotation. A bounded history
@@ -714,6 +759,25 @@ private:
         std::size_t size = 0;
         bool discarded_sequence_ceiling_known = false;
         std::int64_t discarded_sequence_ceiling_position = 0;
+        // Accepted positions and installation batch of the current slot.
+        ReceivePositionBounds current_accepted {};
+        std::uint64_t current_install_batch = 0;
+    };
+
+    // Outcome of routing one DATA packet to a receive key generation.
+    struct ReceiveSelection {
+        KeySlot* slot = nullptr;
+        ReceivePositionBounds* accepted = nullptr;
+        std::int64_t position = 0;
+        // False when several retained generations remain possible and the
+        // slot was chosen by policy; such acceptances never record bounds.
+        bool unique = false;
+        // The other still-possible generations, newest first. Authenticated
+        // reception may verify a tag against them in order; CTR never does.
+        std::array<KeySlot*, receive_key_history_capacity> alternatives {};
+        std::array<ReceivePositionBounds*, receive_key_history_capacity>
+            alternative_accepted {};
+        std::size_t alternative_count = 0;
     };
 
     [[nodiscard]] Error validate_configuration() const noexcept;
@@ -751,8 +815,13 @@ private:
     [[nodiscard]] KeySlot* receive_slot(EncryptionKey key) noexcept;
     [[nodiscard]] ReceiveKeyHistory* receive_history(
         EncryptionKey key) noexcept;
-    [[nodiscard]] KeySlot* receive_slot_for_packet(EncryptionKey key,
-        SequenceNumber sequence, bool commit_sequence = true) noexcept;
+    [[nodiscard]] ReceiveSelection select_receive_generation(
+        EncryptionKey key, SequenceNumber sequence) noexcept;
+    [[nodiscard]] KeySlot* receive_slot_for_packet(
+        EncryptionKey key, SequenceNumber sequence) noexcept;
+    void commit_accepted_receive_position(
+        const ReceiveSelection& selection, SequenceNumber sequence) noexcept;
+    void pin_unanchored_retirements() noexcept;
     void note_authenticated_receive_sequence(SequenceNumber sequence) noexcept;
     [[nodiscard]] const KeySlot* transmit_slot(
         EncryptionKey key) const noexcept;
@@ -767,8 +836,8 @@ private:
         KeyMaterialHistory& history,
         std::size_t& history_size,
         std::span<const std::byte> material) noexcept;
-    void remember_receive_key(
-        ReceiveKeyHistory& history, KeySlot& slot) noexcept;
+    void remember_receive_key(ReceiveKeyHistory& history, KeySlot& slot,
+        bool open_above_ceiling, std::uint64_t companion_batch) noexcept;
     // True when this exact key already served the selector and was retired
     // by a later announcement: a replayed old KMREQ, never a fresh key.
     [[nodiscard]] bool is_retired_receive_key(EncryptionKey key_selection,
@@ -824,9 +893,17 @@ private:
     KeySlot receive_odd_{};
     ReceiveKeyHistory receive_even_history_{};
     ReceiveKeyHistory receive_odd_history_{};
+    // Counts key-material acceptances that installed receive keys. Keys from
+    // one message share a batch, so their relative order is not asserted.
+    std::uint64_t receive_install_batch_ = 0;
     SequenceNumber highest_receive_sequence_{};
     std::int64_t highest_receive_position_ = 0;
     bool highest_receive_sequence_known_ = false;
+    // Selector of the most recent successful decrypt(), so the selector-less
+    // note_accepted_receive_sequence() can attribute that packet.
+    bool last_ctr_route_known_ = false;
+    EncryptionKey last_ctr_route_key_ = EncryptionKey::none;
+    SequenceNumber last_ctr_route_sequence_ {};
     KeyMaterialBuffer pending_key_material_{};
     KeyMaterialBuffer key_material_response_{};
     KeyMaterialHistory received_key_material_history_{};
