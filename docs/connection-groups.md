@@ -799,6 +799,15 @@ the selected source and dispatch snapshot; changed membership or source offers
 cannot renegotiate an established session. After successful admission the
 Caller reads `has_peer_multicast_source()` and `peer_multicast_source()`.
 
+The ordinary session-authentication proof (versions 2 to 6) covers the key
+material, not the `0x7f14` dispatch or `0x7f15` source records, and the Caller
+filters multicast DATA on the announced source before any experimental hybrid
+exchange runs. A tampered announcement therefore steers the Caller's join and
+source filter first. The hybrid exchange binds the announced source into its
+key derivation, so such a session fails closed at that exchange, after the
+join. No profile in this release authenticates the announcement itself at
+admission.
+
 This is source metadata negotiation. The embedding transport owns the
 transmitting socket and generation-checked multicast ingress binding. The
 transport adapter binds negotiated multicast DATA to that source address and
