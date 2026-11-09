@@ -709,7 +709,11 @@ listener binding. `SRTO_ROBOTWEAX_MCAST_IFACE` (`0x01000012`, `sockaddr`, PRE,
 both sides) selects the local multicast interface, by address for IPv4 and by
 `sin6_scope_id` for IPv6; the listener announces it as a hint and a receiver's
 own value takes precedence. `SRTO_ROBOTWEAX_MCAST_TTL` (`0x01000013`, int32
-0..255, default 1, PRE, listener) is the multicast hop limit.
+0..255, default 1, PRE, listener) is the multicast hop limit. In the
+independent-source profile (`SRTO_ROBOTWEAX_MCAST_INDEPENDENT`) these three
+options are frozen at bind like the profile's other pre-bind options: a later
+change fails with `SRT_EBOUNDSOCK` on a bound socket and with `SRT_ECONNSOCK`
+on a listening or connected one.
 `SRTO_ROBOTWEAX_MULTICAST` (`0x01000010`, char[1..512], listen callback only)
 is the per-join admission key a callback sets, together with
 `SRTO_ROBOTWEAX_GROUPDOMAIN`, to admit a `ROBOTWEAX_SRT_GTYPE_MULTICAST`
@@ -721,6 +725,8 @@ sender repeats it once on the multicast path instead of once more per
 receiver. Suppression starts only after local UDP acceptance; repeated NAKs
 use unicast. After a multicast attempt, window expiry restores unicast until
 the bounded tally entry is evicted. A value of 0 keeps every repeat unicast.
+On a coordinated sender group (`SRTO_ROBOTWEAX_MCAST_COORDINATED`) the option
+reads 0 and only 0 can be set; any other value fails with `SRT_EINVOP`.
 `SRTO_ROBOTWEAX_MCAST_STATS`
 (`0x01000015`, read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`, dispatch groups
 only) reports the multicast-path counters described in
@@ -734,7 +740,11 @@ and receiver group. Both sides must select it. The Listener also sets
 `SRTO_ROBOTWEAX_MCAST_SOURCE` (`0x01000019`, `sockaddr_in`, PRE-BIND), a
 concrete local source address and UDP port; port zero chooses an ephemeral
 source port at listen. Readback after listen returns the actual bound endpoint,
-also readable on the sender group. Receivers cannot set this Listener source.
+also readable on the sender group. Before the option is set, readback fails
+with `SRT_EINVPARAM`, like the other multicast address options; between the
+set and listen it returns the configured value; after the Listener is closed
+the option is no longer readable (`SRT_EINVSOCK`). Receivers cannot set this
+Listener source.
 Set all multicast network options before binding in this profile. Unicast bind
 and peer selection continue through the existing APIs, and control/repair
 remain on that channel. The initial opt-in profile supports IPv4 with a single

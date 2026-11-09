@@ -1423,6 +1423,14 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     case SRTO_ROBOTWEAX_MCAST_IFACE: {
         const bool group = option == SRTO_ROBOTWEAX_MCAST_GROUP;
         IpEndpoint endpoint;
+        // The independent-source profile freezes its network options at
+        // bind, like every pre-bind option: a bound socket reports that, not
+        // an invalid value.
+        if (options.multicast_independent && socket.state == SRTS_OPENED
+            && !socket.listen_callback_active) {
+            set_last_error(SRT_EBOUNDSOCK);
+            return SRT_ERROR;
+        }
         if ((socket.state != SRTS_INIT && socket.state != SRTS_OPENED)
             || (options.multicast_independent && socket.state != SRTS_INIT)
             || socket.listen_callback_active
@@ -1446,6 +1454,11 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     }
     case SRTO_ROBOTWEAX_MCAST_TTL: {
         std::int32_t parsed = 0;
+        if (options.multicast_independent && socket.state == SRTS_OPENED
+            && !socket.listen_callback_active) {
+            set_last_error(SRT_EBOUNDSOCK);
+            return SRT_ERROR;
+        }
         if ((socket.state != SRTS_INIT && socket.state != SRTS_OPENED)
             || (options.multicast_independent && socket.state != SRTS_INIT)
             || socket.listen_callback_active

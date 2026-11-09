@@ -1743,6 +1743,78 @@ TEST(multicast_dispatch_independent_options_fail_closed_and_freeze_at_bind)
     REQUIRE(!record->multicast_transmit_channel);
 }
 
+// The independent-source profile freezes its network options at bind. A
+// bound socket reports that as a bound-socket error, a listening one as a
+// connected-socket error, like every other pre-bind option; the source
+// readback follows the documented states: unset, configured, bound, closed.
+TEST(
+    multicast_dispatch_independent_network_options_freeze_with_socket_state_errors)
+{
+    Peers peers;
+    const bool enabled = true;
+    const auto listener = peers.keep(srt_create_socket());
+    const auto group = ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
+    const auto local = ipv4_sockaddr({127, 0, 0, 1}, 0);
+    const std::int32_t hops = 0;
+    sockaddr_in readback {};
+    int readback_size = sizeof(readback);
+    REQUIRE_EQ(srt_getsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE, &readback,
+                   &readback_size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                   &enabled, sizeof(enabled)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE, &local,
+                   sizeof(local)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_GROUP, &group, sizeof(group)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_IFACE, &local, sizeof(local)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
+        0);
+    readback_size = sizeof(readback);
+    REQUIRE_EQ(srt_getsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE, &readback,
+                   &readback_size),
+        0);
+    REQUIRE_EQ(readback.sin_port, 0);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&local),
+                   sizeof(local)),
+        0);
+    const auto refused = [&](int expected_error) {
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP, &group,
+                       sizeof(group)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), expected_error);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE, &local,
+                       sizeof(local)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), expected_error);
+        REQUIRE_EQ(srt_setsockflag(
+                       listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
+            SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), expected_error);
+    };
+    refused(SRT_EBOUNDSOCK);
+    REQUIRE_EQ(srt_listen(listener, 1), 0);
+    refused(SRT_ECONNSOCK);
+    readback_size = sizeof(readback);
+    REQUIRE_EQ(srt_getsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE, &readback,
+                   &readback_size),
+        0);
+    REQUIRE(readback.sin_port != 0);
+    peers.drop(listener);
+    readback_size = sizeof(readback);
+    REQUIRE_EQ(srt_getsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE, &readback,
+                   &readback_size),
+        SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+}
+
 TEST(
     multicast_dispatch_independent_bind_failure_rolls_back_and_close_releases_source)
 {
