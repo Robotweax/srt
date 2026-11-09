@@ -46,6 +46,16 @@ std::vector<std::byte> encoded(DataHeader h = header())
     REQUIRE(result);
     return {bytes.begin(), bytes.begin() + result.bytes_written};
 }
+// A wire ACK that runs ahead of the group's submission report is not an
+// error, and it retires nothing: an unsubmitted original is never authorized.
+void require_ack_retires_nothing(SendBuffer& history, SequenceNumber next)
+{
+    const auto first = history.first_sequence();
+    const auto size = history.size();
+    REQUIRE_EQ(history.acknowledge_submitted_before(next), Error::none);
+    REQUIRE_EQ(history.first_sequence(), first);
+    REQUIRE_EQ(history.size(), size);
+}
 void submitted(SendBuffer& history, SequenceNumber sequence, std::uint64_t now)
 {
     if (const auto token = history.group_original_submission(sequence))
@@ -304,8 +314,7 @@ TEST(compat_group_admission_history_does_not_emit_or_authorize_unsubmitted_data)
     REQUIRE_EQ(history.buffered_payload_bytes(), plaintext.size());
     REQUIRE(!history.peek_new_packet());
     REQUIRE(!history.next_packet());
-    REQUIRE_EQ(history.acknowledge_submitted_before(initial.next()),
-        Error::invalid_control_payload);
+    require_ack_retires_nothing(history, initial.next());
     REQUIRE_EQ(history.request_retransmission({initial, initial}),
         Error::invalid_control_payload);
     REQUIRE(!history.request_retransmission_of_last_sent());
@@ -313,8 +322,7 @@ TEST(compat_group_admission_history_does_not_emit_or_authorize_unsubmitted_data)
     REQUIRE(!history.drop_messages_older_than(1'000'000));
     // Member completions cannot stand in for group transport submission.
     history.note_packet_submitted(initial);
-    REQUIRE_EQ(history.acknowledge_submitted_before(initial.next()),
-        Error::invalid_control_payload);
+    require_ack_retires_nothing(history, initial.next());
     submitted(history, initial.next(), 110); // stale/wrong packet
     REQUIRE_EQ(history.request_retransmission({initial, initial}),
         Error::invalid_control_payload);
@@ -432,8 +440,7 @@ TEST(
     assigned = original;
     SendBuffer moved = std::move(copied);
     for (auto* h : {&original, &assigned, &moved}) {
-        REQUIRE_EQ(h->acknowledge_submitted_before(initial.next()),
-            Error::invalid_control_payload);
+        require_ack_retires_nothing(*h, initial.next());
         REQUIRE(!h->drop_expired_message(100));
         REQUIRE_EQ(h->drop_expired_message(101).packets, 1U);
         submitted(*h, initial, 102); // expired packet is not revived
@@ -520,8 +527,7 @@ TEST(
         f.output.failures = 1;
         f.emitter->pump_for_testing();
         REQUIRE_EQ(f.emitter->snapshot().submitted_packets, 0U);
-        REQUIRE_EQ(first.acknowledge_submitted_before(initial.next()),
-            Error::invalid_control_payload);
+        require_ack_retires_nothing(first, initial.next());
         f.now += 1ms;
         f.emitter->pump_for_testing();
         REQUIRE_EQ(f.emitter->snapshot().submitted_packets, 1U);
@@ -654,8 +660,7 @@ TEST(
     REQUIRE_EQ(fresh->sequence_position,
         static_cast<std::uint64_t>(SequenceNumber::modulus));
     history.note_group_original_submitted(*old, 200);
-    REQUIRE_EQ(history.acknowledge_submitted_before(initial.next()),
-        Error::invalid_control_payload);
+    require_ack_retires_nothing(history, initial.next());
     REQUIRE_EQ(history.request_retransmission({initial, initial}),
         Error::invalid_control_payload);
     history.note_group_original_submitted(*fresh, 300);

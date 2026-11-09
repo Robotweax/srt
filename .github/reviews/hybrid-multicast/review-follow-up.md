@@ -45,7 +45,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | BL-4 | Open: Windows `srt-live-transmit -version` hang | Native debugger/thread evidence and same-base comparison |
 | BL-5 | Native wire bound retained; forced waits checked with injected clock and zero-wait counterexample | Native Windows after-fix CI pending; source fix does not qualify Windows hybrid transport |
 | BL-6 | Partial: scope/labels corrected; matching-cache failure flags recovered | Enforce build/source identity, reject stale binary, test CLI record production; obtain missing platform evidence |
-| L-1 | Open: ACK/NAK versus pending completion fanout | Reproduce genuine early control versus forged/unsubmitted control; preserve actual-submission authorization |
+| L-1 | ACK half fixed in source: an ACK ahead of the fanout retires the submitted prefix; see below. NAK half open | NAK ranges touching an unsubmitted original still fail the whole report; hosted builds |
 | L-2 | Open: completion-busy attempt count versus send rate | Production-default send-driven contention regression and time-bounded policy |
 | L-3 | Fixed in source: such a send fails with `SRT_ECONNLOST` and consumes nothing; see below | Hosted default and enabled builds |
 | L-4 | Open: one member admission contention/backpressure | Quantify retry/liveness with healthy-peer traffic and bounded work |
@@ -273,6 +273,52 @@ Controls that pass before and after:
 L-5 (a per-message expiry detaching a member permanently) is separate and
 still open; with this change such an expiry on the last member now also fails
 the send instead of reporting success.
+
+## Canonical DATA path: L-1 (acknowledgements)
+
+`SendBuffer::acknowledge_submitted_before` rejected a whole cumulative ACK
+when its prefix contained an occupied slot not yet marked submitted. For a
+canonical group original that mark is set only when the coordinator applies
+the emitter outcome to the member, after the UDP send. A genuine ACK can
+arrive in between. It was then dropped with `invalid_control_payload`: nothing
+was retired, no peer activity was recorded, and with every ACK ahead of the
+newest fanout the member was eventually detached as `history_full`.
+
+Such an ACK now retires the submitted prefix and stops at the first
+unsubmitted group original. A later cumulative ACK retires the rest once it is
+submitted. The session treats the ACK as covering exactly the retired prefix
+for progress, the acknowledged cursor, timers and tracing.
+
+Unchanged, and still asserted:
+
+- an unsubmitted original is never retired by a wire ACK, including one that
+  was never sent, expired, failed or belongs to a stale submission token;
+- an ACK covering an ordinary packet that was never selected for sending is
+  invalid as a whole
+  (`send_buffer_ack_requires_submission_and_preserves_prefix_on_rejection`
+  passes unmodified), so ordinary sessions behave as before.
+
+What does change for such an ACK is the result code: `Error::none` instead of
+`invalid_control_payload`, so its other fields are processed and the peer
+counts as active. Nine assertions in `test_send_buffer.cpp`,
+`test_group_admission.cpp` and `test_group_emission_outcomes.cpp` that
+expressed "not authorized" through the old result code now call
+`require_ack_retires_nothing`, which requires success with the first sequence
+and size unchanged. One premature ACK was removed from
+`compat_group_policy_explicit_prefix_recovery_classifies_unsent_and_submitted_work`;
+it would now retire the submitted original whose repair that test goes on to
+inspect.
+
+Regressions, each failing before the change:
+
+- `compat_group_coordinator_ack_ahead_of_fanout_retires_the_submitted_prefix`
+- `compat_group_coordinator_acks_that_always_precede_fanout_keep_a_member_attached`
+  (24 sends with every ACK ahead of the newest fanout; previously nothing was
+  retired and the history filled)
+
+Not done here: `validate_retransmission_range` still fails a whole NAK when a
+range touches an unsubmitted group original, and no test shows the throughput
+of the ACK path on a real network at rates above the existing soak.
 
 ## Source layout change
 

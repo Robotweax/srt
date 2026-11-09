@@ -339,6 +339,56 @@ TEST(
     REQUIRE_EQ(
         a.runtime->statistics(false, true).total.sent_unique.packets, 0U);
 }
+// A cumulative ACK can cover an original whose UDP submission the coordinator
+// has not reported to the member yet. It retires the submitted prefix and
+// leaves the rest for a later ACK; it never retires an unsubmitted original.
+TEST(compat_group_coordinator_ack_ahead_of_fanout_retires_the_submitted_prefix)
+{
+    Fixture f;
+    Receiver a(f);
+    REQUIRE_EQ(f.send(), Status::accepted);
+    f.pump();
+    REQUIRE_EQ(f.output.size(), 1U);
+    f.now += 1ms;
+    a.now += 1'000;
+    REQUIRE_EQ(f.send(), Status::accepted);
+    REQUIRE_EQ(a.buffered(), 2U);
+
+    // The second original is accepted but its submission is not applied.
+    a.ack(initial.advanced(2));
+    REQUIRE_EQ(a.buffered(), 1U);
+    a.ack(initial.advanced(2));
+    REQUIRE_EQ(a.buffered(), 1U);
+
+    f.pump();
+    REQUIRE_EQ(f.output.size(), 2U);
+    a.ack(initial.advanced(2));
+    REQUIRE_EQ(a.buffered(), 0U);
+    REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+}
+
+// The consequence of rejecting such ACKs outright: when every ACK reaches the
+// sender before the fanout of the newest original, nothing is ever retired
+// and a healthy member is detached once its history is full.
+TEST(
+    compat_group_coordinator_acks_that_always_precede_fanout_keep_a_member_attached)
+{
+    Fixture f;
+    Receiver a(f);
+    for (std::uint32_t i = 0; i < 24; ++i) {
+        REQUIRE_EQ(f.send(), Status::accepted);
+        a.ack(initial.advanced(i + 1));
+        f.pump();
+        REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+        REQUIRE(a.buffered() <= 2U);
+        f.now += 1ms;
+        a.now += 1'000;
+    }
+    REQUIRE_EQ(f.output.size(), 24U);
+    a.ack(initial.advanced(24));
+    REQUIRE_EQ(a.buffered(), 0U);
+}
+
 TEST(
     compat_group_coordinator_source_capacity_rejects_before_mutation_and_recovers_readiness)
 {
@@ -1213,7 +1263,6 @@ TEST(
         REQUIRE_EQ(result.prefix.repairs, 1U);
         REQUIRE_EQ(result.prefix.originals, 1U);
         REQUIRE(result.prefix_scheduled);
-        a.ack(initial.advanced(2), true);
         REQUIRE_EQ(a.buffered(), 2U);
         a.exchange_keys(true);
         REQUIRE_EQ(a.data_attempts.size(), 1U);

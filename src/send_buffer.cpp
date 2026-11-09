@@ -799,15 +799,21 @@ Error SendBuffer::acknowledge_submitted_before(SequenceNumber sequence) noexcept
     if (static_cast<std::size_t>(signed_count) > sequence_span_) {
         return Error::invalid_control_payload;
     }
-    const auto count = static_cast<std::size_t>(signed_count);
+    auto count = static_cast<std::size_t>(signed_count);
     // Validate the whole prefix before retiring any data. Dropped messages
     // remain valid cumulative ACK progress, even if never transmitted.
     for (std::size_t index = 0; index < count; ++index) {
         const auto& slot = slots_[(head_ + index) % capacity()];
-        if (slot.occupied && !slot.submitted)
+        if (!slot.occupied || slot.submitted)
+            continue;
+        if (!slot.external_original)
             return Error::invalid_control_payload;
+        // The group has not reported this original's UDP submission yet.
+        count = index;
+        break;
     }
-    return acknowledge_before(sequence);
+    return acknowledge_before(
+        first_sequence_.advanced(static_cast<std::uint32_t>(count)));
 }
 
 Error SendBuffer::acknowledge_before(SequenceNumber sequence) noexcept

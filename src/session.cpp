@@ -1187,22 +1187,28 @@ ReliabilityProcessResult ReliabilitySession::receive(
             : 0U;
 #endif
         const auto in_flight_before = send_buffer_.packets_in_flight();
-        const auto acknowledgement_progress =
-            decoded.acknowledgement.next_sequence.distance_from(
-                send_buffer_.first_sequence());
-        const bool acknowledgement_is_current = acknowledgement_progress >= 0;
         const auto error = send_buffer_.acknowledge_submitted_before(
             decoded.acknowledgement.next_sequence);
         if (error != Error::none) {
             return {.error = error};
         }
-        if (decoded.acknowledgement.next_sequence.distance_from(
-                peer_acknowledged_sequence_)
-            > 0) {
-            peer_acknowledged_sequence_ = decoded.acknowledgement.next_sequence;
+        // The peer's number, except when the ACK ran ahead of a canonical
+        // group original whose submission is still unreported: then it is
+        // the prefix that was retired, and everything below treats the ACK
+        // as covering exactly that.
+        const SequenceNumber acknowledged =
+            decoded.acknowledgement.next_sequence.distance_from(first_before)
+                < 0
+            ? decoded.acknowledgement.next_sequence
+            : send_buffer_.first_sequence();
+        const auto acknowledgement_progress =
+            acknowledged.distance_from(first_before);
+        const bool acknowledgement_is_current = acknowledgement_progress >= 0;
+        if (acknowledged.distance_from(peer_acknowledged_sequence_) > 0) {
+            peer_acknowledged_sequence_ = acknowledged;
         }
         if (sensor_retired_prefix_.has_value()) {
-            const auto boundary = decoded.acknowledgement.next_sequence;
+            const auto boundary = acknowledged;
             if (boundary.distance_from(sensor_retired_prefix_->last) > 0) {
                 sensor_retired_prefix_.reset();
                 sensor_prefix_repeat_remaining_ = 0U;
@@ -1218,8 +1224,7 @@ ReliabilityProcessResult ReliabilitySession::receive(
             && !sensor_retired_prefix_.has_value()) {
             next_sensor_retirement_repeat_microseconds_ = 0U;
         }
-        diagnostics::trace_ack(now_microseconds,
-            decoded.acknowledgement.next_sequence.value(),
+        diagnostics::trace_ack(now_microseconds, acknowledged.value(),
             acknowledgement_progress, first_before.value(),
             send_buffer_.first_sequence().value(), buffered_before,
             send_buffer_.size(), in_flight_before,
@@ -1246,15 +1251,11 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 decoded.acknowledgement.round_trip_time_variance_microseconds,
                 has_received_data_, now_microseconds);
             if (file_rate_controller_.has_value()) {
-                file_rate_controller_->on_ack(
-                    decoded.acknowledgement.next_sequence,
-                    now_microseconds,
-                    decoded.acknowledgement
-                        .receive_rate_packets_per_second,
+                file_rate_controller_->on_ack(acknowledged, now_microseconds,
+                    decoded.acknowledgement.receive_rate_packets_per_second,
                     decoded.acknowledgement
                         .estimated_link_capacity_packets_per_second,
-                    decoded.acknowledgement
-                        .round_trip_time_microseconds);
+                    decoded.acknowledgement.round_trip_time_microseconds);
             }
             // The Internet Draft reserves ACKACK for Full ACKs and requires
             // Small ACKs to carry a zero type-specific field. Haivision's

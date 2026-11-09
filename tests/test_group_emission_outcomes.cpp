@@ -28,6 +28,16 @@ constexpr std::uint32_t group_id = group_handle_mask | 81U;
 constexpr std::uint64_t generation = 43;
 constexpr std::array<std::byte, 3> plaintext {
     std::byte {1}, std::byte {2}, std::byte {3}};
+// A wire ACK that runs ahead of the group's submission report is not an
+// error, and it retires nothing: an unsubmitted original is never authorized.
+void require_ack_retires_nothing(SendBuffer& history, SequenceNumber next)
+{
+    const auto first = history.first_sequence();
+    const auto size = history.size();
+    REQUIRE_EQ(history.acknowledge_submitted_before(next), Error::none);
+    REQUIRE_EQ(history.first_sequence(), first);
+    REQUIRE_EQ(history.size(), size);
+}
 DataHeader header(std::uint32_t sequence)
 {
     return {.sequence = SequenceNumber {sequence},
@@ -624,9 +634,7 @@ TEST(
         REQUIRE_EQ(apply(outcomes[0], generation), 0U);
         REQUIRE_EQ(apply(outcomes[1], generation), 2U);
         for (const auto& h : histories) {
-            REQUIRE_EQ(
-                h->buffer.acknowledge_submitted_before(SequenceNumber {3}),
-                Error::invalid_control_payload);
+            require_ack_retires_nothing(h->buffer, SequenceNumber {3});
             REQUIRE_EQ(h->buffer.request_retransmission(
                            {SequenceNumber {1}, SequenceNumber {1}}),
                 Error::invalid_control_payload);
@@ -663,17 +671,14 @@ TEST(
         auto misrouted = outcome[0];
         misrouted.sequence = SequenceNumber {2};
         REQUIRE_EQ(apply(misrouted, generation), 0U);
-        REQUIRE_EQ(histories[0]->buffer.acknowledge_submitted_before(
-                       SequenceNumber {2}),
-            Error::invalid_control_payload);
+        require_ack_retires_nothing(histories[0]->buffer, SequenceNumber {2});
         REQUIRE_EQ(apply(outcome[0], generation), 1U);
         REQUIRE_EQ(histories[0]->buffer.acknowledge_submitted_before(
                        SequenceNumber {2}),
             Error::none);
         if (!destroyed)
-            REQUIRE_EQ(histories[1]->buffer.acknowledge_submitted_before(
-                           SequenceNumber {2}),
-                Error::invalid_control_payload);
+            require_ack_retires_nothing(
+                histories[1]->buffer, SequenceNumber {2});
     }
 }
 

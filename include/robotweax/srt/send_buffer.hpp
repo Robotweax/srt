@@ -201,6 +201,16 @@ public:
         std::uint64_t now_microseconds) noexcept;
     // Wire ACKs require successful submission; acknowledge_before is also
     // used for trusted, locally confirmed group-prefix retirement.
+    //
+    // An ACK that covers an ordinary packet never selected for sending is
+    // invalid as a whole. A canonical group original differs: its datagram
+    // can reach the receiver before the group reports the UDP submission to
+    // this member, so a genuine ACK can run ahead of that report. Such an ACK
+    // retires the submitted prefix and stops at the first unsubmitted group
+    // original, which a later cumulative ACK retires once it is submitted.
+    // An unsubmitted original is never retired by a wire ACK. After success
+    // first_sequence() is the boundary that was retired, unless `sequence`
+    // was already behind it.
     [[nodiscard]] Error acknowledge_submitted_before(
         SequenceNumber sequence) noexcept;
     [[nodiscard]] Error acknowledge_before(SequenceNumber sequence) noexcept;

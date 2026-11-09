@@ -12,6 +12,19 @@
 
 using namespace robotweax::srt;
 
+namespace {
+// A wire ACK that runs ahead of the group's submission report is not an
+// error, and it retires nothing: an unsubmitted original is never authorized.
+void require_ack_retires_nothing(SendBuffer& history, SequenceNumber next)
+{
+    const auto first = history.first_sequence();
+    const auto size = history.size();
+    REQUIRE_EQ(history.acknowledge_submitted_before(next), Error::none);
+    REQUIRE_EQ(history.first_sequence(), first);
+    REQUIRE_EQ(history.size(), size);
+}
+} // namespace
+
 TEST(send_buffer_metadata_copy_preserves_live_clocks_and_partial_tombstones)
 {
     const SequenceNumber initial {SequenceNumber::mask};
@@ -1410,16 +1423,14 @@ TEST(send_buffer_canonical_unicast_requires_its_own_complete_submission)
     REQUIRE_EQ(history.pending_group_unicast(), 1U);
     REQUIRE_EQ(history.packets_in_flight(), 0U);
     REQUIRE(!history.note_group_original_submitted(*token, 10));
-    REQUIRE_EQ(history.acknowledge_submitted_before(first.next()),
-        Error::invalid_control_payload);
+    require_ack_retires_nothing(history, first.next());
     auto selected = history.next_packet(true, false, 20);
     REQUIRE(selected);
     REQUIRE(selected->canonical_group);
     REQUIRE_EQ(selected->plaintext_size, body.size());
     REQUIRE_EQ(history.packets_in_flight(), 1U);
     history.note_packet_submitted(first);
-    REQUIRE_EQ(history.acknowledge_submitted_before(first.next()),
-        Error::invalid_control_payload);
+    require_ack_retires_nothing(history, first.next());
     auto stale = *token;
     ++stale.sequence_position;
     REQUIRE(!history.note_group_unicast_submitted(stale, 25));
