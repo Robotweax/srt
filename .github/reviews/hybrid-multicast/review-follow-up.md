@@ -53,8 +53,8 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | L-6 | Open: prepared crypto generation advances on aborted admission | Cancelled-guard/prefix-recovery reproduction |
 | L-7 | Open: overlap completion order/statistics | MC-first/UC-first physical-submission counter regression |
 | L-8 | Open: bounded but repeated hot-path scans | Measure work and prove appropriate bounds before optimization |
-| T-1 | Open: candidate interception in default build | Verify intended ordinary-control behavior and default-off isolation; regression before gating |
-| T-2 | Open: coordinated activation on ordinary group setup | Gate/select activation without changing close-race error semantics |
+| T-1 | Fixed in source: the candidate check is compiled only with the hybrid control option; see below | Hosted default and enabled builds; no behavior difference was observable before the fix |
+| T-2 | Fixed in source: activation runs only for a coordinated listener; see below | No dedicated regression; existing bonding, dispatch and coordinated suites |
 | T-3 | Open: equal endpoints/re-listen and documented contract | Reproduce native ownership/bind behavior; explicitly support or reject/document |
 | T-4 | Open: native source syscalls under record lock | Check rollback/close races before moving work outside lock |
 | T-5 | Open: nonzero repair threshold at coordinated listen | Consistent rejection or explicit ignored-option contract, with tests |
@@ -185,6 +185,46 @@ No deadline, assertion or production code changed. BL-4 (`srt-live-transmit
 -version` on Windows x64) has passed on every push since `18b4595`; the
 scheduler starvation fix at `4d59666` is the likely cause, but this is not yet
 attributed, so BL-4 stays open.
+
+## Default-path isolation (T-1, T-2)
+
+**T-1.** `ConnectionRuntime::process_packet` called `hybrid::native_candidate`
+for every packet in every build and returned early on a match; only the
+enqueue inside it was guarded. The whole check is now compiled only with
+`ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL`. A default build no longer
+classifies subtypes `0x7f16`/`0x7f17` or decodes the inner packet of a
+`0x7f05` envelope; those packets take the ordinary control path.
+
+A behavioral regression could not be made to fail before the fix. On the
+ordinary path the session answers an unimplemented user-defined subtype with
+`Error::unsupported`, which also refreshes no peer activity and counts
+nothing. Dropped early or ignored late, the externally visible result in a
+default build was the same. The finding is therefore unconditional code and
+pre-authentication parsing in every build, and a contradicted "no socket
+activation" statement, not a changed outcome for existing peers. Two tests:
+
+- `interop/tests/test_hybrid_default_isolation.py` scans `src/` outside
+  `src/compat/hybrid/` and fails on any call into the `hybrid` namespace that
+  a default build would compile. It reports the old call at
+  `transport_runtime.cpp:4480` and passes on the fixed source. Type names are
+  allowed. It is a source-structure check, not a behavioral one.
+- `compat_runtime_default_build_gives_hybrid_control_subtypes_no_effect`
+  (default builds only) requires that neither hybrid subtype nor the envelope
+  form keeps an idle connection alive, with a keepalive as positive control.
+  It passes before and after the fix and guards the visible claim.
+
+Builds with the option are unchanged: a candidate is still consumed, and
+dropped when no service is attached.
+
+**T-2.** Listener admission called `GroupRegistry::activate_coordinated_member`
+for every admitted group member, taking the accepted socket's `option_mutex`
+and mapping a concurrent group close to `SRT_ECONNSETUP`. The call is now made
+only when the listener selected `SRTO_ROBOTWEAX_MCAST_COORDINATED`, recorded
+on the admission from the accepted socket's options, which the option setter
+keeps equal to the listener's (fixed before listen, refused in the callback).
+Bonding and uncoordinated dispatch admissions are back on the path they have
+on `main`. The close race is not deterministic, so there is no dedicated
+regression; the existing suites cover both directions.
 
 ## Source layout change
 
