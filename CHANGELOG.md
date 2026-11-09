@@ -23,6 +23,12 @@ version returned by `srt_getversion()`.
   and never publishes unauthenticated output. Direct `CryptoSession::open`
   callers now receive `invalid_payload_size` above the maximum DATA payload.
 
+- The Linux readiness watcher copies each epoll payload before storing it.
+  glibc packs `epoll_event` on x86-64, so the previous code bound a reference
+  to a misaligned member, which is undefined behavior that Clang's sanitizer
+  reports. No behavior change is known on x86-64; other architectures and the
+  kqueue and Windows paths were not affected.
+
 ## 0.3.2 — Multicast and Recovery Stabilization
 
 See the [release notes](docs/release-notes-0.3.2.md) for upgrade behavior and limits.
