@@ -330,6 +330,13 @@ void MembershipRecovery::pump() noexcept
             }
         }
     }
+    // Thread creation is the slow part of a join. It runs before any
+    // controller lock is taken: holding the receiver's mutex across it made
+    // the receiver's worker, which only tries the lock, skip its query
+    // cycles. A running channel without a route drops datagrams unrouted.
+    const bool worker_failed = channel && !channel->start();
+    if (worker_failed)
+        channel.reset();
     std::unique_lock<std::mutex> confirmation;
     if (request.recovery && receiver_)
         confirmation = std::unique_lock(receiver_->mutex_);
@@ -365,6 +372,11 @@ void MembershipRecovery::pump() noexcept
             : Phase::awaiting_unicast;
         return;
     }
+    if (worker_failed) {
+        state_.closed = true;
+        state_.phase = Phase::closed;
+        return;
+    }
     if (channel) {
         const auto source = service_->origin()->source();
         const bool link_local = source.endpoint.is_ipv6()
@@ -374,8 +386,7 @@ void MembershipRecovery::pump() noexcept
             .interface_scope_id = link_local ? request.interface.scope_id : 0};
         if (channel->register_ingress_route(request.context.dispatch.group_id,
                 runtime_, PacketIngress::multicast_data, ingress, identity_)) {
-            if (channel->start() && service_->now() < state_.not_after_us
-                && live()) {
+            if (service_->now() < state_.not_after_us && live()) {
                 channel_ = std::move(channel);
                 state_.joined = true;
                 state_.phase = Phase::joined;
