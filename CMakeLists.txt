@@ -1464,6 +1464,24 @@ if(ROBOTWEAX_SRT_BUILD_BENCHMARKS)
     target_compile_features(robotweax_srt_send_buffer_benchmark
         PRIVATE cxx_std_20)
 
+    add_executable(robotweax_srt_send_buffer_probe_benchmark
+        benchmarks/send_buffer_probe_benchmark.cpp)
+    target_link_libraries(robotweax_srt_send_buffer_probe_benchmark
+        PRIVATE RobotweaxSRT::srt)
+    target_compile_features(robotweax_srt_send_buffer_probe_benchmark
+        PRIVATE cxx_std_20)
+
+    # Diagnostic: a coordinated sender against loopback receivers; reads the
+    # coordinator's counters through the private registry like the tests do.
+    add_executable(robotweax_srt_coordinated_sender_benchmark
+        benchmarks/coordinated_sender_benchmark.cpp)
+    target_link_libraries(robotweax_srt_coordinated_sender_benchmark
+        PRIVATE RobotweaxSRT::srt)
+    target_include_directories(robotweax_srt_coordinated_sender_benchmark
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(robotweax_srt_coordinated_sender_benchmark
+        PRIVATE cxx_std_20)
+
     add_executable(robotweax_srt_codec_benchmark benchmarks/codec_benchmark.cpp)
     target_link_libraries(robotweax_srt_codec_benchmark PRIVATE RobotweaxSRT::srt)
     target_compile_features(robotweax_srt_codec_benchmark PRIVATE cxx_std_20)

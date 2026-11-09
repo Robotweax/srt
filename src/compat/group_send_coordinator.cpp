@@ -65,6 +65,8 @@ std::shared_ptr<GroupSendCoordinator> GroupSendCoordinator::make(
         || c.maximum_busy_attempts == 0 || c.maximum_busy_attempts > 64
         || c.poll_interval <= Clock::duration::zero()
         || c.poll_interval > std::chrono::seconds {1} || c.initial_message == 0
+        || c.admission_retry_interval <= Clock::duration::zero()
+        || c.admission_retry_interval > c.poll_interval
         || c.admission_busy_grace < Clock::duration::zero()
         || c.admission_busy_grace > std::chrono::seconds {5}
         || c.maximum_unicast_members > maximum_members
@@ -603,20 +605,26 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
 #endif
     if (bytes.empty() || bytes.size() > maximum_payload_)
         return Status::invalid;
-    if (retry_at_ && admission_now() < *retry_at_)
+    if (retry_at_ && admission_now() < *retry_at_) {
+        ++state_.gated_sends;
         return Status::busy;
+    }
     retry_at_.reset();
     // Empty groups advance the same source/key timeline without a datagram.
     if (state_.active_members == 0)
         return advance_empty(deadline);
-    if (!crypto_writable())
+    if (!crypto_writable()) {
+        ++state_.full_sends;
         return Status::full;
+    }
     auto available =
         std::find_if(frames_.begin(), frames_.end(), [](const auto& frame) {
             return !frame->occupied;
         });
-    if (available == frames_.end())
+    if (available == frames_.end()) {
+        ++state_.full_sends;
         return Status::full;
+    }
     const auto admitted = [&]() noexcept -> Status {
         std::optional<Emitter::Reservation> reservation;
         if (state_.source_mode == SourceMode::multicast) {
@@ -711,7 +719,9 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
             tx.guards[frame.count++].emplace(std::move(guard));
         }
         if (retry) {
-            retry_at_ = after(admission_now(), configuration_.poll_interval);
+            ++state_.busy_sends;
+            retry_at_ =
+                after(admission_now(), configuration_.admission_retry_interval);
             if (!manual_
                 && scheduler_->schedule_service_at(service_, *retry_at_)
                     != RuntimeScheduler::SubmitStatus::accepted) {
@@ -832,6 +842,11 @@ GroupSendCoordinator::Snapshot GroupSendCoordinator::snapshot() const noexcept
     auto state = state_;
     if (unicast_budget_)
         state.unicast_budget = unicast_budget_->snapshot();
+    if (retry_at_) {
+        const auto now = admission_now();
+        state.retry_wait =
+            now < *retry_at_ ? *retry_at_ - now : Clock::duration::zero();
+    }
     state.writable = !state.closed && !state.failed
         && (!retry_at_ || admission_now() >= *retry_at_)
         && (state.active_members == 0

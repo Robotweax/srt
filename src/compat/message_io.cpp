@@ -7,6 +7,7 @@
 #include "compat/readiness.hpp"
 
 #include <algorithm>
+#include <thread>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -1172,9 +1173,19 @@ int send_group_message_implementation(
                 return fail(SRT_ETIMEOUT);
             if (!blocking)
                 return fail(SRT_EASYNCSND);
-            if (Clock::now() >= deadline)
+            const auto now = Clock::now();
+            if (now >= deadline)
                 return fail(SRT_ETIMEOUT);
-            ReadinessSignal::wait_until(observed, deadline);
+            // A member admission was busy: the coordinator refuses sends
+            // until its retry gate opens. The global readiness signal
+            // changes with every receiver's traffic, so waiting on it would
+            // spin through refused calls; sleep out the gate instead.
+            const auto retry_wait = coordinator->snapshot().retry_wait;
+            if (result == Status::busy && retry_wait > Clock::duration::zero())
+                std::this_thread::sleep_until(
+                    std::min(deadline, now + retry_wait));
+            else
+                ReadinessSignal::wait_until(observed, deadline);
         }
     }
 

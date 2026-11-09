@@ -614,6 +614,55 @@ TEST(
         f.actor->close();
     }
 }
+// A busy member admission closes the send gate for the short retry interval,
+// not for a whole poll interval, and the snapshot tells a blocked caller how
+// long the gate stays closed so it can sleep instead of polling.
+TEST(compat_group_coordinator_busy_admission_gate_lasts_the_retry_interval)
+{
+    Fixture f;
+    auto admission_time = f.now;
+    f.actor->close();
+    f.config.admission_busy_grace = 10ms;
+    f.config.admission_retry_interval = 100us;
+    f.config.admission_clock = +[](void* p) noexcept {
+        return *static_cast<Clock::time_point*>(p);
+    };
+    f.config.admission_clock_context = &admission_time;
+    f.recreate();
+    Receiver a(f);
+    auto held = a.hold(f);
+    REQUIRE_EQ(held.status(), Admission::Status::ready);
+    auto attempt = std::async(std::launch::async, [&] {
+        return f.send();
+    });
+    REQUIRE_EQ(attempt.wait_for(2s), std::future_status::ready);
+    REQUIRE_EQ(attempt.get(), Status::busy);
+    auto state = f.actor->snapshot();
+    REQUIRE_EQ(state.busy_sends, 1U);
+    REQUIRE(!state.writable);
+    REQUIRE(state.retry_wait > Clock::duration::zero());
+    REQUIRE(state.retry_wait <= 100us);
+
+    // Still closed before the interval: refused without touching members.
+    admission_time += 50us;
+    attempt = std::async(std::launch::async, [&] {
+        return f.send();
+    });
+    REQUIRE_EQ(attempt.wait_for(2s), std::future_status::ready);
+    REQUIRE_EQ(attempt.get(), Status::busy);
+    state = f.actor->snapshot();
+    REQUIRE_EQ(state.gated_sends, 1U);
+    REQUIRE_EQ(state.busy_sends, 1U);
+    REQUIRE_EQ(state.retry_wait, 50us);
+
+    admission_time += 50us;
+    REQUIRE_EQ(f.actor->snapshot().retry_wait, Clock::duration::zero());
+    REQUIRE(f.actor->snapshot().writable);
+    held.release();
+    REQUIRE_EQ(f.send(), Status::accepted);
+    REQUIRE_EQ(f.actor->snapshot().busy_sends, 1U);
+    REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+}
 TEST(compat_group_coordinator_closed_member_cannot_cancel_accepted_multicast)
 {
     Fixture f;

@@ -48,11 +48,11 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | L-1 | Fixed in source: an ACK or NAK ahead of the fanout is honored for the submitted part; see below | Hosted builds; no network-level throughput evidence above the existing soak rate |
 | L-2 | Fixed in source: completion-busy detachment needs the attempt budget and the busy grace; see below | Hosted builds; no production-default contention run on a real network |
 | L-3 | Fixed in source: such a send fails with `SRT_ECONNLOST` and consumes nothing; see below | Hosted default and enabled builds |
-| L-4 | Open: one member admission contention/backpressure | Quantify retry/liveness with healthy-peer traffic and bounded work |
+| L-4 | Measured and changed in source: 100 µs busy gate, blocked caller sleeps instead of polling; see below | Re-measure on Linux; the `full` wait still uses the global readiness signal |
 | L-5 | Open: per-message TTL causing permanent detachment | Deterministic expiry rollback/member-state test |
 | L-6 | Open: prepared crypto generation advances on aborted admission | Cancelled-guard/prefix-recovery reproduction |
 | L-7 | Open: overlap completion order/statistics | MC-first/UC-first physical-submission counter regression |
-| L-8 | Open: bounded but repeated hot-path scans | Measure work and prove appropriate bounds before optimization |
+| L-8 | Measured: the per-poll send buffer probes are constant-time (2 to 13 ns a pair, no growth to 8192 packets); the coordinated fanout scan is bounded and measured with the sender benchmark; see below | Re-measure if the probes change |
 | T-1 | Fixed in source: the candidate check is compiled only with the hybrid control option; see below | Hosted default and enabled builds; no behavior difference was observable before the fix |
 | T-2 | Fixed in source: activation runs only for a coordinated listener; see below | No dedicated regression; existing bonding, dispatch and coordinated suites |
 | T-3 | Open: equal endpoints/re-listen and documented contract | Reproduce native ownership/bind behavior; explicitly support or reject/document |
@@ -390,6 +390,57 @@ excludes `compat_group_`. Both gates together own exactly the 1164 cases the
 aggregate owned before, with no duplicate; the partition check in
 `interop/tests/test_ci_build_scope.py` and the gate list of the optional
 retransmission-limit job include the new gate. No budget was raised.
+
+## Hot-path cost measured (L-8)
+
+`benchmarks/send_buffer_probe_benchmark.cpp` times the two probes that every
+session evaluates per poll, `peek_new_packet()` behind
+`has_pending_send_work()` and `new_packet_flow_count()`, for windows of 64,
+1024 and 8192 packets in all-sent, half-sent and empty states. On the
+development Mac, Release, one pair of probes costs 2 to 13 ns and does not grow
+with the window: the scan starts at the unsent cursor and stops at the first
+candidate, and everything below the cursor has been sent. The O(n) worry in the
+review holds only for a run of dropped tombstones at the cursor. The fanout
+scan of `drive()` is bounded by frames times members and is exercised by the
+coordinated sender benchmark described under L-4.
+
+## Send contention measured and the busy gate shortened (L-4)
+
+`benchmarks/coordinated_sender_benchmark.cpp` runs a coordinated listener
+against N loopback receivers in one process, each draining in its own thread,
+and sends 3000 blocking messages of 1316 bytes at `SRTO_MAXBW` 50 MB/s. It
+reads three new counters from the coordinator snapshot: `busy_sends` (a member
+admission was busy and the retry gate was armed), `gated_sends` (a send was
+refused while the gate was still closed) and `full_sends` (queue or source
+full). Development Mac, Release, no detachments, every message received:
+
+| receivers | sends/s before | sends/s after | busy | gated before | gated after | full after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 23256 | 22706 | 63 / 75 | 168814 | 0 | 56670 |
+| 4 | 11482 | 14175 | 183 / 229 | 103467 | 1 | 22720 |
+| 16 | 1999 | 2136 | 263 / 379 | 14838 | 0 | 12850 |
+| 32 | 668 | 680 | 455 / 521 | 12780 | 0 | 5560 |
+
+Reading before the change: busy admissions were rare, 63 to 455 per 3000
+sends, but each closed the gate for a full `poll_interval` of 1 ms, which was
+half to two thirds of the wall time with 1 to 4 receivers. The blocked caller
+waited on the global readiness signal, which changes with every receiver's
+traffic, so it spun through tens of thousands of refused calls per second.
+The 1/poll-interval ceiling predicted in the review was not reached; with 16
+and 32 receivers the per-send work for every member and the in-process
+receivers dominate.
+
+Change: a separate `admission_retry_interval` (default 100 µs, at most
+`poll_interval`) arms the gate; `Snapshot::retry_wait` exposes the remaining
+closed time; the blocking send path sleeps for it when refused with `busy`.
+Non-blocking sends are unchanged. Effect: the gated spin is gone, throughput
++23 percent with 4 receivers, +7 percent with 16, within noise at 1 and 32.
+Test: `compat_group_coordinator_busy_admission_gate_lasts_the_retry_interval`.
+
+Still open, new observation: a caller refused with `full` also waits on the
+global signal and spins while the queue drains. That is the library's
+pre-existing blocking-send mechanism, visible here only at artificial rates
+above the fanout; it is not specific to the coordinator and is not changed.
 
 ## Source layout change
 

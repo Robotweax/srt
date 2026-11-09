@@ -30,6 +30,12 @@ public:
         // for that long.
         std::uint32_t maximum_busy_attempts = 8;
         Clock::duration poll_interval = std::chrono::milliseconds {1};
+        // How long send() stays refused after a member admission was busy,
+        // before the next attempt. A busy member is usually inside one poll
+        // for tens of microseconds; the gate only bounds how often callers
+        // retry. Never longer than poll_interval.
+        Clock::duration admission_retry_interval =
+            std::chrono::microseconds {100};
         // Optional transient runtime/KM busy grace, for admission and for
         // completion fanout. No sealing while retrying.
         Clock::duration admission_busy_grace {};
@@ -157,6 +163,16 @@ public:
         GroupMulticastEmitter::Failure source_failure =
             GroupMulticastEmitter::Failure::none;
         std::uint64_t unicast_only_frames = 0;
+        // Diagnostics for the admission path: sends refused because a member
+        // admission was busy, sends refused while the busy retry gate was
+        // closed, and sends refused for a full queue or source.
+        std::uint64_t busy_sends = 0;
+        std::uint64_t gated_sends = 0;
+        std::uint64_t full_sends = 0;
+        // Remaining closed time of the busy retry gate on the admission
+        // clock; zero when the gate is open. A caller refused with busy can
+        // sleep for it instead of polling.
+        Clock::duration retry_wait {};
         bool writable = false;
         bool failed = false;
         bool closed = false;
