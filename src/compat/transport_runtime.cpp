@@ -4477,8 +4477,11 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     if (incoming_packet.kind == PacketKind::data
         && incoming_packet.payload.size() > maximum_data_payload_size)
         return;
-    if (hybrid::native_candidate(incoming_packet)) {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    // Only a build with the experimental option classifies hybrid controls.
+    // Without it these subtypes take the ordinary control path below, like
+    // any other subtype this runtime does not implement.
+    if (hybrid::native_candidate(incoming_packet)) {
         std::shared_ptr<hybrid::NativeService> service;
         {
             std::lock_guard lock(mutex_);
@@ -4494,9 +4497,9 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
                 : hybrid::NativeService::monotonic_now();
             (void)service->enqueue(incoming_packet, at);
         }
-#endif
         return;
     }
+#endif
     std::lock_guard lock(mutex_);
     if (locally_closed_ || broken_)
         return;

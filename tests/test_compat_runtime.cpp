@@ -8242,6 +8242,85 @@ TEST(compat_runtime_peer_idle_timeout_uses_last_valid_packet)
     REQUIRE(!runtime.writable());
 }
 
+#ifndef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+// Without the experimental hybrid control option a hybrid control packet has
+// no effect on a connection. It must not count as peer activity, so it cannot
+// keep an idle connection alive, exactly like a control packet whose subtype
+// nobody has assigned. A keepalive is the positive control for the harness.
+TEST(compat_runtime_default_build_gives_hybrid_control_subtypes_no_effect)
+{
+    constexpr std::uint16_t unassigned_subtype = 0x7f18;
+    constexpr std::uint16_t hybrid_control_subtype = 0x7f16;
+    constexpr std::uint16_t hybrid_exchange_subtype = 0x7f17;
+    constexpr std::uint16_t authenticated_envelope_subtype = 0x7f05;
+
+    // An authenticated-control envelope whose inner packet is a hybrid
+    // control: 12 envelope bytes, the inner packet, 32 trailing bytes.
+    const std::array<std::byte, 4> padding {};
+    MutablePacketView inner;
+    inner.kind = PacketKind::control;
+    inner.control.type = ControlType::user_defined;
+    inner.control.subtype = hybrid_control_subtype;
+    inner.control.destination_socket_id = 1;
+    inner.payload = padding;
+    constexpr std::size_t inner_size = packet_header_size + padding.size();
+    std::array<std::byte, 12 + inner_size + 32> envelope {};
+    const auto encoded_inner = encode_packet(
+        inner, std::span<std::byte>(envelope).subspan(12, inner_size));
+    REQUIRE(encoded_inner);
+    REQUIRE_EQ(encoded_inner.bytes_written, inner_size);
+
+    // True when one control packet, received at 4 ms, keeps a runtime with a
+    // 5 ms peer idle timeout alive past the 5 ms mark.
+    const auto refreshes_peer_activity = [](ControlType type,
+                                             std::uint16_t subtype,
+                                             std::span<const std::byte> body) {
+        const auto channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams output;
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        const Ipv4Endpoint peer {
+            .address = {198, 51, 100, 42},
+            .port = 12'002,
+        };
+        std::uint64_t now = 0;
+        ConnectionRuntime runtime {{
+            .channel = channel,
+            .peer = peer,
+            .peer_socket_id = 901,
+            .initial_sequence = SequenceNumber {3'000},
+            .origin = ConnectionRuntime::Clock::now(),
+            .peer_idle_timeout_milliseconds = 5,
+            .now_function = injected_now,
+            .now_context = &now,
+        }};
+        now = 4'000;
+        PacketView control;
+        control.kind = PacketKind::control;
+        control.control.type = type;
+        control.control.subtype = subtype;
+        control.control.destination_socket_id = 1;
+        control.payload = body;
+        runtime.process_packet(control, peer);
+        now = 5'001;
+        (void)runtime.poll();
+        return !runtime.broken();
+    };
+
+    REQUIRE(refreshes_peer_activity(ControlType::keepalive, 0, padding));
+    const auto user_defined = ControlType::user_defined;
+    REQUIRE(
+        !refreshes_peer_activity(user_defined, unassigned_subtype, padding));
+    REQUIRE(
+        !refreshes_peer_activity(user_defined, unassigned_subtype, envelope));
+    REQUIRE(!refreshes_peer_activity(
+        user_defined, hybrid_control_subtype, padding));
+    REQUIRE(!refreshes_peer_activity(
+        user_defined, hybrid_exchange_subtype, padding));
+    REQUIRE(!refreshes_peer_activity(
+        user_defined, authenticated_envelope_subtype, envelope));
+}
+#endif
+
 TEST(compat_runtime_rejects_malformed_peer_error_without_refreshing_idle_time)
 {
     const auto channel = std::make_shared<DatagramChannel>();
