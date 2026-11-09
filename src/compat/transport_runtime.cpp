@@ -4898,16 +4898,26 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
         // Compare native ingress against one absolute clock sample. Summing
         // separately truncated origin and elapsed microseconds can put a valid
         // receive one microsecond in the future.
-        const auto observed_at = Clock::now();
-        const auto absolute =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                observed_at.time_since_epoch())
-                .count();
-        if (absolute >= 0)
-            arrival = static_cast<std::uint64_t>(absolute);
-        else
-            observation_path.reset();
-        if (ingress) {
+        // Progress timestamps belong to the hybrid service's clock domain,
+        // the one every controller compares them with. In production that is
+        // the steady clock the channel stamped the ingress with; an injected
+        // test clock has no relation to that stamp, so the stamp is not
+        // applied then.
+        const bool injected =
+            hybrid_service_ != nullptr && hybrid_service_->injected_clock();
+        if (hybrid_service_ != nullptr) {
+            arrival = hybrid_service_->now();
+        } else {
+            const auto absolute =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    Clock::now().time_since_epoch())
+                    .count();
+            if (absolute >= 0)
+                arrival = static_cast<std::uint64_t>(absolute);
+            else
+                observation_path.reset();
+        }
+        if (ingress && !injected) {
             const auto recorded =
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     ingress->time_since_epoch())

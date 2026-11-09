@@ -104,6 +104,9 @@ std::shared_ptr<StartupSession> StartupSession::start(
     std::shared_ptr<GroupSendCoordinator> actor,
     std::uint64_t deadline) noexcept
 {
+    // The deadline is absolute monotonic time: the service attached below
+    // always runs on the monotonic clock (attach_native_control injects no
+    // other), so every later comparison uses native_->now() in that domain.
     if (!r || !options || !valid_options(*options, !actor)
         || NativeService::monotonic_now() >= deadline)
         return {};
@@ -195,8 +198,7 @@ StartupSession::Snapshot StartupSession::snapshot() const noexcept
         if (s.phase != Phase::failed)
             s.phase = Phase::closed;
     }
-    if (s.caller && !s.published
-        && NativeService::monotonic_now() >= s.not_after_us)
+    if (s.caller && !s.published && native_->now() >= s.not_after_us)
         s.phase = Phase::failed;
     return s;
 }
@@ -225,7 +227,7 @@ bool StartupSession::publish_ready(SocketRecord& socket) noexcept
         || receiver.fallback != ReceiverBridge::RequestState::confirmed
         || receiver.returning == ReceiverBridge::RequestState::pending
         || cancelled_.load()
-        || NativeService::monotonic_now()
+        || native_->now()
             >= std::min(state_.not_after_us, native.expires_at_us))
         return false;
     socket.state = SRTS_CONNECTED;
@@ -269,7 +271,7 @@ void StartupSession::drive() noexcept
     };
     if (native.closed || state.phase == Phase::failed
         || ((state.caller ? !state.published : state.phase != Phase::serving)
-            && NativeService::monotonic_now() >= state.not_after_us)) {
+            && native_->now() >= state.not_after_us)) {
         fail(Outcome::stale);
         native_->close();
         return;

@@ -125,6 +125,13 @@ public:
     }
     void pump_for_testing() noexcept;
     [[nodiscard]] static std::uint64_t monotonic_now() noexcept;
+    // This service's clock domain: the injected test clock, otherwise
+    // monotonic_now(). Every controller compares its timestamps in it.
+    [[nodiscard]] std::uint64_t now() const noexcept;
+    [[nodiscard]] bool injected_clock() const noexcept
+    {
+        return configuration_.clock != nullptr;
+    }
 
 private:
     friend std::shared_ptr<NativeService> attach_native_control(
@@ -156,7 +163,6 @@ private:
     static void run(void*) noexcept;
     void pump() noexcept;
     void cleanup() noexcept;
-    [[nodiscard]] std::uint64_t now() const noexcept;
     [[nodiscard]] bool live() noexcept;
     [[nodiscard]] bool ensure_active() noexcept;
     void handle(const Exchange::Step&) noexcept;
