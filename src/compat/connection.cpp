@@ -206,6 +206,9 @@ struct ListenerGroupAdmission {
     // Dispatch admission (SRTO_ROBOTWEAX_MCAST_GROUP set on the listener);
     // the callback must still supply the key per join.
     bool dispatch_enabled = false;
+    // The listener selected SRTO_ROBOTWEAX_MCAST_COORDINATED. Only then does
+    // an admitted member join a group send coordinator.
+    bool coordinated = false;
     std::string admission_key;
     MulticastDispatch announcement {};
     bool has_announcement = false;
@@ -5045,6 +5048,9 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     }
     group_admission.enabled = public_options.group_connect;
     group_admission.dispatch_enabled = public_options.multicast_group_set;
+    // The option is fixed before listen and refused inside the callback, so
+    // the accepted socket still carries the listener's value here.
+    group_admission.coordinated = public_options.multicast_coordinated;
     group_admission.path_identifier_required =
         public_options.path_identifier_required;
     group_admission.standby_rtt_required = public_options.standby_rtt_required;
@@ -5918,7 +5924,9 @@ bool ListenerRuntime::process_setup_result(
             && !context->group_admission.activate()) {
             return finish_setup_context(context, false, SRT_ESCLOSED);
         }
-        if (admitted_group) {
+        if (admitted_group && context->group_admission.coordinated) {
+            // Bonding and uncoordinated dispatch members have no coordinator
+            // to join and keep their admission path and error codes.
             // Serialize final ownership with POST setters. After publication
             // only application I/O flags may change on this member.
             std::lock_guard option_lock(context->accepted->option_mutex);
