@@ -6066,6 +6066,16 @@ struct HybridMultiScenario {
     {
         net.source.select_aux_peer(endpoint(peers[0].id));
         net.source.drop_selected_aux = true;
+        // Judge the isolation only after it has dropped something. A
+        // freshness lapse that predates the first drop is not its effect;
+        // on slow sanitized runners the receiver was already stale here,
+        // which failed the drop count below although nothing was wrong
+        // with the isolation (see H-3 for the lapse itself).
+        hybrid_network_wait(
+            [&] {
+                return net.source.selected_aux_drops.load() > 0;
+            },
+            "isolated control drop");
         hybrid_network_wait(
             [&] {
                 return !peers[0].owner->receiver()->snapshot().fresh;
