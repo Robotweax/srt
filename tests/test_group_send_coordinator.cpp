@@ -1376,7 +1376,9 @@ TEST(compat_group_policy_modes_persist_and_preserve_canonical_wire_identity)
         REQUIRE_EQ(a.data_attempts.size(), 2U);
         REQUIRE_EQ(a.data_attempts.back(), f.output.packets.back());
         decrypt_original(a, mode, a.data_attempts.back());
-        REQUIRE_EQ(f.actor->snapshot().duplicate_completions, 1U);
+        // The unicast copy completed before the multicast report; both are
+        // first reports of their own wire submission, not duplicates.
+        REQUIRE_EQ(f.actor->snapshot().duplicate_completions, 0U);
         a.ack(initial.advanced(2), true);
         b.ack(initial.advanced(2), true);
         tick(f, a, &b);

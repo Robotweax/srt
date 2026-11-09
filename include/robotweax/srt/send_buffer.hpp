@@ -191,10 +191,14 @@ public:
     // the local monotonic position prevents aliases after 31-bit rollover.
     [[nodiscard]] std::optional<GroupOriginalSubmission>
     group_original_submission(SequenceNumber sequence) const noexcept;
-    // Separate from ordinary member completions: stamp first-send age and
-    // authorize this exact external original once. Duplicate reports do not
-    // restart its sender-drop clock.
-    // Returns true only for the first matching submission transition.
+    // Separate from ordinary member completions. Each delivery path reports
+    // its own wire submission once: the group's multicast report for a
+    // multicast-eligible original, and this member's unicast completion for
+    // a selected copy. Whichever arrives first stamps the first-send age and
+    // authorizes this exact external original; the other path still returns
+    // true once, so an overlap original records both wire submissions in
+    // either order. Repeated reports of one path return false and never
+    // restart the sender-drop clock.
     bool note_group_original_submitted(GroupOriginalSubmission submission,
         std::uint64_t now_microseconds) noexcept;
     bool note_group_unicast_submitted(GroupOriginalSubmission submission,
@@ -312,7 +316,7 @@ private:
         bool external_original = false;
         bool unicast_pending = false;
         bool unicast_selected = false;
-        bool multicast_eligible = false;
+        bool multicast_pending = false; // Multicast report still expected.
         bool retransmission_queued = false;
         bool has_retransmission_send_time = false;
     };
@@ -320,8 +324,7 @@ private:
     static_assert(sizeof(Slot) <= 80U, "sender slot metadata budget exceeded");
 
     [[nodiscard]] Slot* find(SequenceNumber sequence) noexcept;
-    bool mark_group_submitted(
-        GroupOriginalSubmission, std::uint64_t now, bool unicast) noexcept;
+    void record_group_submission(Slot&, std::uint64_t now) noexcept;
     void discard_slot(Slot& slot, bool retain_drop_marker = false) noexcept;
     void refresh_first_buffered_enqueue_time() noexcept;
     void refresh_buffered_enqueue_time_bounds() noexcept;

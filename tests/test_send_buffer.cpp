@@ -1474,12 +1474,52 @@ TEST(
     REQUIRE_EQ(replay.error, Error::none);
     REQUIRE_EQ(replay.originals + replay.repairs, 0U);
     SendBuffer copy = history;
-    REQUIRE(!history.note_group_unicast_submitted(*token, 30));
+    REQUIRE(history.note_group_unicast_submitted(*token, 30));
     REQUIRE_EQ(history.pending_group_unicast(), 0U);
     REQUIRE_EQ(copy.pending_group_unicast(), 1U);
-    REQUIRE(!copy.note_group_unicast_submitted(*token, 40));
+    REQUIRE(copy.note_group_unicast_submitted(*token, 40));
     REQUIRE_EQ(copy.acknowledge_submitted_before(first.next()), Error::none);
     REQUIRE_EQ(copy.pending_group_unicast(), 0U);
+}
+
+// An overlap original reaches the member twice, once over the group's
+// multicast path and once as this member's unicast copy. Each wire submission
+// is reported once, whichever lands first; the repeat of either report is
+// refused, and the original is authorized and in flight exactly once.
+TEST(send_buffer_overlap_reports_each_wire_submission_once_in_either_order)
+{
+    const SequenceNumber first {700};
+    const std::array<std::byte, 1> body {std::byte {9}};
+    const DataHeader header {.sequence = first,
+        .message_number = 1,
+        .boundary = MessageBoundary::solo,
+        .destination_socket_id = 0x40000058U};
+    for (const bool multicast_first : {true, false}) {
+        SendBuffer history(first, 4, 32);
+        REQUIRE_EQ(
+            history.import_group_original(header, body, body.size(),
+                CryptoMode::automatic, 0, 0, GroupOriginalDelivery::overlap),
+            Error::none);
+        const auto token = history.group_original_submission(first);
+        REQUIRE(token);
+        if (multicast_first)
+            REQUIRE(history.note_group_original_submitted(*token, 10));
+        const auto selected = history.next_packet(true, false, 20);
+        REQUIRE(selected);
+        REQUIRE(selected->canonical_group);
+        REQUIRE_EQ(history.pending_group_unicast(), 1U);
+        REQUIRE(history.note_group_unicast_submitted(*token, 30));
+        REQUIRE_EQ(history.pending_group_unicast(), 0U);
+        if (!multicast_first)
+            REQUIRE(history.note_group_original_submitted(*token, 40));
+        REQUIRE(!history.note_group_original_submitted(*token, 50));
+        REQUIRE(!history.note_group_unicast_submitted(*token, 60));
+        REQUIRE_EQ(history.packets_in_flight(), 1U);
+        REQUIRE_EQ(history.pending_group_unicast(), 0U);
+        REQUIRE_EQ(
+            history.acknowledge_submitted_before(first.next()), Error::none);
+        REQUIRE_EQ(history.packets_in_flight(), 0U);
+    }
 }
 
 TEST(send_buffer_canonical_queue_counters_survive_copy_ttl_and_mixed_preflight)

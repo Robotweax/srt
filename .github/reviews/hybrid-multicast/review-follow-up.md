@@ -51,7 +51,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | L-4 | Measured and changed in source: 100 µs busy gate, blocked caller sleeps instead of polling; see below | Re-measure on Linux; the `full` wait still uses the global readiness signal |
 | L-5 | Fixed in source: an expired message fails the send instead of detaching the member; see below | Hosted builds |
 | L-6 | Open: prepared crypto generation advances on aborted admission | Cancelled-guard/prefix-recovery reproduction |
-| L-7 | Open: overlap completion order/statistics | MC-first/UC-first physical-submission counter regression |
+| L-7 | Fixed in source: each wire submission of an overlap original is recorded once in either completion order; see below | Hosted builds |
 | L-8 | Measured: the per-poll send buffer probes are constant-time (2 to 13 ns a pair, no growth to 8192 packets); the coordinated fanout scan is bounded and measured with the sender benchmark; see below | Re-measure if the probes change |
 | T-1 | Fixed in source: the candidate check is compiled only with the hybrid control option; see below | Hosted default and enabled builds; no behavior difference was observable before the fix |
 | T-2 | Fixed in source: activation runs only for a coordinated listener; see below | No dedicated regression; existing bonding, dispatch and coordinated suites |
@@ -532,6 +532,41 @@ Regression, failing before the change:
 (one member's clock 5 s ahead, so a deadline the emitter accepts has passed
 for that member: expired, no detachment, sequence and message number
 unchanged, and the next send accepted by both members).
+
+## Canonical DATA path: L-7
+
+An overlap original reaches a member twice: over the group's multicast path
+and as the member's own unicast copy. `SendBuffer` recorded the first of the
+two completion reports as "submitted" and refused the second as a repeat, so
+the outcome depended on which path completed first. Multicast first: the
+later unicast completion returned false and skipped the session's
+`note_data_packet_sent` (retransmission timer, tail-probe idle reference).
+Unicast first: the later multicast report was counted as
+`duplicate_completions` instead of `applied_completions`, and the sent note
+was skipped as well. Counters stayed consistent; only the order decided what
+was recorded.
+
+Each delivery path now reports its own wire submission once. The multicast
+report consumes the slot's pending multicast expectation
+(`multicast_pending`, formerly `multicast_eligible`), the unicast completion
+consumes its selection, and whichever arrives first authorizes the original
+and starts its sender-drop clock; the other path's first report returns true
+without touching either, and a repeated report of one path still returns
+false. The coordinator therefore counts an overlap original as one applied
+completion in both orders, and the member session records both wire
+submissions.
+
+Regression, failing before the change:
+`send_buffer_overlap_reports_each_wire_submission_once_in_either_order`
+(both orders: both first reports true, both repeats false, one packet in
+flight, no pending unicast copy, cumulative ACK retires the original).
+Updated expectations:
+`send_buffer_overlap_counts_flight_once_and_preserves_pending_copy_through_multicast`
+(the unicast completion after a multicast report is now a true first report
+in the history and in its copy) and
+`compat_group_policy_modes_persist_and_preserve_canonical_wire_identity`
+(the multicast report after a completed unicast copy is applied, not a
+duplicate).
 
 ## Source layout change
 

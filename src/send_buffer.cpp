@@ -130,7 +130,7 @@ Error SendBuffer::enqueue_message(
         slot.external_original = false;
         slot.unicast_pending = false;
         slot.unicast_selected = false;
-        slot.multicast_eligible = false;
+        slot.multicast_pending = false;
         slot.has_retransmission_send_time = false;
         slot.metadata.live.last_retransmission_send_microseconds = 0;
         slot.retransmission_queued = false;
@@ -212,7 +212,7 @@ Error SendBuffer::import_group_original(const DataHeader& header,
     slot.sent = delivery == GroupOriginalDelivery::multicast;
     slot.external_original = true;
     slot.unicast_pending = delivery != GroupOriginalDelivery::multicast;
-    slot.multicast_eligible = delivery != GroupOriginalDelivery::unicast;
+    slot.multicast_pending = delivery != GroupOriginalDelivery::unicast;
     slot.enqueue_microseconds = enqueue_microseconds;
     slot.metadata.live.expiration_microseconds = expiration_microseconds;
     if (occupied_count_ == 0U)
@@ -323,7 +323,7 @@ void SendBuffer::discard_slot(
     slot.submitted = false;
     slot.external_original = false;
     slot.unicast_pending = slot.unicast_selected = false;
-    slot.multicast_eligible = false;
+    slot.multicast_pending = false;
     slot.retransmission_queued = false;
     slot.has_retransmission_send_time = false;
     if (retain_drop_marker) {
@@ -678,26 +678,31 @@ SendBuffer::group_original_submission(SequenceNumber sequence) const noexcept
 bool SendBuffer::note_group_original_submitted(
     GroupOriginalSubmission submission, std::uint64_t now_microseconds) noexcept
 {
-    return mark_group_submitted(submission, now_microseconds, false);
-}
-
-bool SendBuffer::mark_group_submitted(GroupOriginalSubmission submission,
-    std::uint64_t now_microseconds, bool unicast) noexcept
-{
     if (auto* slot = find(submission.sequence); slot != nullptr
         && slot->external_original
         && slot->sequence_position == submission.sequence_position
-        && (unicast || slot->multicast_eligible) && !slot->submitted) {
-        if (!slot->sent) {
-            slot->sent = true;
-            ++packets_in_flight_;
-        }
-        slot->first_send_microseconds = now_microseconds;
-        slot->submitted = true;
-        --external_unsubmitted_count_;
+        && slot->multicast_pending) {
+        slot->multicast_pending = false;
+        record_group_submission(*slot, now_microseconds);
         return true;
     }
     return false;
+}
+
+void SendBuffer::record_group_submission(
+    Slot& slot, std::uint64_t now_microseconds) noexcept
+{
+    // The first of the two delivery paths authorizes the original and starts
+    // its sender-drop clock. The other path's later report leaves both alone.
+    if (slot.submitted)
+        return;
+    if (!slot.sent) {
+        slot.sent = true;
+        ++packets_in_flight_;
+    }
+    slot.first_send_microseconds = now_microseconds;
+    slot.submitted = true;
+    --external_unsubmitted_count_;
 }
 
 bool SendBuffer::note_group_unicast_submitted(
@@ -708,7 +713,8 @@ bool SendBuffer::note_group_unicast_submitted(
         && slot->unicast_selected) {
         slot->unicast_selected = false;
         --pending_group_unicast_count_;
-        return mark_group_submitted(token, now, true);
+        record_group_submission(*slot, now);
+        return true;
     }
     return false;
 }
