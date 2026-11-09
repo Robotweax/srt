@@ -716,9 +716,9 @@ int GroupRegistry::get_io_option(
                 }
             }
         }
-        // Source-address drops live on the member runtime; its socket mutex
-        // is taken after the group mutex is released, since attach_runtime
-        // orders socket before group.
+        // Source-address and pre-decoding drops live on the member runtime;
+        // its socket mutex is taken after the group mutex is released, since
+        // attach_runtime orders socket before group.
         if (receiver_member != SRT_INVALID_SOCK) {
             const auto member =
                 SocketRegistry::instance().find(receiver_member);
@@ -726,7 +726,8 @@ int GroupRegistry::get_io_option(
                 std::lock_guard member_lock(member->mutex);
                 if (member->runtime != nullptr) {
                     stats.mcast_pkt_filtered +=
-                        member->runtime->foreign_peer_packets();
+                        member->runtime->foreign_peer_packets()
+                        + member->runtime->rejected_multicast_packets();
                 }
             }
         }

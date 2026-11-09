@@ -636,11 +636,15 @@ Repeats, pacing and readiness:
 - `SRTO_ROBOTWEAX_MCAST_STATS` (read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`)
   reports on the sender the packets and bytes sent on the multicast path, the
   repeats among them, the unicast repeats skipped and the live receiver
-  count; on a receiver, decoded multicast-channel datagrams and filtered
-  observations (unmatched destinations plus member source rejections).
-  Routing observations are not proof of validated multicast DATA progress or
-  recovery. The libsrt-shaped group row (`srt_bstats`) keeps its
-  documented meaning and counts each message once.
+  count; on a receiver, `mcast_pkt_received` counts every datagram observed
+  on the multicast channel, and `mcast_pkt_filtered` those among them that
+  were discarded before decoding: unmatched destinations, member source
+  rejections, stale or replaced route identities, non-DATA kinds, oversize
+  payloads and arrivals after the member closed. The difference is what
+  reached the member's DATA processing. Routing observations are not proof
+  of validated multicast DATA progress or recovery. The libsrt-shaped group
+  row (`srt_bstats`) keeps its documented meaning and counts each message
+  once.
 
 Not supported in this release, and refused at admission rather than
 half-working: packet-filter FEC on the dispatch listener, Rendezvous,

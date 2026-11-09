@@ -666,11 +666,19 @@ public:
     void set_group_data_egress(const GroupDataEgress& egress) noexcept;
     [[nodiscard]] GroupDataEgress group_data_egress() const noexcept;
     // Complete source endpoint rejections: the established unicast peer or
-    // the currently bound multicast source. Stale route identities are not
-    // counted here. Dispatch receivers fold this into their filter count.
+    // the currently bound multicast source. Stale route identities are
+    // counted in rejected_multicast_packets(). Dispatch receivers fold both
+    // into their filter count.
     [[nodiscard]] std::uint64_t foreign_peer_packets() const noexcept
     {
         return foreign_peer_packets_.load(std::memory_order_relaxed);
+    }
+    // Multicast datagrams routed to this member and rejected before any
+    // decoding: a stale or replaced route identity, a kind other than DATA,
+    // an oversize payload, or arrival after this runtime closed or broke.
+    [[nodiscard]] std::uint64_t rejected_multicast_packets() const noexcept
+    {
+        return rejected_multicast_packets_.load(std::memory_order_relaxed);
     }
     [[nodiscard]] MessageIoResult queue_stream(
         std::span<const std::byte> bytes,
@@ -969,6 +977,7 @@ private:
     std::shared_ptr<const MulticastIngressBinding> multicast_ingress_binding_;
     std::uint64_t last_key_material_revision_sent_ = 0;
     std::atomic<std::uint64_t> foreign_peer_packets_ {0};
+    std::atomic<std::uint64_t> rejected_multicast_packets_ {0};
     IpEndpoint peer_{};
     std::uint32_t peer_socket_id_ = 0;
     ReliabilitySession session_;

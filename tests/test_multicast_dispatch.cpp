@@ -1178,6 +1178,19 @@ void run_dispatch_shared_loss(bool lose_multicast_repair,
         datagram[15] = std::byte {0x34};
         datagram[14] = std::byte {0x12};
         REQUIRE(stray.send_to(datagram, hook.multicast));
+        // A decodable control datagram (keepalive with its zero word) that
+        // does carry the dispatch ID is routed to the member and rejected
+        // there, since only DATA travels on the multicast path. It is
+        // filtered as well, never delivered.
+        std::array<std::byte, 20> control {};
+        control[0] = std::byte {0x80};
+        control[1] = std::byte {0x01}; // keepalive
+        const auto dispatch_id = static_cast<std::uint32_t>(sender);
+        control[12] = static_cast<std::byte>(dispatch_id >> 24U);
+        control[13] = static_cast<std::byte>(dispatch_id >> 16U);
+        control[14] = static_cast<std::byte>(dispatch_id >> 8U);
+        control[15] = static_cast<std::byte>(dispatch_id);
+        REQUIRE(stray.send_to(control, hook.multicast));
         std::this_thread::sleep_for(std::chrono::milliseconds {50});
     }
     const auto receiver_stats = [&](SRTSOCKET receiver) {
@@ -1191,12 +1204,13 @@ void run_dispatch_shared_loss(bool lose_multicast_repair,
     const auto a = receiver_stats(receiver_a);
     REQUIRE_EQ(a.member_count, 1U);
     REQUIRE_EQ(a.mcast_pkt_sent, 0U);
-    // count originals minus the dropped one, plus the multicast repeat and
-    // the stray datagram.
+    // count originals minus the dropped one, plus the multicast repeat, the
+    // unrouted stray datagram and the routed but rejected control datagram.
     REQUIRE_EQ(a.mcast_pkt_received,
         static_cast<std::uint64_t>(count
-            + ((lose_multicast_repair || transient_multicast_repair) ? 0 : 1)));
-    REQUIRE_EQ(a.mcast_pkt_filtered, 1U);
+            + ((lose_multicast_repair || transient_multicast_repair) ? 0 : 1)
+            + 1));
+    REQUIRE_EQ(a.mcast_pkt_filtered, 2U);
     // The stray datagram never reached the application.
     std::array<char, 64> none {};
     const std::int32_t short_timeout = 150;

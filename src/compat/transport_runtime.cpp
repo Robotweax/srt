@@ -4465,9 +4465,16 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     if (provenance != PacketIngress::multicast_data
         && provenance != PacketIngress::unicast_session)
         return;
-    if (provenance == PacketIngress::multicast_data
-        && incoming_packet.kind != PacketKind::data)
+    const bool multicast = provenance == PacketIngress::multicast_data;
+    const auto reject_multicast = [&] {
+        if (multicast)
+            rejected_multicast_packets_.fetch_add(
+                1U, std::memory_order_relaxed);
+    };
+    if (multicast && incoming_packet.kind != PacketKind::data) {
+        reject_multicast();
         return;
+    }
     // Preserve the established unicast peer check; an independent multicast
     // source is admitted only through the active route token below.
     if (provenance == PacketIngress::unicast_session && peer != peer_) {
@@ -4475,8 +4482,10 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
         return;
     }
     if (incoming_packet.kind == PacketKind::data
-        && incoming_packet.payload.size() > maximum_data_payload_size)
+        && incoming_packet.payload.size() > maximum_data_payload_size) {
+        reject_multicast();
         return;
+    }
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
     // Only a build with the experimental option classifies hybrid controls.
     // Without it these subtypes take the ordinary control path below, like
@@ -4501,17 +4510,21 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     }
 #endif
     std::lock_guard lock(mutex_);
-    if (locally_closed_ || broken_)
+    if (locally_closed_ || broken_) {
+        reject_multicast();
         return;
-    if (provenance == PacketIngress::multicast_data) {
+    }
+    if (multicast) {
         // Revocation, replacement and admission serialize on this mutex.
         // Reject stale identities before even source/liveness counters change.
         if (multicast_binding == nullptr
             || multicast_binding != multicast_ingress_binding_
             || multicast_binding->generation_ != multicast_ingress_generation_
             || incoming_packet.data.destination_socket_id
-                != multicast_binding->destination_socket_id_)
+                != multicast_binding->destination_socket_id_) {
+            reject_multicast();
             return;
+        }
         if (peer != multicast_binding->source_) {
             foreign_peer_packets_.fetch_add(1U, std::memory_order_relaxed);
             return;
