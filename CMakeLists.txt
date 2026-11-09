@@ -652,7 +652,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests --include hybrid_ --exclude multicast_dispatch
             investigation_hybrid_ hybrid_network_ hybrid_key_network_
             hybrid_load_network_ hybrid_soak_network_ hybrid_harness_network_
-            srt_compat_ compat_runtime_ acp1)
+            hybrid_return_lag_network_ srt_compat_ compat_runtime_ acp1)
     set_tests_properties(robotweax_srt_hybrid_model_tests PROPERTIES LABELS "unit;hybrid")
     add_test(NAME robotweax_srt_hybrid_investigation_tests
         COMMAND robotweax_srt_tests --include investigation_hybrid_)
@@ -736,6 +736,10 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             COMMAND robotweax_srt_tests --include hybrid_key_network_multi_receiver_late_admission_)
         set_tests_properties(robotweax_srt_hybrid_key_admission_tests PROPERTIES
             TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;key-management;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_return_lag_tests
+            COMMAND robotweax_srt_tests --include hybrid_return_lag_network_)
+        set_tests_properties(robotweax_srt_hybrid_return_lag_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection")
         add_test(NAME robotweax_srt_hybrid_load_tests
             COMMAND robotweax_srt_tests --include hybrid_load_network_)
         set_tests_properties(robotweax_srt_hybrid_load_tests PROPERTIES

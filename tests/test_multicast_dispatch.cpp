@@ -5549,6 +5549,145 @@ void hybrid_network_wait(F predicate, const char* stage = "network condition")
         throw std::runtime_error(std::string("hybrid wait: ") + stage);
 }
 }
+// H-2: automatic return against a multicast path that delivers DATA later
+// than the unicast path delivers the source's progress reports, while the
+// source produces continuously. The newest report always leads the DATA
+// still in flight. The detector and the return admission compare local
+// multicast receipt with the newest report that is at least the configured
+// maximum transit old, so a lag inside that bound recovers and returns, and
+// a lag beyond it does not and spends no operation.
+TEST(
+    hybrid_return_lag_network_automatic_return_honors_the_configured_transit_bound)
+{
+    SKIP_UNLESS(loopback_multicast_available(), "no loopback multicast");
+    struct Row {
+        std::uint32_t transit_us, lag_us;
+        bool expect_return;
+    };
+    // The transit bound must not exceed stall_us (40 ms) to be valid. The
+    // settled report is the newest one at least the transit bound old; with
+    // a 50 ms query interval it is about 50 ms old, so the tolerated lag is
+    // that age, never less than the bound. 120 ms is beyond it.
+    for (const Row row : {Row {5'000, 0, true}, Row {5'000, 120'000, false},
+             Row {40'000, 30'000, true}}) {
+        CoordinatedNative f(1'000'000, false, false);
+        const hn::DetectionConfiguration detection {.report_age_us = 800'000,
+            .maximum_transit_us = row.transit_us,
+            .stall_us = 40'000,
+            .emission_lifetime_us = 400'000,
+            .recovery_us = 80'000,
+            .recovery_gap_us = 60'000,
+            .hold_down_us = 100'000,
+            .sample_gap_us = 20'000,
+            .recovery_advances = 3};
+        NativeReceiverOwners owners(f, {10'000, 600'000}, detection,
+            hn::ReturnPolicy {1'000'000, 32, 4, 10'000, 200'000});
+        auto automatic = hn::AutomaticReturn::create(
+            owners.receiver, {1, 220'000, 8, 10'000, 160'000});
+        REQUIRE(automatic);
+        // Delay only multicast DATA; unicast control and repairs are direct.
+        HybridFaultLink multicast;
+        multicast.drop_commits = false;
+        multicast.rules({}, {row.lag_us, 0, 0, 0, 0, 0});
+        multicast.install(f.source());
+        const auto socket = SocketRegistry::instance().find(f.listener);
+        std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+        {
+            std::lock_guard lock(socket->mutex);
+            control = socket->channel;
+        }
+        REQUIRE(control);
+        HybridWireHook hook;
+        hook.channel = control;
+        hook.drop_commits = true;
+        SendHookReset reset {control};
+        control->set_send_hook_for_testing(HybridWireHook::send, &hook);
+        REQUIRE(f.actor()->declare_source_activity(
+            hn::Activity::producing, 4, 1'000'000));
+        for (int i = 0; i < 4; ++i)
+            REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(f.receiver, 0, 4);
+        owners.wait([&] {
+            return owners.receiver->snapshot().fresh;
+        });
+        REQUIRE_EQ(owners.receiver->request_fallback(4),
+            hn::ReceiverBridge::Admission::accepted);
+        owners.wait([&] {
+            const auto s = owners.receiver->snapshot();
+            return s.fresh && s.mode == hn::Mode::unicast;
+        });
+        // Continuous production: the report always leads the newest DATA.
+        // The application keeps reading so no message ages out of the
+        // receive buffer. The grant of this fixture lives 2 s, so the
+        // observation window ends before it.
+        int next = 4, read_next = 4;
+        auto send_at = std::chrono::steady_clock::now();
+        const auto begin = send_at;
+        const auto until = begin + std::chrono::milliseconds {1'500};
+        std::optional<std::chrono::steady_clock::time_point> confirmed_at;
+        while (std::chrono::steady_clock::now() < until) {
+            if (std::chrono::steady_clock::now() >= send_at) {
+                REQUIRE(
+                    f.actor()->declare_source_activity(hn::Activity::producing,
+                        static_cast<std::uint64_t>(next + 1), 1'000'000));
+                REQUIRE_EQ(
+                    f.send(next), static_cast<int>(message(next).size()));
+                ++next;
+                send_at = std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds {12};
+                // Read only messages old enough to have been delivered, so
+                // the reads never block and production never pauses.
+                if (next - read_next >= 40) {
+                    expect_messages(f.receiver, read_next, 8);
+                    read_next += 8;
+                }
+            }
+            automatic->pump();
+            owners.sender->pump();
+            const auto a = automatic->snapshot();
+            if (a.result == hn::ReceiverBridge::RequestState::confirmed) {
+                confirmed_at = std::chrono::steady_clock::now();
+                break;
+            }
+            if (a.phase == hn::AutomaticReturn::Phase::exhausted
+                || a.phase == hn::AutomaticReturn::Phase::closed)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds {1});
+        }
+        const auto a = automatic->snapshot();
+        std::fprintf(stdout,
+            "[HYBRID_RETURN_LAG] {\"transit_us\":%u,\"lag_us\":%u,\"sent\":%d,"
+            "\"phase\":%u,\"result\":%u,\"operations\":%llu,"
+            "\"confirmed_after_ms\":%lld}\n",
+            row.transit_us, row.lag_us, next, static_cast<unsigned>(a.phase),
+            static_cast<unsigned>(a.result),
+            static_cast<unsigned long long>(a.operations),
+            confirmed_at
+                ? static_cast<long long>(
+                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                          *confirmed_at - begin)
+                          .count())
+                : -1LL);
+        if (row.expect_return) {
+            REQUIRE_EQ(a.result, hn::ReceiverBridge::RequestState::confirmed);
+            REQUIRE_EQ(a.operations, 1U);
+            REQUIRE_EQ(owners.receiver->snapshot().mode, hn::Mode::multicast);
+        } else {
+            // Beyond the tolerated lag the path never returns: unicast stays,
+            // and at most one operation can be spent per policy revision.
+            REQUIRE(a.result != hn::ReceiverBridge::RequestState::confirmed);
+            REQUIRE(a.operations <= 1U);
+            REQUIRE_EQ(owners.receiver->snapshot().mode, hn::Mode::unicast);
+        }
+        // Delayed DATA is still inside the link's queue; stopping the link
+        // would discard it. Drain the receiver first, then stop.
+        std::this_thread::sleep_for(std::chrono::microseconds {row.lag_us}
+            + std::chrono::milliseconds {250});
+        expect_messages(f.receiver, read_next, next - read_next);
+        automatic->close();
+        multicast.stop();
+    }
+}
 TEST(
     hybrid_network_asymmetric_impairment_preserves_integrated_lifecycle_plain_ctr_gcm)
 {

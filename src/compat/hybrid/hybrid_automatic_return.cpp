@@ -317,12 +317,16 @@ std::optional<std::uint64_t> ReceiverBridge::admit_automatic_return(
         const auto report =
             peer_report_.snapshot(at, configuration_.detection->report_age_us);
         const auto through = state_.commit_position + packets;
+        // The source must have emitted the proof window; local receipt is
+        // compared with the report whose DATA has had its transit bound to
+        // arrive, and the coverage proof below checks every position.
         if (!report || !report->fresh
             || report->message.activity != Activity::producing
             || report->message.mode != Mode::overlap
             || report->message.revision != state_.revision
             || report->message.multicast_next < through
-            || data->multicast.next < report->message.multicast_next)
+            || a.settled_multicast_next == 0
+            || data->multicast.next < a.settled_multicast_next)
             return {};
         const auto runtime = service_->runtime_.lock();
         const auto coverage = runtime

@@ -58,6 +58,21 @@ void PathDetector::reset_evidence() noexcept
     mc_emission_until_ = all_emission_until_ = hold_until_ = 0;
     recovery_start_ = recovery_last_ = 0;
     recovery_data_ = recovery_source_ = 0;
+    report_mark_count_ = 0;
+}
+std::uint64_t PathDetector::settled_multicast_next(
+    std::uint64_t now) const noexcept
+{
+    // Marks are appended in receipt order; the newest one that is at least
+    // maximum_transit_us old wins. With fewer than sixteen marks the oldest
+    // slots are unused; with more, the oldest were dropped.
+    std::uint64_t settled = 0;
+    for (std::size_t i = 0; i < report_mark_count_; ++i) {
+        const auto& mark = report_marks_[i];
+        if (add(mark.received_us, configuration_.maximum_transit_us) <= now)
+            settled = std::max(settled, mark.multicast_next);
+    }
+    return settled;
 }
 void PathDetector::unknown(Reason reason, std::uint64_t now) noexcept
 {
@@ -147,6 +162,16 @@ void PathDetector::observe(const Input& input) noexcept
         report_ && m.next_position > report_->next_position;
     const bool mc_received = data_ && d.multicast.next > data_->multicast.next;
     const bool all_received = data_ && d.all.next > data_->all.next;
+    if (!report_ || m.serial != report_->serial) {
+        if (report_mark_count_ == report_marks_.size()) {
+            std::copy(report_marks_.begin() + 1, report_marks_.end(),
+                report_marks_.begin());
+            --report_mark_count_;
+        }
+        report_marks_[report_mark_count_++] = {
+            .received_us = r.first_received_us,
+            .multicast_next = m.multicast_next};
+    }
     report_ = m;
     last_report_received_ = r.first_received_us;
     data_ = d;
@@ -171,7 +196,8 @@ void PathDetector::observe(const Input& input) noexcept
         .source_next = m.next_position,
         .source_multicast_next = m.multicast_next,
         .received_next = d.all.next,
-        .received_multicast_next = d.multicast.next};
+        .received_multicast_next = d.multicast.next,
+        .settled_multicast_next = settled_multicast_next(now)};
     const auto activity = [&]() -> std::optional<State> {
         switch (m.activity) {
         case Activity::startup:
@@ -255,10 +281,16 @@ void PathDetector::observe(const Input& input) noexcept
     }
     if (recovery_ && mc_emitted && r.first_received_us >= recovery_start_)
         recovery_source_ = std::min<std::uint32_t>(64, recovery_source_ + 1);
+    // Local multicast receipt is compared with the report that has had its
+    // transit bound to be matched by DATA, not with the newest report: while
+    // the source produces, the newest report leads the DATA still in flight,
+    // and comparing with it would leave recovery intermittent or impossible.
     const bool recovered = recovery_ && recovery_data_ >= c.recovery_advances
         && recovery_source_ >= c.recovery_advances
         && recovery_last_ >= add(recovery_start_, c.recovery_us)
-        && now >= hold_until_ && d.multicast.next >= m.multicast_next;
+        && now >= hold_until_
+        && d.multicast.next >= state_.settled_multicast_next
+        && state_.settled_multicast_next != 0;
     state_.fallback_candidate =
         m.mode == Mode::multicast && state_.multicast_stalled;
     state_.return_candidate = m.mode == Mode::unicast && recovered;

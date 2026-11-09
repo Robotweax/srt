@@ -922,7 +922,7 @@ control scheduling, network behavior and possible recovery cost:
 | Field | Meaning |
 | --- | --- |
 | `report_age_us` | Exclusive report-age bound including advertised age, elapsed local receive time and the configured transit allowance |
-| `maximum_transit_us` | Assumed maximum one-way network transit for control/DATA; this component does not measure or enforce it |
+| `maximum_transit_us` | Assumed maximum one-way network transit for control/DATA; this component does not measure or enforce it. It also selects the settled report that local multicast receipt is compared with for recovery and return |
 | `stall_us` | Silence budget after observing a missing submitted horizon; a candidate needs this plus the transit allowance |
 | `emission_lifetime_us` | How long an observed increase in actual submission position can support stall/recovery assessment |
 | `recovery_us` | Required span between first and last qualifying multicast DATA advances |
@@ -978,7 +978,15 @@ strict increases in local multicast DATA and authenticated multicast submission
 reports. Each side must reach `recovery_advances`; repeated copies or stationary
 metadata do not count. Local advances must span `recovery_us`, stay within the
 recovery gap and sampling/age bounds, and outlast hold-down. The local multicast
-high water must also catch the reported multicast horizon. A confirmed unicast
+high water must also catch the settled multicast horizon: the horizon of the
+newest submission report received at least `maximum_transit_us` ago, whose DATA
+has therefore had its transit bound to arrive. The newest report is not used
+for this comparison, because while the source produces it leads the DATA still
+in flight. Bounded automatic return admission uses the same settled horizon. The
+tolerated DATA lag is the age of that settled report at evaluation, never less
+than the transit bound and, with query-driven reports, typically about one query
+interval. A lag beyond it does not recover, and an automatic return attempted
+against it fails its coverage proof once per policy revision. A confirmed unicast
 policy can then expose `multicast_ready` and `return_candidate`, while sender
 policy stays unicast. Insufficient progress, another stall, stale evidence,
 pause, policy revision change or excessive gaps clear the recovery window.

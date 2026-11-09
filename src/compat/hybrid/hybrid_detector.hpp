@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "compat/hybrid/hybrid_reporting.hpp"
+#include <array>
 
 namespace robotweax::srt::compat::hybrid {
 struct DetectionConfiguration {
@@ -64,6 +65,12 @@ public:
                       next_wakeup_us = UINT64_MAX, revision = 0,
                       source_next = 0, source_multicast_next = 0,
                       received_next = 0, received_multicast_next = 0;
+        // Multicast high-water of the newest report received at least
+        // maximum_transit_us ago, zero while no report is that old. DATA the
+        // source emitted before such a report has had its transit bound to
+        // arrive, so recovery and return compare local receipt against it,
+        // not against the newest report, which can lead its DATA in flight.
+        std::uint64_t settled_multicast_next = 0;
         std::uint32_t recovery_data_advances = 0, recovery_source_advances = 0;
     };
     PathDetector(
@@ -91,5 +98,13 @@ private:
                   mc_gap_since_ = 0, all_gap_since_ = 0, hold_until_ = 0,
                   recovery_start_ = 0, recovery_last_ = 0;
     std::uint32_t recovery_data_ = 0, recovery_source_ = 0;
+    // Receipt time and multicast high-water of recent distinct reports.
+    struct ReportMark {
+        std::uint64_t received_us = 0, multicast_next = 0;
+    };
+    std::array<ReportMark, 16> report_marks_ {};
+    std::size_t report_mark_count_ = 0;
+    [[nodiscard]] std::uint64_t settled_multicast_next(
+        std::uint64_t now) const noexcept;
 };
 }

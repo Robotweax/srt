@@ -199,6 +199,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_tsbpd_rtt_tests", "robotweax_srt_socket_api_tests",
             "robotweax_srt_multicast_dispatch_tests", "robotweax_srt_idle_readiness_tests",
             "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests", "robotweax_srt_hybrid_soak_tests", "robotweax_srt_hybrid_harness_tests",
+            "robotweax_srt_hybrid_return_lag_tests",
             "robotweax_srt_arq_transport_tests",
             "robotweax_srt_transport_runtime_tests",
             "robotweax_srt_session_auth_admission_tests",
@@ -294,8 +295,18 @@ class CiTestRegistrationTests(unittest.TestCase):
             "--include", "hybrid_", "--exclude", "multicast_dispatch",
             "investigation_hybrid_", "hybrid_network_", "hybrid_key_network_",
             "hybrid_load_network_", "hybrid_soak_network_", "hybrid_harness_network_",
-            "srt_compat_", "compat_runtime_", "acp1",
+            "hybrid_return_lag_network_", "srt_compat_", "compat_runtime_", "acp1",
         ])
+        self.assertEqual(commands["robotweax_srt_hybrid_return_lag_tests"], [
+            "--include", "hybrid_return_lag_network_",
+        ])
+        return_lag_properties = re.search(
+            r"set_tests_properties\(robotweax_srt_hybrid_return_lag_tests\s+PROPERTIES\s+([^)]*)\)",
+            cmake,
+        )
+        self.assertIsNotNone(return_lag_properties)
+        self.assertIn("RUN_SERIAL TRUE", return_lag_properties.group(1))
+        self.assertIn("TIMEOUT 30", return_lag_properties.group(1))
         self.assertEqual(commands["robotweax_srt_hybrid_harness_tests"], [
             "--include", "hybrid_harness_network_",
         ])
@@ -397,6 +408,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_hybrid_key_admission_tests",
             "robotweax_srt_multicast_dispatch_tests",
             "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests", "robotweax_srt_hybrid_soak_tests", "robotweax_srt_hybrid_harness_tests",
+            "robotweax_srt_hybrid_return_lag_tests",
             "robotweax_srt_arq_transport_tests",
             "robotweax_srt_native_reuseport_tests", "robotweax_srt_local_address_tests",
             "robotweax_srt_group_pathid_tests",

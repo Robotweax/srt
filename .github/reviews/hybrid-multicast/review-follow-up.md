@@ -62,7 +62,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | T-7 | Open: stale route retains runtime until unregister | Rebind/unregister lifetime and counter regression |
 | T-8 | Open: source readback and late-option error contracts | Tests and precise documentation |
 | H-1 | Fixed in source: the join budget is armed by the first pump after publication; see below | Network-level evidence with a slow fallback confirmation |
-| H-2 | Open: live-stream automatic return/high-water/lifetime budget | Native continuous-stream automatic fallback/return test with delayed reports |
+| H-2 | Fixed in source: recovery and return compare local multicast receipt with the transit-settled report; native lag test added; see below | Hosted builds; WAN evidence still absent |
 | H-3 | Open: report/query freshness configuration | Define valid interval/round/lifetime bounds and rejection tests |
 | H-4 | Open: progress/setup clock domains | End-to-end injected-clock regression without wall-clock mixing |
 | H-5 | Open: terminal response policy and one-shot fallback | Validate/document manual backstop and transient-refusal semantics |
@@ -474,6 +474,46 @@ Tests, in `tests/test_hybrid_native.cpp`:
 
 Not shown: a network-level run with a fallback confirmation slower than the
 membership timeout.
+
+## Automatic return against a lagging multicast path (H-2)
+
+The detector's `recovered` predicate required the local multicast high-water
+to reach the newest report's high-water, and the return admission in
+`AutomaticReturn` repeated that comparison. A progress report describes DATA
+emitted before it; while the source produces, the newest report leads the
+DATA still in flight whenever the multicast path is slower than the unicast
+control path. Measured on loopback with a fault link delaying only multicast
+DATA, source producing every 12 ms, reports queried every 50 ms, grant 2 s:
+no lag and 20 ms lag returned in about 230 to 260 ms; 40 ms lag never produced
+a candidate within the grant.
+
+Change. `PathDetector` keeps the receipt time and multicast high-water of the
+last sixteen distinct reports and exposes `Assessment::settled_multicast_next`,
+the high-water of the newest report received at least `maximum_transit_us`
+ago. `recovered` and the return admission compare local multicast receipt with
+that settled value. DATA the source emitted before such a report has had its
+transit bound to arrive, so the comparison tolerates a lag up to the settled
+report's age at evaluation, never less than the transit bound and, with
+query-driven reports, about one query interval. The coverage proof of the
+return window is unchanged and still checks every position. Beyond the
+tolerated lag there is no candidate; a lag within it whose proof window is
+not received in time ends one operation `unknown`, and a further operation
+needs a higher policy revision, so the lifetime budget cannot be drained by
+one persistent lag.
+
+Evidence. `hybrid_return_lag_network_automatic_return_honors_the_configured_transit_bound`
+(own gate `robotweax_srt_hybrid_return_lag_tests`, 30 s, serial): transit
+5 ms with no lag returns in about 230 ms; transit 5 ms with 120 ms lag never
+returns, spends at most one operation and stays unicast; transit 40 ms with
+30 ms lag returns in about 265 ms. The last row fails before the change. The
+existing detector, return and automatic unit suites pass unchanged (15, 16, 15
+and 15 cases). Earlier native tests that already drove the controller over
+loopback (`multicast_dispatch_native_automatic_return_lost_commits_plain_ctr_gcm`,
+`..._startup_join_retry_fallback_and_return_plain_ctr_gcm`) still pass; they
+have equal delays on both paths.
+
+Not shown: a WAN or cross-host run, and the behaviour when the query interval
+is much longer than the real lag, where the tolerated lag grows with it.
 
 ## Source layout change
 
