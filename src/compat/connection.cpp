@@ -1421,6 +1421,14 @@ void set_key_material_state_response(
     if (options.multicast_interface_set
         && !options.multicast_interface.is_ipv4())
         return fail(SRT_EINVPARAM);
+    // The source must be a UDP endpoint of its own. The control socket's
+    // own address and port, or its port next to a wildcard control bind,
+    // would make the kernel hand control datagrams to this send-only socket.
+    if (options.multicast_source.port != 0
+        && options.multicast_source.port == control.port
+        && (control.is_wildcard()
+            || control.address == options.multicast_source.address))
+        return fail(SRT_EINVPARAM);
     UdpSocket transmit {IpAddressFamily::ipv4};
     if (!transmit.valid())
         return fail(SRT_ESOCKFAIL, transmit.open_system_error());

@@ -739,7 +739,10 @@ PRE-BIND) selects required fixed-source negotiation on the multicast Listener
 and receiver group. Both sides must select it. The Listener also sets
 `SRTO_ROBOTWEAX_MCAST_SOURCE` (`0x01000019`, `sockaddr_in`, PRE-BIND), a
 concrete local source address and UDP port; port zero chooses an ephemeral
-source port at listen. Readback after listen returns the actual bound endpoint,
+source port at listen. The endpoint must not be the control socket's own bind,
+nor share its port with a wildcard control bind (`SRT_EINVPARAM` at listen);
+see [independent IPv4 source](connection-groups.md#independent-ipv4-source-opt-in).
+Readback after listen returns the actual bound endpoint,
 also readable on the sender group. Before the option is set, readback fails
 with `SRT_EINVPARAM`, like the other multicast address options; between the
 set and listen it returns the configured value; after the Listener is closed

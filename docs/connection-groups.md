@@ -659,9 +659,16 @@ receiver group before binding or connecting. On the Listener also set
 `SRTO_ROBOTWEAX_MCAST_SOURCE` to a concrete local IPv4 address and source UDP
 port, alongside the existing multicast group, interface and hop-limit options.
 A zero source port requests an ephemeral port. Bind the unicast control socket
-with the ordinary `srt_bind` API; its endpoint can differ from the multicast
-source in address, port or both. Both peers must opt in; one-sided selection
-is rejected with the group reason rather than silently downgrading.
+with the ordinary `srt_bind` API. The multicast source must be a UDP endpoint
+of its own: a different port than the control socket, or the same port on a
+different specific address. The control socket's own address and port, or its
+port next to a wildcard control bind, is rejected at `srt_listen` with
+`SRT_EINVPARAM`, because the kernel would hand control datagrams to the
+send-only source socket. The source port stays bound while a dispatch group
+retains the transmit channel; listening again on the same fixed port before
+that release fails with `SRT_ESOCKFAIL`, so use port zero or wait for the group
+to close. Both peers must opt in; one-sided selection is rejected with the
+group reason rather than silently downgrading.
 
 The dedicated source socket is bound at `srt_listen`, before admission. Source
 readback on the Listener then returns the actual bound port; the sender group

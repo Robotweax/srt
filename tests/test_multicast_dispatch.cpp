@@ -1829,6 +1829,48 @@ TEST(
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
 }
 
+// The multicast source must be a UDP endpoint of its own: the control
+// socket's own address and port, or its port next to a wildcard control bind,
+// is refused as an invalid parameter at listen instead of surfacing the
+// kernel's bind failure. The Listener stays OPENED.
+TEST(multicast_dispatch_independent_source_cannot_share_the_control_endpoint)
+{
+    Peers peers;
+    const bool enabled = true;
+    const auto group = ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
+    for (const bool wildcard_control : {false, true}) {
+        auto probe = std::make_unique<UdpSocket>();
+        REQUIRE_EQ(probe->bind(IpEndpoint::loopback()), Error::none);
+        const auto probed = probe->local_endpoint();
+        REQUIRE(probed);
+        probe.reset();
+        const auto source = ipv4_sockaddr({127, 0, 0, 1}, probed.endpoint.port);
+        const auto control = wildcard_control
+            ? ipv4_sockaddr({0, 0, 0, 0}, probed.endpoint.port)
+            : source;
+        const auto listener = peers.keep(srt_create_socket());
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                       &enabled, sizeof(enabled)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                       &source, sizeof(source)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP, &group,
+                       sizeof(group)),
+            0);
+        REQUIRE_EQ(
+            srt_bind(listener, reinterpret_cast<const sockaddr*>(&control),
+                sizeof(control)),
+            0);
+        REQUIRE_EQ(srt_listen(listener, 1), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
+        REQUIRE_EQ(srt_getsockstate(listener), SRTS_OPENED);
+        const auto record = SocketRegistry::instance().find(listener);
+        std::lock_guard lock(record->mutex);
+        REQUIRE(!record->multicast_transmit_channel);
+    }
+}
+
 TEST(
     multicast_dispatch_independent_bind_failure_rolls_back_and_close_releases_source)
 {
