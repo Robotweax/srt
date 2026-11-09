@@ -371,7 +371,14 @@ The hard setup deadline never renews. Arithmetic saturates, clock regression
 closes the owner and all callbacks are followed by state/grant checks. Invalid
 codec/identity/nonce/phase records are ignored; a matched attempt with an invalid
 cryptographic proof, unsatisfied requirements, bad credential or changed grant
-fails explicitly. There is no automatic legacy or plaintext fallback. Successful
+fails explicitly. The Listener binds the first decodable OFFER that names its
+socket IDs and credential ID: it resolves the credential once, adopts that
+record's nonce and answers it, and a later genuine OFFER for the same attempt
+is ignored. A sender on the path, or one spoofing the established peer's
+address, can therefore consume a connection's single attempt, which then
+fails explicitly when the proof does not match; the connection makes no second
+attempt, and recovery means a new connection. There is no automatic legacy or
+plaintext fallback. Successful
 activation retains its root/replay state. The Listener's receipt cache stops at
 the original deadline or emission limit; old retries cannot reset the root.
 

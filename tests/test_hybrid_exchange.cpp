@@ -545,6 +545,29 @@ TEST(
         }
     }
 }
+// Availability contract: the first decodable OFFER naming this Listener's
+// sockets and credential binds the attempt. A foreign nonce arriving first
+// consumes the single credential resolution; the genuine OFFER is then
+// ignored and the genuine Caller cannot use the SELECTION bound to the
+// foreign nonce. The attempt fails explicitly instead of activating.
+TEST(hybrid_exchange_first_matching_offer_binds_the_single_attempt)
+{
+    Pair p;
+    p.start();
+    auto foreign = record(h::ExchangeKind::offer);
+    foreign.authentication.caller_nonce.fill(std::byte {9});
+    const auto bound = p.listener.receive(wire(foreign), 1);
+    REQUIRE_EQ(bound.status, h::Exchange::Status::output);
+    REQUIRE(bound.has_output);
+    REQUIRE_EQ(p.lr.resolves, 1U);
+    REQUIRE_EQ(p.listener.receive(p.offer.output, 2).status,
+        h::Exchange::Status::ignored);
+    REQUIRE_EQ(p.lr.resolves, 1U);
+    REQUIRE_EQ(
+        p.caller.receive(bound.output, 3).status, h::Exchange::Status::ignored);
+    REQUIRE(!p.caller.authentication());
+    REQUIRE(!p.listener.authentication());
+}
 TEST(hybrid_exchange_reflection_reordering_and_old_attempts_cannot_activate)
 {
     Pair p;
