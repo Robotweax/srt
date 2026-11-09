@@ -4077,10 +4077,23 @@ TEST(
     REQUIRE_EQ(srt_setsockflag(f.receiver, SRTO_ROBOTWEAX_MCAST_COORDINATED,
                    &yes, sizeof(yes)),
         SRT_ERROR);
+    // Shared multicast repair aggregation is disabled here: the threshold
+    // reads 0, only 0 can be set, anything else is an invalid operation.
     std::int32_t threshold = 2;
     REQUIRE_EQ(srt_setsockflag(f.sender, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD,
                    &threshold, sizeof(threshold)),
         SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    threshold = 0;
+    REQUIRE_EQ(srt_setsockflag(f.sender, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD,
+                   &threshold, sizeof(threshold)),
+        0);
+    threshold = -1;
+    int threshold_size = sizeof(threshold);
+    REQUIRE_EQ(srt_getsockflag(f.sender, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD,
+                   &threshold, &threshold_size),
+        0);
+    REQUIRE_EQ(threshold, 0);
     REQUIRE_EQ(srt_setsockflag(f.sender, SRTO_SNDSYN, &no, sizeof(no)), 0);
     REQUIRE_EQ(srt_setsockflag(f.sender, SRTO_SNDSYN, &yes, sizeof(yes)), 0);
     const std::int32_t timeout = 500;

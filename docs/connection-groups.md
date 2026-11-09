@@ -698,7 +698,9 @@ means queue acceptance. Actual UDP submission and remote delivery occur later.
 Member flow credit does not pace multicast originals. `SRT_EPOLL_OUT` reflects
 source/fanout capacity and queued-key limits. Control, KM and ordinary repairs
 remain on each established unicast session. Shared multicast repair aggregation
-is disabled; keep `SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD=0`. Packet filters,
+is disabled: `SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD` reads 0 on the sender
+group, setting it to 0 succeeds, and any other value is rejected with
+`SRT_EINVOP`. Packet filters,
 session-authentication profiles and fragmented application messages are refused.
 At most 64 receiver members, including detached members, can occupy the group.
 
