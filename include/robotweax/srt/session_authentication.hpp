@@ -29,7 +29,12 @@ inline constexpr std::size_t acp1_group_rendezvous_context_size = 96;
 inline constexpr std::uint8_t hybrid_control_session_version = 7;
 inline constexpr std::size_t hybrid_control_context_size = 192;
 inline constexpr std::size_t hybrid_control_maximum_proof_material = 3192;
+static_assert(hybrid_control_session_version < 10);
 #endif
+// The domain salt spells the version as one ASCII digit ('0' + version);
+// a version of 10 or more needs a new salt layout, not a larger digit.
+static_assert(session_authentication_version < 10
+    && acp1_group_rendezvous_session_version < 10);
 [[nodiscard]] constexpr bool is_acp1_session_version(
     std::uint8_t version) noexcept
 {

@@ -113,6 +113,7 @@ bool admission_transcript(const Context& c, const Authorization& a,
 }
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+static_assert(sizeof(Admission) < 8 * 1024); // Documented storage bound.
 static_assert(maximum_admission_size == hybrid_control_maximum_proof_material);
 Admission::Admission(CryptoProvider& provider, bool caller) noexcept
     : authentication_(provider)

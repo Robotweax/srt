@@ -99,7 +99,11 @@ The gated, component-only authentication version 7 uses the existing
 [experimental ACP1](experimental-acp1.md) primitives. Its root salt is `ASCII("RWSRT-SESSION-7") || NUL` (16 bytes), caller and listener nonces
 (32 bytes each), caller and listener socket IDs (uint64 each), then the complete
 192-byte context. The root derivation remains PBKDF2-HMAC-SHA1 with 2048
-iterations and a 32-byte result. Directional key expansion and the ACP1 control
+iterations and a 32-byte result. The Listener's SELECTION proof is a MAC over
+material derived from that root, so one captured record is an offline guessing
+oracle against the pairwise credential: a low-entropy credential is
+brute-forceable from a single capture. Provision high-entropy pairwise
+credentials. Directional key expansion and the ACP1 control
 MAC construction are unchanged; the version-specific root separates this profile
 from versions 2 through 6. Rendezvous cookies are refused.
 
