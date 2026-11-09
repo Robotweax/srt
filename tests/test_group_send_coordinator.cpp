@@ -663,6 +663,33 @@ TEST(compat_group_coordinator_busy_admission_gate_lasts_the_retry_interval)
     REQUIRE_EQ(f.actor->snapshot().busy_sends, 1U);
     REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
 }
+// A message whose own deadline has passed when a member admits it is an
+// expired message, not an unavailable member. The send fails as it does when
+// the emitter sees the expiry; nobody is detached and nothing is consumed.
+TEST(
+    compat_group_coordinator_expired_message_at_member_admission_fails_the_send_without_detaching)
+{
+    Fixture f;
+    Receiver a(f), b(f);
+    // Member a's clock is far ahead of the source clock, so a deadline that
+    // the emitter still accepts has already passed for a.
+    a.now += 5'000'000;
+    const auto before = f.actor->snapshot();
+    REQUIRE_EQ(f.send(f.now + 1ms), Status::expired);
+    REQUIRE_EQ(f.actor->snapshot().next_sequence, before.next_sequence);
+    REQUIRE_EQ(f.actor->snapshot().next_message, before.next_message);
+    REQUIRE_EQ(f.actor->snapshot().active_members, 2U);
+    REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+    REQUIRE_EQ(reason(f, b.id), Actor::Detachment::none);
+    REQUIRE_EQ(a.buffered(), 0U);
+    REQUIRE_EQ(b.buffered(), 0U);
+    f.pump();
+    REQUIRE_EQ(f.output.size(), 0U);
+    // A later message with a live deadline is accepted by both members.
+    REQUIRE_EQ(f.send(), Status::accepted);
+    REQUIRE_EQ(a.buffered(), 1U);
+    REQUIRE_EQ(b.buffered(), 1U);
+}
 TEST(compat_group_coordinator_closed_member_cannot_cancel_accepted_multicast)
 {
     Fixture f;

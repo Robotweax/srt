@@ -49,7 +49,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | L-2 | Fixed in source: completion-busy detachment needs the attempt budget and the busy grace; see below | Hosted builds; no production-default contention run on a real network |
 | L-3 | Fixed in source: such a send fails with `SRT_ECONNLOST` and consumes nothing; see below | Hosted default and enabled builds |
 | L-4 | Measured and changed in source: 100 µs busy gate, blocked caller sleeps instead of polling; see below | Re-measure on Linux; the `full` wait still uses the global readiness signal |
-| L-5 | Open: per-message TTL causing permanent detachment | Deterministic expiry rollback/member-state test |
+| L-5 | Fixed in source: an expired message fails the send instead of detaching the member; see below | Hosted builds |
 | L-6 | Open: prepared crypto generation advances on aborted admission | Cancelled-guard/prefix-recovery reproduction |
 | L-7 | Open: overlap completion order/statistics | MC-first/UC-first physical-submission counter regression |
 | L-8 | Measured: the per-poll send buffer probes are constant-time (2 to 13 ns a pair, no growth to 8192 packets); the coordinated fanout scan is bounded and measured with the sender benchmark; see below | Re-measure if the probes change |
@@ -514,6 +514,24 @@ have equal delays on both paths.
 
 Not shown: a WAN or cross-host run, and the behaviour when the query interval
 is much longer than the real lag, where the tolerated lag grows with it.
+
+## Canonical DATA path: L-5
+
+A member admission that found the message's own deadline already passed
+(`RuntimeAdmission::Status::expired`) detached that member permanently as
+`Detachment::expired`. The deadline is a property of the message, set by the
+application per send, not a property of the member. The emitter's own check
+of the same deadline fails the send with `Status::expired` and detaches
+nobody; the member path now does the same: it returns `Status::expired`, the
+enclosing scope releases the reservations made so far, every member stays
+attached, and nothing is consumed. `srt_send*` maps that to `SRT_ETIMEOUT`,
+as documented.
+
+Regression, failing before the change:
+`compat_group_coordinator_expired_message_at_member_admission_fails_the_send_without_detaching`
+(one member's clock 5 s ahead, so a deadline the emitter accepts has passed
+for that member: expired, no detachment, sequence and message number
+unchanged, and the next send accepted by both members).
 
 ## Source layout change
 

@@ -700,8 +700,12 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
                 reason = Detachment::invalid;
                 break;
             case S::expired:
-                reason = Detachment::expired;
-                break;
+                // The message's own deadline has passed on this member's
+                // clock. That is a property of the message, not of the
+                // member: fail the send like the emitter does for an expired
+                // deadline, release the reservations made so far, and keep
+                // every member attached.
+                return Status::expired;
             case S::crypto_error:
                 reason = Detachment::crypto_error;
                 break;
