@@ -555,6 +555,65 @@ TEST(
     busy.ack(initial.next());
     REQUIRE_EQ(busy.buffered(), 1U);
 }
+// Completion fanout is attempted on every accepted send as well as on the
+// poll timer, so an attempt count alone measures the send rate, not how long
+// a member has been busy. With a busy grace configured, a member that is
+// merely mid-poll survives any number of attempts inside the grace and is
+// detached only once it has stayed busy for the whole grace.
+TEST(
+    compat_group_coordinator_busy_completion_uses_the_grace_not_only_the_attempt_count)
+{
+    for (const bool stalled : {false, true}) {
+        Fixture f;
+        auto admission_time = f.now;
+        f.actor->close();
+        f.config.admission_busy_grace = 10ms;
+        f.config.admission_clock = +[](void* p) noexcept {
+            return *static_cast<Clock::time_point*>(p);
+        };
+        f.config.admission_clock_context = &admission_time;
+        f.recreate();
+        Receiver busy(f), healthy(f);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        auto held = busy.hold(f);
+        REQUIRE_EQ(held.status(), Admission::Status::ready);
+        const auto pump = [&](unsigned count) {
+            auto pumped = std::async(std::launch::async, [&] {
+                for (unsigned i = 0; i < count; ++i)
+                    f.pump();
+            });
+            REQUIRE_EQ(pumped.wait_for(2s), std::future_status::ready);
+            pumped.get();
+        };
+        // Eight times the attempt budget of this fixture, all at one instant.
+        pump(16);
+        REQUIRE_EQ(reason(f, busy.id), Actor::Detachment::none);
+        REQUIRE_EQ(f.actor->snapshot().inflight_frames, 1U);
+        admission_time += 9ms;
+        pump(1);
+        REQUIRE_EQ(reason(f, busy.id), Actor::Detachment::none);
+        if (stalled) {
+            admission_time += 1ms;
+            pump(1);
+            held.release();
+            REQUIRE_EQ(reason(f, busy.id), Actor::Detachment::completion_busy);
+            REQUIRE_EQ(f.actor->snapshot().inflight_frames, 0U);
+            busy.ack(initial.next());
+            REQUIRE_EQ(busy.buffered(), 1U);
+        } else {
+            held.release();
+            f.pump();
+            REQUIRE_EQ(reason(f, busy.id), Actor::Detachment::none);
+            REQUIRE_EQ(f.actor->snapshot().inflight_frames, 0U);
+            busy.ack(initial.next());
+            REQUIRE_EQ(busy.buffered(), 0U);
+        }
+        REQUIRE_EQ(reason(f, healthy.id), Actor::Detachment::none);
+        healthy.ack(initial.next());
+        REQUIRE_EQ(healthy.buffered(), 0U);
+        f.actor->close();
+    }
+}
 TEST(compat_group_coordinator_closed_member_cannot_cancel_accepted_multicast)
 {
     Fixture f;

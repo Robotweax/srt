@@ -24,10 +24,14 @@ public:
         std::uint32_t initial_message = 1;
         std::size_t member_capacity = 16;
         std::size_t fanout_batch = 64;
-        // Busy completion attempts are bounded independently of source slots.
+        // Minimum busy completion attempts before a member is detached,
+        // bounded independently of source slots. Attempts follow the send
+        // rate, so with a busy grace the member must also have stayed busy
+        // for that long.
         std::uint32_t maximum_busy_attempts = 8;
         Clock::duration poll_interval = std::chrono::milliseconds {1};
-        // Optional transient runtime/KM busy grace. No sealing while retrying.
+        // Optional transient runtime/KM busy grace, for admission and for
+        // completion fanout. No sealing while retrying.
         Clock::duration admission_busy_grace {};
         std::shared_ptr<ReadinessSource> readiness;
         // Borrowed monotonic admission clock, serialized by the actor gate.
@@ -232,6 +236,8 @@ private:
         std::uint64_t member = 0;
         std::optional<GroupRuntimeAdmission::Ticket> ticket {};
         std::uint32_t busy_attempts = 0;
+        // First busy completion attempt for this ticket, admission clock.
+        std::optional<Clock::time_point> busy_since {};
     };
     struct Frame {
         std::vector<Recipient> recipients;

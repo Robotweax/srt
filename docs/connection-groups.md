@@ -709,8 +709,10 @@ The aggregate limit bounds egress; it does not guarantee repair deadlines or a
 fair bandwidth share for each receiver.
 
 A member whose repair history is full is detached from future group admission.
-Runtime/KM busy gets a 50 ms retry grace before detachment; completion fanout also
-has a bounded busy retry budget. `srt_group_data` and the `srt_sendmsg2` group-data
+Runtime/KM busy gets a 50 ms retry grace before detachment. Completion fanout
+retries a busy member for the same 50 ms and at least eight attempts before
+detaching it, so a burst of sends while a member is inside one poll does not
+count against it. `srt_group_data` and the `srt_sendmsg2` group-data
 array show `SRT_GST_BROKEN` with `result=SRT_ECONNLOST` for a detached send path.
 The unicast socket can remain `SRTS_CONNECTED`. Group `SRT_EPOLL_UPDATE` reports
 the membership-status change. Close and reconnect that receiver to enroll it

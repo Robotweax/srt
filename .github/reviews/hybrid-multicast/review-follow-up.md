@@ -46,7 +46,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | BL-5 | Native wire bound retained; forced waits checked with injected clock and zero-wait counterexample | Native Windows after-fix CI pending; source fix does not qualify Windows hybrid transport |
 | BL-6 | Partial: scope/labels corrected; matching-cache failure flags recovered | Enforce build/source identity, reject stale binary, test CLI record production; obtain missing platform evidence |
 | L-1 | Fixed in source: an ACK or NAK ahead of the fanout is honored for the submitted part; see below | Hosted builds; no network-level throughput evidence above the existing soak rate |
-| L-2 | Open: completion-busy attempt count versus send rate | Production-default send-driven contention regression and time-bounded policy |
+| L-2 | Fixed in source: completion-busy detachment needs the attempt budget and the busy grace; see below | Hosted builds; no production-default contention run on a real network |
 | L-3 | Fixed in source: such a send fails with `SRT_ECONNLOST` and consumes nothing; see below | Hosted default and enabled builds |
 | L-4 | Open: one member admission contention/backpressure | Quantify retry/liveness with healthy-peer traffic and bounded work |
 | L-5 | Open: per-message TTL causing permanent detachment | Deterministic expiry rollback/member-state test |
@@ -349,6 +349,34 @@ repairs it).
 
 Not done: the left-out sequences are not remembered for an immediate repair
 once they are submitted; that repair waits for the receiver's next report.
+
+## Canonical DATA path: L-2
+
+Completion fanout detached a member after `maximum_busy_attempts` (8 in
+production) consecutive busy results. `drive()` runs on every accepted send as
+well as on the 1 ms poll, and a member's runtime holds its mutex across a
+whole poll including UDP I/O. Eight sends in a row while one member was inside
+a single poll therefore detached a healthy member as `completion_busy`. The
+count measured the send rate, not how long the member had been busy.
+
+Detachment now also needs time. Each pending completion records its first
+busy attempt on the admission clock; it is abandoned only when the attempt
+budget is used up and, if a busy grace is configured, the member has stayed
+busy for that grace. The grace is the existing `admission_busy_grace`, 50 ms
+in production, so admission and completion use the same bound. With no grace
+configured the behavior is the previous attempt count, which the existing
+unit fixture relies on. A completion that waits keeps its frame occupied for
+at most the grace.
+
+Regression, failing before the change:
+`compat_group_coordinator_busy_completion_uses_the_grace_not_only_the_attempt_count`
+(16 fanout attempts at one instant and one more 9 ms later leave the member
+attached; released, its completion is applied and its ACK retires the
+original; kept busy until 10 ms, it is detached and nothing is authorized).
+`compat_group_coordinator_busy_completion_budget_releases_frame_and_records_detachment`
+passes unmodified.
+
+Not shown: a production-default contention run on a real network.
 
 ## Source layout change
 

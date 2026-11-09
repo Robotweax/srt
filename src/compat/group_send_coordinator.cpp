@@ -1000,9 +1000,22 @@ void GroupSendCoordinator::drive() noexcept
             : frame.outcome.disposition != Emitter::Disposition::submitted
             ? A::not_submitted
             : RuntimeAdmission::try_apply(*recipient.ticket, frame.outcome);
-        if (result == A::busy
-            && ++recipient.busy_attempts < configuration_.maximum_busy_attempts)
-            continue;
+        if (result == A::busy) {
+            // drive() runs on every accepted send as well as on the poll
+            // timer, so attempts alone count sends, not time: a burst of
+            // sends while the member is inside one poll must not detach it.
+            const auto now = admission_now();
+            if (!recipient.busy_since)
+                recipient.busy_since = now;
+            if (recipient.busy_attempts < configuration_.maximum_busy_attempts)
+                ++recipient.busy_attempts;
+            if (recipient.busy_attempts < configuration_.maximum_busy_attempts
+                || (configuration_.admission_busy_grace
+                        > Clock::duration::zero()
+                    && now < after(*recipient.busy_since,
+                           configuration_.admission_busy_grace)))
+                continue;
+        }
         if (delegated)
             ++state_.delegated_completions;
         else if (result == A::duplicate_or_retired)
