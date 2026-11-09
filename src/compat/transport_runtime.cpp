@@ -3754,10 +3754,12 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         && !consume_filter_control && processed.receiver_packet_accepted_unique
         && packet.data.encryption_key != EncryptionKey::none) {
         // AES-CTR cannot authenticate a packet. Only a sequence the receive
-        // window accepted may advance the key-generation ceilings; a spoofed
+        // window accepted may advance the key-generation frontier and the
+        // accepted range of the generation that decrypted it; a spoofed
         // far-ahead sequence would otherwise misroute later packets to a
         // retired key after the next rotation.
-        crypto_->note_accepted_receive_sequence(packet.data.sequence);
+        crypto_->note_accepted_receive_sequence(
+            packet.data.encryption_key, packet.data.sequence);
     }
     if (processed.peer_available_receive_buffer_packets.has_value()) {
         const std::size_t previous_flow_window = flow_window_packets_;

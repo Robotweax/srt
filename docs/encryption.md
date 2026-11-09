@@ -444,7 +444,58 @@ This is a bounded rollback guard: CTR reception does not authenticate the key
 choice, and material older than both histories is still indistinguishable from
 a fresh announcement. Unused provisional replacements can still be removed to
 recover original retransmissions, while older legitimate generations remain
-available. Known key bytes must retain the same
+available.
+
+A delayed DATA packet names only its selector, which both the retired and the
+current generation share. Generations occupy disjoint, ordered sequence ranges
+and the companion selector's generation lies between two generations of one
+selector, so the receiver routes by sequence position alone, never by trial
+decryption or plaintext inspection. It records the lowest and highest
+positions accepted under every retained generation (authenticated for GCM,
+reported by the receive window for CTR). A packet below the companion
+generation's accepted range belongs to the retired generation, a packet above
+it to the replacement, and a packet with the wrong selector inside an accepted
+range is rejected. The receive frontier at a replacement is only a floor for
+the new key: a rotation retires a generation while its companion is current,
+and DATA of that generation may still arrive above the frontier after a burst
+loss or delay longer than the pre-announcement window. Until a companion
+position separates the two generations, such a packet is routed by policy to
+the retired generation already seen at the frontier rather than to a key two
+generations newer, for as long as the companion generation that followed the
+retired one is itself current; once that companion is retired as well, the
+whole companion generation was missed and the newest key is preferred. A
+replacement without a rotated companion, that is one
+whose companion generation is older than the retiring generation or is
+replaced by the same announcement (a fresh key pair), closes the retired
+generation at the frontier as before. Only an unambiguous routing extends a
+generation's accepted range, so a policy choice never records positions.
+
+In that ambiguous window the two modes differ. AES-GCM verifies the
+authentication tag against the policy choice first and then against the
+other generations that the position rules still allow, in order; a verified
+tag identifies the generation and records its position, a tag that verifies
+under none of them rejects the packet, and keys outside the position and
+lifetime rules are never tried. AES-CTR has no authentication: the receiver
+cannot tell a late retired-generation packet from the first packet of a
+replacement generation whose entire companion generation was lost, and never
+guesses a key from plaintext. The policy choice is then applied as is;
+routing becomes exact again as soon as one companion-generation packet is
+accepted, and the policy itself switches to the newest key once the companion
+generation is retired, so the window is bounded by one key generation. With
+the default refresh rate this requires a receiver to accept nothing for
+almost a whole generation of 16,777,216 packets.
+
+A retired generation remains eligible only while its retirement is within
+half the sequence space (2^30 positions) of the receive frontier. Beyond that
+its finite sequences are being reused by a later generation, and an old
+packet is rejected even where its tag would still verify. This bound assumes
+the sender rotates keys within half the sequence space, which the default
+refresh rate satisfies; a current key is never expired by the receiver.
+
+A failed authenticated open leaves the ciphertext and tag unchanged, including
+when the destination buffer overlaps them, so the same bytes can be attempted
+again; destination bytes outside the inputs are erased and unauthenticated
+output is never published. Known key bytes must retain the same
 salt, selector, and cipher mode across both current receive slots and their
 bounded histories; relabeled material is rejected without changing the session. Stale KMRSP messages cannot
 acknowledge a newer request or roll the session back.
