@@ -686,7 +686,12 @@ Receiver snapshots separate historical observations, a known commit boundary,
 current confirmation freshness and the last explicit fallback result. Revisions
 never decrease. Old revisions are ignored; conflicting modes or commit boundaries
 at one revision, or a newer revision with a backwards source cursor, close the
-control owner. Same-revision status cursors/retention observations never regress.
+control owner. A closed owner stays closed for the life of that connection,
+including after an authenticated but defective source reply: the host must
+treat it as a terminal outcome and provide its own backstop, such as a
+reconnect or an explicit mode request on a new connection; no automatic
+re-attachment exists. Same-revision status cursors/retention observations never
+regress.
 A late commit may fill a missing historical boundary, but cannot refresh a newer
 confirmation or roll back its cursor. A status-only confirmation does not invent
 a commit boundary. Reported cursors are sender policy/admission metadata, not
@@ -1031,7 +1036,10 @@ spent before each cursor callback, including a missing/invalid cursor or failed
 final admission. At most one such preparation is allowed for a confirmed
 multicast policy revision. Candidate flapping, stale evidence, denial, exhaustion
 or provider unavailability cannot rearm the same revision. A later confirmed
-multicast revision can use another allowance, up to the lifetime maximum. There
+multicast revision can use another allowance, up to the lifetime maximum. The
+allowance is spent on a transient refusal (busy, queue full, expired round) as
+well; the same revision is never retried, so a host that needs the fallback
+after such a refusal must request it manually. There
 is no new autonomous retry policy; an accepted operation uses the receiver's
 existing bounded retry/query rounds and sender quotas/history/key checks.
 
