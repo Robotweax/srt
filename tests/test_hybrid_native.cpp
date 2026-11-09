@@ -1774,12 +1774,43 @@ TEST(hybrid_membership_absence_records_valid_uc_without_fabricating_mc_coverage)
     f.membership->close();
     REQUIRE(!f.receiver->data_progress());
 }
+// The join budget is measured from the first pump, which the owner issues
+// only once the receiver is published. Time spent before that, for example
+// waiting for the fallback confirmation, must not consume it (H-1).
+TEST(hybrid_membership_deadline_starts_at_the_first_pump_not_at_creation)
+{
+    MembershipFixture f;
+    f.attach();
+    const auto created = f.membership->snapshot().not_after_us;
+    // Longer than the whole timeout passes before the first pump.
+    f.p.clock->value = created + 1'000;
+    f.membership->pump();
+    REQUIRE_EQ(f.provider->calls, 1U);
+    REQUIRE(f.membership->snapshot().phase
+        != h::MembershipRecovery::Phase::expired);
+    const auto armed = f.membership->snapshot().not_after_us;
+    REQUIRE_EQ(armed,
+        f.p.clock->value.load() + MembershipFixture::policy().timeout_us);
+    // From here on the budget is fixed.
+    f.p.clock->value = armed;
+    f.membership->pump();
+    REQUIRE_EQ(
+        f.membership->snapshot().phase, h::MembershipRecovery::Phase::expired);
+    REQUIRE_EQ(f.membership->snapshot().not_after_us, armed);
+    REQUIRE_EQ(f.provider->calls, 1U);
+}
 TEST(hybrid_membership_deadline_and_provider_latency_cannot_refresh_the_budget)
 {
     for (bool during : {false, true}) {
         MembershipFixture f;
         f.attach();
+        // Arm the budget with a first attempt that does not join.
+        f.membership->pump();
+        REQUIRE_EQ(f.provider->calls, 1U);
         const auto deadline = f.membership->snapshot().not_after_us;
+        REQUIRE_EQ(deadline,
+            f.p.clock->value.load() + MembershipFixture::policy().timeout_us);
+        f.p.clock->value += MembershipFixture::policy().initial_backoff_us;
         if (during)
             f.provider->effect = [&](const auto&) {
                 f.p.clock->value = deadline;
@@ -1790,10 +1821,10 @@ TEST(hybrid_membership_deadline_and_provider_latency_cannot_refresh_the_budget)
         REQUIRE_EQ(f.membership->snapshot().phase,
             h::MembershipRecovery::Phase::expired);
         REQUIRE_EQ(f.membership->snapshot().not_after_us, deadline);
-        REQUIRE_EQ(f.provider->calls, during ? 1U : 0U);
+        REQUIRE_EQ(f.provider->calls, during ? 2U : 1U);
         for (unsigned i = 0; i < 10; ++i)
             f.membership->pump();
-        REQUIRE_EQ(f.provider->calls, during ? 1U : 0U);
+        REQUIRE_EQ(f.provider->calls, during ? 2U : 1U);
     }
 }
 TEST(hybrid_membership_provider_can_inspect_reenter_or_close_outside_locks)

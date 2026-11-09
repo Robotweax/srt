@@ -1292,7 +1292,10 @@ for the primary session lifetime. The membership owner does not own that route.
 
 The explicit local configuration supplies an interface, maximum attempts 1..8,
 a positive total retry timeout <=5 seconds, and positive initial/capped backoff
-with initial<=cap<=1 second and initial<timeout. Defaults fail validation. First
+with initial<=cap<=1 second and initial<timeout. Defaults fail validation. The
+retry timeout is measured from the first pump, which the staged setup owner
+issues once the receiver is published, bounded by the grant's expiry; time spent
+awaiting the fallback confirmation before publication does not consume it. First
 attempt is immediate; failed preparation schedules a bounded exponential backoff
 from completion, clipped by the original deadline/grant. Every attempt consumes
 an allowance, including unavailable/late preparation. At most one preparation is

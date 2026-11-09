@@ -61,7 +61,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | T-6 | Open: multicast stats before provenance admission | Define routed/admitted/filtered counters and test each drop |
 | T-7 | Open: stale route retains runtime until unregister | Rebind/unregister lifetime and counter regression |
 | T-8 | Open: source readback and late-option error contracts | Tests and precise documentation |
-| H-1 | Open: initial join deadline precedes publication gate | Inject delayed fallback/publication and prove join is re-armed or explicitly fails |
+| H-1 | Fixed in source: the join budget is armed by the first pump after publication; see below | Network-level evidence with a slow fallback confirmation |
 | H-2 | Open: live-stream automatic return/high-water/lifetime budget | Native continuous-stream automatic fallback/return test with delayed reports |
 | H-3 | Open: report/query freshness configuration | Define valid interval/round/lifetime bounds and rejection tests |
 | H-4 | Open: progress/setup clock domains | End-to-end injected-clock regression without wall-clock mixing |
@@ -391,6 +391,10 @@ aggregate owned before, with no duplicate; the partition check in
 `interop/tests/test_ci_build_scope.py` and the gate list of the optional
 retransmission-limit job include the new gate. No budget was raised.
 
+Hosted durations on the first run with the split (`ca37f70`): Windows Debug
+13.84 s aggregate and 11.47 s group gate, Ubuntu Debug 7.06 s and 3.55 s,
+macOS Debug 9.65 s and 4.90 s, each against the unchanged 30 s budget.
+
 ## Hot-path cost measured (L-8)
 
 `benchmarks/send_buffer_probe_benchmark.cpp` times the two probes that every
@@ -441,6 +445,35 @@ Still open, new observation: a caller refused with `full` also waits on the
 global signal and spins while the queue drains. That is the library's
 pre-existing blocking-send mechanism, visible here only at artificial rates
 above the fanout; it is not specific to the coordinator and is not changed.
+
+## Staged startup: join deadline armed at publication (H-1)
+
+`MembershipRecovery::create` stamped the join deadline at construction, and
+`StartupSession` constructs it on the first active poll but pumps it only once
+the receiver is published, which waits for a fresh, confirmed unicast
+fallback. With the network-timing configuration (membership timeout 1 s,
+fallback timeout 600 ms) a slow build could publish a CONNECTED receiver whose
+membership expired on its first pump and never retried, since `expired` is
+absorbing and `publish_ready` does not consult membership.
+
+The budget is now armed by the first pump: deadline = min(now + timeout,
+grant expiry), with the first attempt due at once. Creation still validates
+the grant and the receive history as before. After arming nothing changes:
+provider latency cannot refresh the budget, and the deadline is fixed.
+
+Tests, in `tests/test_hybrid_native.cpp`:
+
+- `hybrid_membership_deadline_starts_at_the_first_pump_not_at_creation`
+  (fails before the change): more than a whole timeout passes between
+  creation and the first pump; the first pump still makes an attempt, the
+  deadline equals that pump's time plus the timeout, and reaching it expires
+  the budget without a further attempt.
+- `hybrid_membership_deadline_and_provider_latency_cannot_refresh_the_budget`
+  now arms the budget with a first attempt before testing that neither a
+  clock at the deadline nor provider latency up to it refreshes the budget.
+
+Not shown: a network-level run with a fallback confirmation slower than the
+membership timeout.
 
 ## Source layout change
 

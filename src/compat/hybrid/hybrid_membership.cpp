@@ -285,6 +285,19 @@ void MembershipRecovery::pump() noexcept
             state_.phase = Phase::closed;
             return;
         }
+        if (!armed_) {
+            // The owner pumps only after the receiver is published, and the
+            // fallback confirmation that gates publication can take longer
+            // than this timeout. Measure the join budget from here, still
+            // bounded by the grant's expiry, instead of from creation.
+            armed_ = true;
+            const auto expires = service_->snapshot().expires_at_us;
+            request_.started_at_us = now;
+            request_.not_after_us =
+                std::min(add(now, configuration_.timeout_us), expires);
+            state_.not_after_us = request_.not_after_us;
+            next_attempt_ = now;
+        }
         if (now >= state_.not_after_us) {
             state_.phase = Phase::expired;
             return;

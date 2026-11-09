@@ -84,6 +84,10 @@ private:
     std::atomic_flag pumping_ = ATOMIC_FLAG_INIT;
     Snapshot state_;
     std::uint64_t next_attempt_ = 0, backoff_ = 0;
+    // The join deadline is armed by the first pump, which the owner issues
+    // only once the receiver is published; creation may precede that by more
+    // than the timeout.
+    bool armed_ = false;
     mutable std::uint64_t last_now_ = 0;
     mutable bool clock_failed_ = false;
 };
