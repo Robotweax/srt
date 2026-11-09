@@ -57,10 +57,10 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | T-2 | Fixed in source: activation runs only for a coordinated listener; see below | No dedicated regression; existing bonding, dispatch and coordinated suites |
 | T-3 | Open: equal endpoints/re-listen and documented contract | Reproduce native ownership/bind behavior; explicitly support or reject/document |
 | T-4 | Open: native source syscalls under record lock | Check rollback/close races before moving work outside lock |
-| T-5 | Open: nonzero repair threshold at coordinated listen | Consistent rejection or explicit ignored-option contract, with tests |
-| T-6 | Open: multicast stats before provenance admission | Define routed/admitted/filtered counters and test each drop |
-| T-7 | Open: stale route retains runtime until unregister | Rebind/unregister lifetime and counter regression |
-| T-8 | Open: source readback and late-option error contracts | Tests and precise documentation |
+| T-5 | Documented and pinned: a coordinated sender group reads 0, accepts 0 and rejects other values with `SRT_EINVOP`; see below | None |
+| T-6 | Fixed in source: datagrams rejected before decoding count as filtered; counters documented precisely; see below | Hosted builds |
+| T-7 | Fixed in source: a superseded multicast route is retired on the channel that published it; see below | Hosted builds |
+| T-8 | Fixed in source and documented: frozen network options report `SRT_EBOUNDSOCK`/`SRT_ECONNSOCK`; source readback states documented; see below | Hosted builds |
 | H-1 | Fixed in source: the join budget is armed by the first pump after publication; see below | Network-level evidence with a slow fallback confirmation |
 | H-2 | Fixed in source: recovery and return compare local multicast receipt with the transit-settled report; native lag test added; see below | Hosted builds; WAN evidence still absent |
 | H-3 | Open: report/query freshness configuration | Define valid interval/round/lifetime bounds and rejection tests |
@@ -567,6 +567,49 @@ in the history and in its copy) and
 `compat_group_policy_modes_persist_and_preserve_canonical_wire_identity`
 (the multicast report after a completed unicast copy is applied, not a
 duplicate).
+
+## Multicast dispatch contracts: T-5, T-6, T-7, T-8
+
+T-5. The coordinated sender disables shared multicast repair aggregation.
+The group setter already rejected a nonzero
+`SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD` with `SRT_EINVOP` when a coordinator
+exists, and the coordinator is created together with the group record at
+listen, so no path ever observed a nonzero value. The documentation said only
+"keep it 0"; it now states the contract (reads 0, 0 accepted, other values
+`SRT_EINVOP`) and
+`multicast_dispatch_coordinated_plaintext_public_stream_and_lifecycle` pins
+the error code, the accepted zero and the readback. No behavior changed. The
+`socket-options.md` sentence for this item was committed together with T-8.
+
+T-6. A receiver's `mcast_pkt_received` counted every routed datagram, but
+`mcast_pkt_filtered` only unmatched destinations and source rejections.
+Drops before decoding for other reasons (stale or replaced route identity,
+non-DATA kind, oversize payload, arrival after close) were received and not
+filtered. `ConnectionRuntime::rejected_multicast_packets()` counts them and
+the dispatch receiver folds it into `mcast_pkt_filtered`; the documentation
+defines both counters and their difference. Regression: the shared-loss
+scenarios send a decodable keepalive carrying the dispatch ID over the
+multicast channel and expect it filtered; they fail before the change at the
+filtered count.
+
+T-7. A registration on another channel superseded the member's multicast
+identity but left the old route (and its runtime reference) in the former
+channel until unregister or destruction. Bindings now record their publishing
+channel; a replacement retires the stale route there after the registering
+channel's lock is released, so two channels are never locked together.
+Regression:
+`compat_multicast_binding_replacement_retires_the_route_on_the_former_channel`
+fails before the change. Unshared channels (unit-test stack objects) carry no
+publisher and behave as before.
+
+T-8. In the independent-source profile a change of
+`SRTO_ROBOTWEAX_MCAST_GROUP`, `_IFACE` or `_TTL` on a bound socket failed
+with `SRT_EINVPARAM`; it now reports `SRT_EBOUNDSOCK`, and `SRT_ECONNSOCK`
+once listening, like every other pre-bind option. The source readback is
+documented: `SRT_EINVPARAM` while unset, the configured value until listen,
+the bound endpoint after listen, `SRT_EINVSOCK` after close. Regression:
+`multicast_dispatch_independent_network_options_freeze_with_socket_state_errors`
+fails before the change at the bound-socket expectation.
 
 ## Source layout change
 
