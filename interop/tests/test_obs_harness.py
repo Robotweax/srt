@@ -175,6 +175,34 @@ class ObsHarnessTests(unittest.TestCase):
             self.assertIsNone(status["receiver_exit"])
             self.assertEqual(status["capture_bytes"], 0)
 
+    def test_macos_desktop_startup_exit_reaches_the_crash_report_collector(self):
+        collector = ROOT / "tests/obs/collect_macos_failure.py"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "desktop"
+            reports = Path(directory) / "home/Library/Logs/DiagnosticReports"
+            root.mkdir()
+            reports.mkdir(parents=True)
+            child = SimpleNamespace(pid=4321, returncode=-5, poll=lambda: -5)
+            with self.assertRaisesRegex(RuntimeError, "OBS exited with -5"):
+                macos_desktop.wait_for(
+                    child, lambda: False, "visible idle OBS window",
+                    status=root / "idle-startup-endpoint-status.json",
+                )
+            status = json.loads((root / "idle-startup-endpoint-status.json").read_text())
+            self.assertEqual(status["desktop_pid"], 4321)
+            self.assertEqual(status["desktop_exit"], -5)
+            self.assertNotIn("receiver_pid", status)
+            (reports / "OBS-startup.ips").write_text('{"pid" : 4321, "procName" : "OBS"}\n')
+            (reports / "OBS-unrelated.ips").write_text('{"pid" : 43210, "procName" : "OBS"}\n')
+            subprocess.run(
+                [sys.executable, str(collector), str(root)], check=True,
+                env={**os.environ, "HOME": str(Path(directory) / "home")},
+            )
+            self.assertTrue((root / "OBS-startup.ips").is_file())
+            self.assertFalse((root / "OBS-unrelated.ips").exists())
+            inventory = json.loads((root / "failure-report-inventory.json").read_text())
+            self.assertEqual(inventory, {"endpoint_pids": [4321], "reports": ["OBS-startup.ips"]})
+
     def test_macos_desktop_window_requires_initialized_scenes(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory)
@@ -464,6 +492,78 @@ class ObsHarnessTests(unittest.TestCase):
             write_cache()
             with self.assertRaisesRegex(RuntimeError, "non-Robotweax"):
                 macos_cache.check(cache, ffmpeg, srt)
+
+    def test_macos_desktop_replaces_only_the_qt_with_the_color_space_fix(self):
+        build = (ROOT / "tests/obs/build_macos.sh").read_text()
+        archive = "macos-deps-qt6-2026-10-23-universal.tar.xz"
+        self.assertIn(f"obs-deps/releases/download/2026-10-23/{archive}", build)
+        self.assertIn(
+            "b216560cea8497207f9fc350c713716fb84aec6b973bb0ff8ac6add7734abad5  "
+            '\'"$qt_archive" | shasum -a 256 -c -', build,
+        )
+        self.assertIn("macos-deps-2026-07-15-universal.tar.xz", build)
+        self.assertIn('-DCMAKE_PREFIX_PATH="$prefix_path"', build)
+        script = build.split('prefix_path="$work/ffmpeg', 1)[1].split("\nfi\n", 1)[0]
+        script = 'prefix_path="$work/ffmpeg' + script + "\nfi\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "curl").write_text("#!/bin/sh\nexit 0\n")
+            (root / "shasum").write_text("#!/bin/sh\ncat >/dev/null\n")
+            (root / "tar").write_text(
+                '#!/bin/sh\nmkdir -p "$4/lib/cmake/Qt6"\n'
+                ': > "$4/lib/cmake/Qt6/Qt6Config.cmake"\n'
+            )
+            for tool in ("curl", "shasum", "tar"):
+                (root / tool).chmod(0o755)
+            for profile, expected in (
+                ("modules", "W/ffmpeg;W/srt;W/deps/obs|"),
+                ("desktop", "W/ffmpeg;W/srt;W/deps/qt6;W/deps/obs|--qt W/deps/qt6"),
+            ):
+                work = root / profile
+                (work / "deps").mkdir(parents=True)
+                result = subprocess.run(
+                    ["/bin/bash", "-c", "set -euo pipefail\n" + script
+                     + 'printf \'%s|%s\' "$prefix_path" '
+                     '"${cache_check[*]+"${cache_check[*]}"}"'],
+                    check=True, capture_output=True, text=True,
+                    env={"PATH": f"{root}:/usr/bin:/bin", "profile": profile, "work": str(work)},
+                )
+                self.assertEqual(result.stdout.replace(str(work), "W"), expected)
+
+    def test_macos_cache_requires_the_replaced_desktop_qt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ffmpeg, srt, qt = root / "ffmpeg", root / "srt", root / "deps/qt6"
+            cache = root / "CMakeCache.txt"
+            values = {
+                "Libsrt_LIBRARY": srt / "lib/librobotweax-srt.dylib",
+                "Libsrt_INCLUDE_DIR": srt / "include",
+            }
+            for component in ("avcodec", "avdevice", "avfilter", "avformat",
+                              "avutil", "swscale", "swresample"):
+                values[f"FFmpeg_{component}_LIBRARY"] = ffmpeg / "lib" / f"lib{component}.dylib"
+                values[f"FFmpeg_{component}_INCLUDE_DIR"] = ffmpeg / "include"
+
+            def write_cache():
+                cache.write_text("".join(
+                    f"{key}:PATH={value}\n" for key, value in values.items()
+                ))
+
+            write_cache()
+            macos_cache.check(cache, ffmpeg, srt)
+            with self.assertRaisesRegex(RuntimeError, "did not record"):
+                macos_cache.check(cache, ffmpeg, srt, qt)
+            for package in ("Qt6", "Qt6Gui", "Qt6Widgets"):
+                values[f"{package}_DIR"] = qt / "lib/cmake" / package
+            write_cache()
+            macos_cache.check(cache, ffmpeg, srt, qt)
+            values["Qt6Gui_DIR"] = (
+                root / "obs/.deps/obs-deps-qt6-2026-07-15-universal/lib/cmake/Qt6Gui"
+            )
+            write_cache()
+            macos_cache.check(cache, ffmpeg, srt)
+            with self.assertRaisesRegex(RuntimeError, "unexpected Qt6Gui_DIR"):
+                macos_cache.check(cache, ffmpeg, srt, qt)
 
     def test_macos_runtime_guard_requires_one_provider_and_decoded_media(self):
         with tempfile.TemporaryDirectory() as directory:

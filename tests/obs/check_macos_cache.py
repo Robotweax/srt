@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 
-def check(cache: Path, ffmpeg: Path, srt: Path) -> None:
+def check(cache: Path, ffmpeg: Path, srt: Path, qt: Path | None = None) -> None:
     values = dict(
         re.findall(
             r"^([^/#=\r\n][^:=\r\n]*):[^=\r\n]*=([^\r\n]*)$",
@@ -39,6 +39,19 @@ def check(cache: Path, ffmpeg: Path, srt: Path) -> None:
             raise RuntimeError(
                 f"OBS selected unexpected {component} headers: {include}"
             )
+    if qt is not None:
+        # The desktop profile replaces the Qt that OBS would download itself.
+        packages = {
+            key: Path(value).resolve()
+            for key, value in values.items()
+            if re.fullmatch(r"Qt6\w*_DIR", key)
+        }
+        expected = (qt / "lib/cmake").resolve()
+        if "Qt6_DIR" not in packages or "Qt6Gui_DIR" not in packages:
+            raise RuntimeError("OBS did not record the selected Qt packages")
+        for key, package in sorted(packages.items()):
+            if package.parent != expected:
+                raise RuntimeError(f"OBS selected unexpected {key}: {package}")
 
 
 if __name__ == "__main__":
@@ -46,5 +59,6 @@ if __name__ == "__main__":
     parser.add_argument("cache", type=Path)
     parser.add_argument("ffmpeg", type=Path)
     parser.add_argument("srt", type=Path)
+    parser.add_argument("--qt", type=Path)
     args = parser.parse_args()
-    check(args.cache, args.ffmpeg, args.srt)
+    check(args.cache, args.ffmpeg, args.srt, args.qt)

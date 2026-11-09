@@ -9,7 +9,7 @@ import time
 
 root = Path(sys.argv[1])
 statuses = [json.loads(p.read_text()) for p in root.glob("*-endpoint-status.json")]
-known = {s[k] for s in statuses for k in ("desktop_pid", "receiver_pid")}
+known = {s[k] for s in statuses for k in ("desktop_pid", "receiver_pid") if s.get(k)}
 if not known:
     raise SystemExit(0)
 cutoff = min(s["observed_at"] for s in statuses) - 60
