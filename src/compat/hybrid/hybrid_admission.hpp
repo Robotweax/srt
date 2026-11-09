@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include "compat/hybrid_control.hpp"
+#include "compat/hybrid/hybrid_control.hpp"
 #include "robotweax/srt/handshake.hpp"
 
 namespace robotweax::srt::compat::hybrid {

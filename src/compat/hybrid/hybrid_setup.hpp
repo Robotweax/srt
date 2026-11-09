@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-#include "compat/hybrid_bridge.hpp"
-#include "compat/hybrid_receiver.hpp"
-#include "compat/hybrid_membership.hpp"
+#include "compat/hybrid/hybrid_bridge.hpp"
+#include "compat/hybrid/hybrid_receiver.hpp"
+#include "compat/hybrid/hybrid_membership.hpp"
 #include "srt/srt.h"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 namespace robotweax::srt::compat {

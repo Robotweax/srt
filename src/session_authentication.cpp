@@ -3,7 +3,7 @@
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/standby_rtt.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
-#include "compat/hybrid_control.hpp"
+#include "compat/hybrid/hybrid_control.hpp"
 #endif
 
 #include <algorithm>

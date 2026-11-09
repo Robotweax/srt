@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include "compat/hybrid_conclusions.hpp"
+#include "compat/hybrid/hybrid_conclusions.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include <algorithm>
 

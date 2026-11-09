@@ -1,7 +1,7 @@
 #pragma once
 
 #include "compat/group_runtime_admission.hpp"
-#include "compat/hybrid_reporting.hpp"
+#include "compat/hybrid/hybrid_reporting.hpp"
 
 namespace robotweax::srt::compat {
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-#include "compat/hybrid_native.hpp"
-#include "compat/hybrid_reporting.hpp"
-#include "compat/hybrid_detector.hpp"
-#include "compat/hybrid_return.hpp"
-#include "compat/hybrid_automatic_types.hpp"
+#include "compat/hybrid/hybrid_native.hpp"
+#include "compat/hybrid/hybrid_reporting.hpp"
+#include "compat/hybrid/hybrid_detector.hpp"
+#include "compat/hybrid/hybrid_return.hpp"
+#include "compat/hybrid/hybrid_automatic_types.hpp"
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 namespace robotweax::srt::compat::hybrid {

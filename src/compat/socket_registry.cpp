@@ -1,4 +1,4 @@
-#include "compat/hybrid_setup.hpp"
+#include "compat/hybrid/hybrid_setup.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/thread_name.hpp"
 #include "compat/process_owned.hpp"

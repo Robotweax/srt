@@ -1,4 +1,4 @@
-#include "compat/hybrid_control.hpp"
+#include "compat/hybrid/hybrid_control.hpp"
 
 #include <algorithm>
 

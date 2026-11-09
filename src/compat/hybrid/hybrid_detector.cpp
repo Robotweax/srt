@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include "compat/hybrid_detector.hpp"
+#include "compat/hybrid/hybrid_detector.hpp"
 #include <algorithm>
 
 namespace robotweax::srt::compat::hybrid {

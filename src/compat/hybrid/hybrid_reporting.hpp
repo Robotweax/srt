@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-#include "compat/hybrid_progress.hpp"
-#include "compat/hybrid_control.hpp"
+#include "compat/hybrid/hybrid_progress.hpp"
+#include "compat/hybrid/hybrid_control.hpp"
 
 namespace robotweax::srt::compat::hybrid {
 class SourceActivity {

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-#include "compat/hybrid_conclusions.hpp"
-#include "compat/hybrid_exchange.hpp"
-#include "compat/hybrid_progress.hpp"
+#include "compat/hybrid/hybrid_conclusions.hpp"
+#include "compat/hybrid/hybrid_exchange.hpp"
+#include "compat/hybrid/hybrid_progress.hpp"
 #include "compat/runtime_scheduler.hpp"
 #include <atomic>
 #include <mutex>

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-#include "compat/hybrid_membership.hpp"
+#include "compat/hybrid/hybrid_membership.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 #include "compat/transport_runtime.hpp"
-#include "compat/hybrid_receiver.hpp"
+#include "compat/hybrid/hybrid_receiver.hpp"
 #include <algorithm>
 namespace robotweax::srt::compat::hybrid {
 namespace {

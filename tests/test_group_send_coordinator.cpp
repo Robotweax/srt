@@ -2,7 +2,7 @@
 #include "compat/group_send_coordinator.hpp"
 #include "compat/group_registry.hpp"
 #include "robotweax/srt/control.hpp"
-#include "compat/hybrid_bridge.hpp"
+#include "compat/hybrid/hybrid_bridge.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 
 #include <atomic>

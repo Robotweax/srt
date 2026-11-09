@@ -1,5 +1,5 @@
 #include "compat/connection.hpp"
-#include "compat/hybrid_setup.hpp"
+#include "compat/hybrid/hybrid_setup.hpp"
 #include "compat/acp1_group_context.hpp"
 #include "compat/random_identity.hpp"
 #include "local_endpoint_probe.hpp"

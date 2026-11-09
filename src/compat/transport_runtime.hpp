@@ -13,7 +13,7 @@
 #include "compat/readiness.hpp"
 #include "compat/socket_readiness.hpp"
 #include "compat/statistics.hpp"
-#include "compat/hybrid_native.hpp"
+#include "compat/hybrid/hybrid_native.hpp"
 #ifdef ENABLE_MAXREXMITBW
 #include "compat/retransmission_budget.hpp"
 #endif

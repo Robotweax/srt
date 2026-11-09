@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-#include "compat/hybrid_admission.hpp"
+#include "compat/hybrid/hybrid_admission.hpp"
 #include <memory>
 
 namespace robotweax::srt::compat::hybrid {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-#include "compat/hybrid_return.hpp"
-#include "compat/hybrid_control.hpp"
+#include "compat/hybrid/hybrid_return.hpp"
+#include "compat/hybrid/hybrid_control.hpp"
 namespace robotweax::srt::compat::hybrid {
 bool valid(ReturnPolicy p) noexcept
 {

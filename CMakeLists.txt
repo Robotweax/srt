@@ -172,21 +172,21 @@ add_library(robotweax_srt
     src/compat/group_packet_encoder.cpp
     src/compat/group_runtime_admission.cpp
     src/compat/group_send_coordinator.cpp
-    src/compat/hybrid_control.cpp
-    src/compat/hybrid_admission.cpp
-    src/compat/hybrid_exchange.cpp
-    src/compat/hybrid_conclusions.cpp
-    src/compat/hybrid_native.cpp
-    src/compat/hybrid_bridge.cpp
-    src/compat/hybrid_receiver.cpp
-    src/compat/hybrid_return.cpp
-    src/compat/hybrid_automatic.cpp
-    src/compat/hybrid_automatic_return.cpp
-    src/compat/hybrid_membership.cpp
-    src/compat/hybrid_setup.cpp
-    src/compat/hybrid_detector.cpp
-    src/compat/hybrid_reporting.cpp
-    src/compat/hybrid_progress.cpp
+    src/compat/hybrid/hybrid_control.cpp
+    src/compat/hybrid/hybrid_admission.cpp
+    src/compat/hybrid/hybrid_exchange.cpp
+    src/compat/hybrid/hybrid_conclusions.cpp
+    src/compat/hybrid/hybrid_native.cpp
+    src/compat/hybrid/hybrid_bridge.cpp
+    src/compat/hybrid/hybrid_receiver.cpp
+    src/compat/hybrid/hybrid_return.cpp
+    src/compat/hybrid/hybrid_automatic.cpp
+    src/compat/hybrid/hybrid_automatic_return.cpp
+    src/compat/hybrid/hybrid_membership.cpp
+    src/compat/hybrid/hybrid_setup.cpp
+    src/compat/hybrid/hybrid_detector.cpp
+    src/compat/hybrid/hybrid_reporting.cpp
+    src/compat/hybrid/hybrid_progress.cpp
     src/compat/standby_rtt_service.cpp
     src/control.cpp
     src/connection_group.cpp

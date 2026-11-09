@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include "compat/hybrid_automatic.hpp"
+#include "compat/hybrid/hybrid_automatic.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 namespace robotweax::srt::compat::hybrid {
 static_assert(sizeof(AutomaticFallback) < 2048);

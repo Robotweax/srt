@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "test.hpp"
-#include "compat/hybrid_detector.hpp"
+#include "compat/hybrid/hybrid_detector.hpp"
 #include <algorithm>
 using namespace robotweax::srt;
 namespace hd = robotweax::srt::compat::hybrid;

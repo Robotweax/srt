@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-#include "compat/hybrid_reporting.hpp"
+#include "compat/hybrid/hybrid_reporting.hpp"
 
 namespace robotweax::srt::compat::hybrid {
 struct DetectionConfiguration {

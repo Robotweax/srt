@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include "test.hpp"
-#include "compat/hybrid_native.hpp"
-#include "compat/hybrid_receiver.hpp"
-#include "compat/hybrid_automatic.hpp"
-#include "compat/hybrid_automatic_return.hpp"
-#include "compat/hybrid_membership.hpp"
+#include "compat/hybrid/hybrid_native.hpp"
+#include "compat/hybrid/hybrid_receiver.hpp"
+#include "compat/hybrid/hybrid_automatic.hpp"
+#include "compat/hybrid/hybrid_automatic_return.hpp"
+#include "compat/hybrid/hybrid_membership.hpp"
 #include <functional>
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"

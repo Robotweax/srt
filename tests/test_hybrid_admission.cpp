@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "test.hpp"
-#include "compat/hybrid_admission.hpp"
+#include "compat/hybrid/hybrid_admission.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 
 #include <algorithm>

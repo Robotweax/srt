@@ -186,6 +186,20 @@ No deadline, assertion or production code changed. BL-4 (`srt-live-transmit
 scheduler starvation fix at `4d59666` is the likely cause, but this is not yet
 attributed, so BL-4 stays open.
 
+## Source layout change
+
+The 31 `hybrid_*` source and header files moved from `src/compat/` to
+`src/compat/hybrid/` with unchanged file names. The commit contains only the
+moves, the matching `#include "compat/hybrid/hybrid_*.hpp"` lines and the 15
+source entries in `CMakeLists.txt`; no declaration, definition or test changed.
+The directory is a reading aid, not a module or build boundary: these sources
+are compiled in every build, and the canonical DATA and sending work remains in
+`src/compat/group_*` and in existing files. Test files stay in `tests/`.
+
+[README.md](README.md), the records, logs, patches and `SHA256SUMS` in this
+directory are not edited. Where they name `src/compat/hybrid_*`, read
+`src/compat/hybrid/hybrid_*` for any revision after this change.
+
 ## Remaining harness and evidence work
 
 - Use normal failure reports and membership/control diagnostics to investigate

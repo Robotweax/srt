@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-#include "compat/hybrid_admission.hpp"
+#include "compat/hybrid/hybrid_admission.hpp"
 
 namespace robotweax::srt::compat::hybrid {
 // Fixed exchange bodies; the optional internal carrier is in hybrid_native.hpp.

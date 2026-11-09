@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include "compat/hybrid_bridge.hpp"
+#include "compat/hybrid/hybrid_bridge.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 #include "compat/group_send_coordinator.hpp"
 #include <algorithm>

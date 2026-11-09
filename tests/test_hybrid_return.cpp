@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "test.hpp"
-#include "compat/hybrid_return.hpp"
-#include "compat/hybrid_control.hpp"
-#include "compat/hybrid_progress.hpp"
+#include "compat/hybrid/hybrid_return.hpp"
+#include "compat/hybrid/hybrid_control.hpp"
+#include "compat/hybrid/hybrid_progress.hpp"
 using namespace robotweax::srt;
 namespace hr = robotweax::srt::compat::hybrid;
 namespace {

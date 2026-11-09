@@ -1,5 +1,5 @@
 #include "test.hpp"
-#include "compat/hybrid_control.hpp"
+#include "compat/hybrid/hybrid_control.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 
 #include <algorithm>

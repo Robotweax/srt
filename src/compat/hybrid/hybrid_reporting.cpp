@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include "compat/hybrid_reporting.hpp"
+#include "compat/hybrid/hybrid_reporting.hpp"
 #include <algorithm>
 
 namespace robotweax::srt::compat::hybrid {

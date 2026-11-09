@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "robotweax/srt/codec.hpp"
-#include "compat/hybrid_control.hpp"
+#include "compat/hybrid/hybrid_control.hpp"
 #include <array>
 #include <optional>
 

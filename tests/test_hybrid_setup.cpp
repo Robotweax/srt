@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "test.hpp"
-#include "compat/hybrid_setup.hpp"
+#include "compat/hybrid/hybrid_setup.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
 #include "compat/socket_registry.hpp"
 #include "compat/group_registry.hpp"

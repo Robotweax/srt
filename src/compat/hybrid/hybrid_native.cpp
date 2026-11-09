@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-#include "compat/hybrid_native.hpp"
-#include "compat/hybrid_bridge.hpp"
-#include "compat/hybrid_receiver.hpp"
+#include "compat/hybrid/hybrid_native.hpp"
+#include "compat/hybrid/hybrid_bridge.hpp"
+#include "compat/hybrid/hybrid_receiver.hpp"
 #include "compat/transport_runtime.hpp"
 #include "compat/runtime_scheduler_service.hpp"
 #include <algorithm>
