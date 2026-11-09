@@ -757,19 +757,37 @@ bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
             binding->destination_socket_id_ = protocol_socket_id;
             binding->source_ = source;
         }
-        std::lock_guard lock(routes_mutex_);
-        // Registration is transactional: publish the new runtime generation
-        // only after map insertion succeeds. The routing lock excludes readers.
-        const auto [route, inserted] = routes_.emplace(protocol_socket_id,
-            ConnectionRoute {.runtime = runtime,
-                .provenance = provenance,
-                .multicast_binding = binding});
-        if (!inserted)
-            return false;
-        if (binding
-            && !runtime->activate_multicast_ingress(binding, membership)) {
-            routes_.erase(route);
-            return false;
+        std::shared_ptr<const MulticastIngressBinding> replaced;
+        {
+            std::lock_guard lock(routes_mutex_);
+            // Registration is transactional: publish the new runtime
+            // generation only after map insertion succeeds. The routing lock
+            // excludes readers.
+            const auto [route, inserted] = routes_.emplace(protocol_socket_id,
+                ConnectionRoute {.runtime = runtime,
+                    .provenance = provenance,
+                    .multicast_binding = binding});
+            if (!inserted)
+                return false;
+            if (binding) {
+                binding->owner_ = weak_from_this();
+                if (!runtime->activate_multicast_ingress(
+                        binding, membership, replaced)) {
+                    routes_.erase(route);
+                    return false;
+                }
+            }
+        }
+        // The identity this registration superseded still has a route on the
+        // channel that published it. Retire it now, after this channel's
+        // routing lock is released, so two channels are never locked
+        // together. The runtime's current identity is already the new one,
+        // so the former channel's revocation leaves it alone.
+        if (replaced) {
+            if (const auto former = replaced->owner_.lock();
+                former && former.get() != this)
+                former->unregister_connection(
+                    protocol_socket_id, runtime.get());
         }
         return true;
     } catch (...) {
@@ -779,7 +797,8 @@ bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
 
 bool ConnectionRuntime::activate_multicast_ingress(
     const std::shared_ptr<MulticastIngressBinding>& binding,
-    const std::shared_ptr<const void>& membership) noexcept
+    const std::shared_ptr<const void>& membership,
+    std::shared_ptr<const MulticastIngressBinding>& replaced) noexcept
 {
     std::lock_guard lock(mutex_);
     if (locally_closed_ || broken_ || peer_closed_
@@ -800,6 +819,7 @@ bool ConnectionRuntime::activate_multicast_ingress(
     if (membership)
         hybrid_receive_route_ = multicast_ingress_generation_;
 #endif
+    replaced = std::move(multicast_ingress_binding_);
     multicast_ingress_binding_ = binding;
     return true;
 }

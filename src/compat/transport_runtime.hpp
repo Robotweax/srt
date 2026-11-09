@@ -62,6 +62,7 @@ struct MulticastIngressConfiguration {
 
 // Immutable after route publication. Shared ownership keeps an old identity
 // alive across the route lookup/admission gap, preventing address reuse (ABA).
+class DatagramChannel;
 class MulticastIngressBinding {
     friend class DatagramChannel;
     friend class ConnectionRuntime;
@@ -69,6 +70,9 @@ class MulticastIngressBinding {
     std::uint64_t generation_ = 0;
     std::uint32_t destination_socket_id_ = 0;
     IpEndpoint source_ {};
+    // The channel that published this identity. A replacement retires the
+    // route there, so no stale entry outlives the identity it carried.
+    std::weak_ptr<DatagramChannel> owner_;
 };
 
 struct HandshakeRouteKey {
@@ -767,9 +771,12 @@ private:
     friend struct GroupRuntimeAdmissionTestAccess;
     // Binding operations follow routes_mutex_ -> mutex_ and never acquire
     // channel locks or perform socket I/O while holding the runtime mutex.
+    // `replaced` receives the identity this activation superseded, if any,
+    // so its publisher can retire the stale route.
     [[nodiscard]] bool activate_multicast_ingress(
         const std::shared_ptr<MulticastIngressBinding>& binding,
-        const std::shared_ptr<const void>& membership = {}) noexcept;
+        const std::shared_ptr<const void>& membership,
+        std::shared_ptr<const MulticastIngressBinding>& replaced) noexcept;
     [[nodiscard]] bool lose_multicast_ingress(
         const std::shared_ptr<const MulticastIngressBinding>&) noexcept;
     void revoke_multicast_ingress(

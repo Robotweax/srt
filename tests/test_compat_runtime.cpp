@@ -14076,6 +14076,39 @@ TEST(compat_multicast_binding_replacement_survives_old_channel_teardown)
         1U);
 }
 
+// A replacement on another channel supersedes the identity; the route that
+// carried the old identity leaves its channel with it, instead of lingering
+// there until that channel's teardown and dropping routed datagrams.
+TEST(
+    compat_multicast_binding_replacement_retires_the_route_on_the_former_channel)
+{
+    MulticastIngressFixture fixture;
+    const std::array payload {std::byte {'a'}};
+    const auto packet = multicast_binding_packet(payload);
+    const auto former = std::make_shared<DatagramChannel>();
+    const auto current = std::make_shared<DatagramChannel>();
+    REQUIRE(former->register_ingress_route(
+        fixture.dispatch_id, fixture.runtime, PacketIngress::multicast_data));
+    REQUIRE(former->has_ingress_route(fixture.dispatch_id,
+        fixture.runtime.get(), PacketIngress::multicast_data));
+    REQUIRE(current->register_ingress_route(
+        fixture.dispatch_id, fixture.runtime, PacketIngress::multicast_data));
+    REQUIRE(!former->has_ingress_route(fixture.dispatch_id,
+        fixture.runtime.get(), PacketIngress::multicast_data));
+    fixture.deliver(*former, packet);
+    REQUIRE_EQ(former->unrouted_datagrams(), 1U);
+    REQUIRE_EQ(fixture.runtime->rejected_multicast_packets(), 0U);
+    require_no_binding_data(*fixture.runtime);
+    fixture.deliver(*current, packet);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+    // The fixture's own channel is not shared, so it carries no publisher;
+    // its stale route stays until its teardown, as before.
+    REQUIRE(fixture.multicast.has_ingress_route(fixture.dispatch_id,
+        fixture.runtime.get(), PacketIngress::multicast_data));
+}
+
 TEST(compat_multicast_binding_channel_destruction_revokes_captured_identity)
 {
     MulticastIngressFixture fixture;
