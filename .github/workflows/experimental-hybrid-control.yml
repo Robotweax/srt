@@ -1,0 +1,208 @@
+name: Experimental hybrid control
+
+# The hybrid multicast control code exists only when both experimental options
+# below are ON. No other workflow enables them, so without this one that code
+# and the tests registered for it are never compiled or run on hosted runners.
+# This workflow is not part of the required CI gate.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'tools/qualify_hybrid_soak.py'
+      - 'tools/qualify_multicast.py'
+      - '.github/actions/multicast-interface/**'
+      - '.github/reviews/hybrid-multicast/sanitizer-selectors.txt'
+      - '.github/workflows/experimental-hybrid-control.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'tools/qualify_hybrid_soak.py'
+      - 'tools/qualify_multicast.py'
+      - '.github/actions/multicast-interface/**'
+      - '.github/reviews/hybrid-multicast/sanitizer-selectors.txt'
+      - '.github/workflows/experimental-hybrid-control.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hybrid-control-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Hybrid control Release (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare multicast test interface
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/multicast-interface
+      - name: Install OpenSSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get update
+            sudo apt-get install -y libssl-dev pkg-config
+          else
+            brew install openssl@3 pkg-config
+            echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          fi
+      # The opted-in Release settings recorded in
+      # .github/reviews/hybrid-multicast/build-settings.json, without benchmarks.
+      - name: Configure
+        run: >-
+          cmake -S . -B build-hybrid
+          -DCMAKE_BUILD_TYPE=Release
+          -DROBOTWEAX_SRT_CRYPTO_BACKEND=openssl
+          -DENABLE_AEAD_API_PREVIEW=ON
+          -DENABLE_MAXREXMITBW=OFF
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL=ON
+          -DROBOTWEAX_SRT_BUILD_TESTS=ON
+          -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+          -DROBOTWEAX_SRT_BUILD_EXAMPLES=OFF
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+      - name: Build
+        run: >-
+          cmake --build build-hybrid
+          --config Release
+          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
+      # Every gate, with the 30-second budgets the test registration declares.
+      - name: Test all gates of the hybrid control build
+        run: >-
+          ctest --test-dir build-hybrid
+          -C Release
+          --no-tests=error
+          --output-on-failure
+      - name: Strict hybrid soak, CTR and GCM
+        run: >-
+          python3 tools/qualify_hybrid_soak.py
+          --build build-hybrid
+          --config Release
+          --seconds 30
+          --output build-hybrid/evidence/soak
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: hybrid-control-release-${{ matrix.os }}
+          path: |
+            build-hybrid/evidence/
+            build-hybrid/CMakeCache.txt
+            build-hybrid/Testing/Temporary/LastTest.log
+          retention-days: 7
+
+  sanitizers:
+    name: Hybrid control sanitizers (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Clang at -O1 is the sanitized Linux configuration the review qualified.
+      # The flags match the main sanitizer job: undefined behavior is fatal.
+      CC: clang
+      CXX: clang++
+      CFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+      CXXFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+      LDFLAGS: -fsanitize=address,undefined
+      UBSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare multicast test interface
+        uses: ./.github/actions/multicast-interface
+      - name: Install OpenSSL and Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config clang
+      - name: Configure
+        run: >-
+          cmake -S . -B build-hybrid-san
+          -DCMAKE_BUILD_TYPE=Debug
+          "-DCMAKE_C_FLAGS_DEBUG=-g -O1"
+          "-DCMAKE_CXX_FLAGS_DEBUG=-g -O1"
+          -DROBOTWEAX_SRT_CRYPTO_BACKEND=openssl
+          -DENABLE_AEAD_API_PREVIEW=ON
+          -DENABLE_MAXREXMITBW=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL=ON
+          -DROBOTWEAX_SRT_BUILD_TESTS=ON
+          -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
+          -DROBOTWEAX_SRT_BUILD_EXAMPLES=OFF
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+      - name: Verify fatal UBSan enforcement
+        run: |
+          cmake --build build-hybrid-san --target robotweax_srt_ubsan_canary
+          python3 tests/sanitizers/verify_ubsan.py build-hybrid-san/robotweax_srt_ubsan_canary
+      - name: Build
+        run: cmake --build build-hybrid-san --target robotweax_srt_tests --parallel
+      # Each selector must select at least one case, and every selected case
+      # must pass. A skipped case fails the job: a skip is not evidence.
+      - name: Sanitized hybrid, group and multicast selectors
+        shell: bash
+        run: |
+          set -euo pipefail
+          logs=build-hybrid-san/evidence/selectors
+          mkdir -p "$logs"
+          selectors=0
+          cases=0
+          while IFS= read -r selector || [[ -n "$selector" ]]; do
+            [[ -n "$selector" ]] || continue
+            log="$logs/$selector.txt"
+            echo "::group::$selector"
+            status=0
+            build-hybrid-san/robotweax_srt_tests --include "$selector" > "$log" 2>&1 || status=$?
+            cat "$log"
+            echo "::endgroup::"
+            summary=$(grep -E '^[0-9]+/[0-9]+ tests passed' "$log" | tail -n 1 || true)
+            if [[ "$status" -ne 0 || -z "$summary" ]]; then
+              echo "::error::selector $selector failed: exit $status, summary '${summary:-none}'"
+              exit 1
+            fi
+            passed=${summary%%/*}
+            rest=${summary#*/}
+            selected=${rest%% *}
+            if [[ "$selected" -eq 0 || "$passed" -ne "$selected" ]]; then
+              echo "::error::selector $selector did not pass every selected case: $summary"
+              exit 1
+            fi
+            selectors=$((selectors + 1))
+            cases=$((cases + passed))
+          done < .github/reviews/hybrid-multicast/sanitizer-selectors.txt
+          if [[ "$selectors" -eq 0 ]]; then
+            echo "::error::the selector list is empty"
+            exit 1
+          fi
+          echo "sanitized selectors passed: $selectors, cases passed: $cases" | tee "$logs/summary.txt"
+      - name: Strict hybrid soak under sanitizers, CTR and GCM
+        run: >-
+          python3 tools/qualify_hybrid_soak.py
+          --build build-hybrid-san
+          --config Debug
+          --seconds 30
+          --output build-hybrid-san/evidence/soak
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: hybrid-control-sanitizers-ubuntu-latest
+          path: |
+            build-hybrid-san/evidence/
+            build-hybrid-san/CMakeCache.txt
+          retention-days: 7
