@@ -45,7 +45,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | BL-4 | Open: Windows `srt-live-transmit -version` hang | Native debugger/thread evidence and same-base comparison |
 | BL-5 | Native wire bound retained; forced waits checked with injected clock and zero-wait counterexample | Native Windows after-fix CI pending; source fix does not qualify Windows hybrid transport |
 | BL-6 | Partial: scope/labels corrected; matching-cache failure flags recovered | Enforce build/source identity, reject stale binary, test CLI record production; obtain missing platform evidence |
-| L-1 | ACK half fixed in source: an ACK ahead of the fanout retires the submitted prefix; see below. NAK half open | NAK ranges touching an unsubmitted original still fail the whole report; hosted builds |
+| L-1 | Fixed in source: an ACK or NAK ahead of the fanout is honored for the submitted part; see below | Hosted builds; no network-level throughput evidence above the existing soak rate |
 | L-2 | Open: completion-busy attempt count versus send rate | Production-default send-driven contention regression and time-bounded policy |
 | L-3 | Fixed in source: such a send fails with `SRT_ECONNLOST` and consumes nothing; see below | Hosted default and enabled builds |
 | L-4 | Open: one member admission contention/backpressure | Quantify retry/liveness with healthy-peer traffic and bounded work |
@@ -316,9 +316,39 @@ Regressions, each failing before the change:
   (24 sends with every ACK ahead of the newest fanout; previously nothing was
   retired and the history filled)
 
-Not done here: `validate_retransmission_range` still fails a whole NAK when a
-range touches an unsubmitted group original, and no test shows the throughput
-of the ACK path on a real network at rates above the existing soak.
+No test shows the throughput of the ACK path on a real network at rates above
+the existing soak.
+
+## Canonical DATA path: L-1 (loss reports)
+
+The same window exists for a NAK. `validate_retransmission_range` fails a
+range that touches an unsubmitted group original, and the session validates a
+whole report before changing any state, so one such range discarded every
+range in the packet. A receiver can lose an original and report it before the
+group tells the member that the original was submitted.
+
+The session now asks the send buffer for the oldest unsubmitted group
+original (`SendBuffer::first_unsubmitted_group_original`) and honors each
+reported range only below it: a range that starts at or after it is dropped
+from the report, a range that crosses it is shortened. The rest of the report
+is validated and serviced as before. The receiver's next periodic report
+names the sequences that were left out. An unsubmitted original is still
+never repaired, and the buffer-level checks are unchanged; ordinary buffers
+have no such original, so their reports are handled exactly as before.
+
+The cut is at the oldest unsubmitted original rather than around each one.
+Submissions are applied in order, so the unsubmitted originals are normally
+the newest; if one is skipped by an expiry or failure, later submitted
+originals wait for the next report too.
+
+Regression, failing before the change:
+`compat_group_coordinator_nak_ahead_of_fanout_repairs_the_submitted_sequences`
+(a report naming a submitted and an unsubmitted original repairs the first;
+the unsubmitted one alone repairs nothing; after its submission a new report
+repairs it).
+
+Not done: the left-out sequences are not remembered for an immediate repair
+once they are submitted; that repair waits for the receiver's next report.
 
 ## Source layout change
 

@@ -256,6 +256,19 @@ struct Receiver {
                 .payload = std::span {bytes}.first(encoded.bytes_written)},
             peer);
     }
+    void nak(std::initializer_list<SequenceRange> lost)
+    {
+        const std::vector<SequenceRange> ranges(lost);
+        std::array<std::byte, 64> bytes {};
+        const auto encoded = encode_loss_ranges(ranges, bytes);
+        REQUIRE(encoded);
+        runtime->process_packet(
+            {.kind = PacketKind::control,
+                .control = {.type = ControlType::negative_acknowledgement,
+                    .destination_socket_id = 107},
+                .payload = std::span {bytes}.first(encoded.bytes_written)},
+            peer);
+    }
     std::size_t buffered()
     {
         return runtime->buffer_packet_counts().unacknowledged_send;
@@ -365,6 +378,55 @@ TEST(compat_group_coordinator_ack_ahead_of_fanout_retires_the_submitted_prefix)
     a.ack(initial.advanced(2));
     REQUIRE_EQ(a.buffered(), 0U);
     REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+}
+
+// A loss report can name an original whose UDP submission the coordinator has
+// not reported to the member yet. The submitted sequences in the same report
+// are repaired; the unsubmitted one is left for the receiver's next report
+// and is never repaired before its submission.
+TEST(
+    compat_group_coordinator_nak_ahead_of_fanout_repairs_the_submitted_sequences)
+{
+    Fixture f(CryptoMode::automatic, 8);
+    Receiver a(f, 8);
+    for (unsigned i = 0; i < 2; ++i) {
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.pump();
+        f.now += 1ms;
+        a.now += 1'000;
+    }
+    REQUIRE_EQ(f.send(), Status::accepted); // Accepted, submission unapplied.
+    const auto third = initial.advanced(2);
+    const auto repair = [&](std::size_t index) {
+        const auto decoded = decode_packet(a.data_attempts[index]);
+        REQUIRE(decoded);
+        REQUIRE(decoded.packet.data.retransmitted);
+        return decoded.packet.data.sequence;
+    };
+
+    a.nak({{initial, initial}, {third, third}});
+    f.now += 1ms;
+    a.now += 1'000;
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    REQUIRE_EQ(repair(0), initial);
+
+    // Alone, the unsubmitted sequence is accepted and repairs nothing.
+    a.nak({{third, third}});
+    f.now += 1ms;
+    a.now += 1'000;
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 1U);
+    REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+
+    f.pump();
+    REQUIRE_EQ(f.output.size(), 3U);
+    a.nak({{third, third}});
+    f.now += 1ms;
+    a.now += 1'000;
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 2U);
+    REQUIRE_EQ(repair(1), third);
 }
 
 // The consequence of rejecting such ACKs outright: when every ACK reaches the

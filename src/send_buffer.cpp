@@ -840,6 +840,19 @@ Error SendBuffer::acknowledge_before(SequenceNumber sequence) noexcept
     return Error::none;
 }
 
+std::optional<SequenceNumber>
+SendBuffer::first_unsubmitted_group_original() const noexcept
+{
+    if (external_unsubmitted_count_ == 0U)
+        return std::nullopt;
+    for (std::size_t offset = 0; offset < sequence_span_; ++offset) {
+        const auto& slot = slots_[(head_ + offset) % capacity()];
+        if (slot.occupied && slot.external_original && !slot.submitted)
+            return first_sequence_.advanced(static_cast<std::uint32_t>(offset));
+    }
+    return std::nullopt;
+}
+
 std::size_t SendBuffer::dropped_prefix(std::size_t end) const noexcept
 {
     std::size_t result = 0;

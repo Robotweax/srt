@@ -214,6 +214,11 @@ public:
     [[nodiscard]] Error acknowledge_submitted_before(
         SequenceNumber sequence) noexcept;
     [[nodiscard]] Error acknowledge_before(SequenceNumber sequence) noexcept;
+    // The oldest canonical group original whose UDP submission has not been
+    // reported to this buffer, if any. Loss reports are honored only below
+    // it. An ordinary buffer never has one.
+    [[nodiscard]] std::optional<SequenceNumber>
+    first_unsubmitted_group_original() const noexcept;
     // Validates the complete sequence range without changing retransmission
     // or drop-request state. Every current packet must already have appeared
     // on the wire, or be a retained tombstone for a previously dropped

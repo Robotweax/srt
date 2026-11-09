@@ -1309,6 +1309,13 @@ ReliabilityProcessResult ReliabilitySession::receive(
             current_ranges {};
         std::size_t current_range_count = 0;
 
+        // A canonical group original can be lost on the wire, and reported,
+        // before the group tells this member that it was submitted. Honor the
+        // report below the oldest such original and leave the rest to the
+        // receiver's next report, instead of failing the whole packet. An
+        // unsubmitted original is never repaired.
+        const auto unsubmitted =
+            send_buffer_.first_unsubmitted_group_original();
         // Validate and classify the complete report first. No retransmission
         // or DROPREQ state changes until every range is known to be safe.
         auto validation_payload = payload;
@@ -1317,9 +1324,17 @@ ReliabilityProcessResult ReliabilitySession::receive(
             if (!loss) {
                 return {.error = loss.error};
             }
-            const auto slices = split_nak_range(send_buffer_, loss.range);
+            auto slices = split_nak_range(send_buffer_, loss.range);
             if (!slices) {
                 return {.error = slices.error};
+            }
+            if (slices.current.has_value() && unsubmitted.has_value()
+                && slices.current->first.distance_from(*unsubmitted) >= 0) {
+                slices.current.reset();
+            } else if (slices.current.has_value() && unsubmitted.has_value()
+                && slices.current->last.distance_from(*unsubmitted) >= 0) {
+                slices.current->last =
+                    unsubmitted->advanced(SequenceNumber::mask);
             }
             if (slices.current.has_value()) {
                 if (current_range_count == current_ranges.size()) {
