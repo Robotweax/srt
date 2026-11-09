@@ -718,7 +718,13 @@ Defaults are 100 ms retry spacing, 500 ms rounds, a two-second operation,
 500 ms periodic query spacing and a one-second confirmation lifetime. Each round
 has at most four local send attempts and each operation at most four rounds.
 Configuration bounds each to eight (at most 64 sends per operation), lifetime to
-five seconds and all intervals to their validated bounds. Queue-full/EAGAIN and
+five seconds and all intervals to their validated bounds. Startup provisioning
+additionally requires the confirmation lifetime to cover one query spacing plus
+one round (`confirmation_lifetime_us >= query_interval_us + round_timeout_us`),
+so a confirmed policy cannot age out between two background queries, and
+requires query and retry spacing of at least one millisecond, since shorter
+spacing floods the source's bounded record gate from a single receiver.
+Queue-full/EAGAIN and
 duplicates cannot renew a deadline or create an immediate retry loop. Operation
 exhaustion or an expired confirmation means unknown policy freshness, not a
 multicast-failure decision. The next background operation is read-only; it never

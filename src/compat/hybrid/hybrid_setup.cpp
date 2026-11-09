@@ -10,8 +10,18 @@ namespace {
 bool valid_options(const StartupOptions& c, bool caller = false) noexcept
 {
     const auto required = startup_fallback | policy_query;
+    // A confirmed policy must stay fresh across one query spacing plus one
+    // round, or every host sees periodic freshness holes in which proof,
+    // overlap, return and automatic candidates all refuse. Query and retry
+    // spacing below a millisecond would flood the source's bounded record
+    // gate from one receiver.
     return (!caller
                || (ReceiverBridge::valid_configuration(c.receiver)
+                   && c.receiver.query_interval_us >= 1000
+                   && c.receiver.retry_interval_us >= 1000
+                   && c.receiver.confirmation_lifetime_us
+                       >= c.receiver.query_interval_us
+                           + c.receiver.round_timeout_us
                    && MembershipRecovery::valid_configuration(c.membership)
                    && static_cast<bool>(c.join.owner)
                        == static_cast<bool>(c.join.prepare)))

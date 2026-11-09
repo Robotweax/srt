@@ -67,7 +67,7 @@ TEST(
     hybrid_setup_provisioning_requires_explicit_policy_callbacks_and_bounded_configuration)
 {
     ProvisionFixture f;
-    for (unsigned i = 0; i < 12; ++i) {
+    for (unsigned i = 0; i < 15; ++i) {
         auto c = f.options();
         switch (i) {
         case 0:
@@ -105,6 +105,17 @@ TEST(
             break;
         case 11:
             c.native.enroll = nullptr;
+            break;
+        case 12:
+            // One query spacing plus one round must fit the lifetime.
+            c.receiver.confirmation_lifetime_us =
+                c.receiver.query_interval_us + c.receiver.round_timeout_us - 1;
+            break;
+        case 13:
+            c.receiver.query_interval_us = 999;
+            break;
+        case 14:
+            c.receiver.retry_interval_us = 999;
             break;
         }
         auto id = f.group();

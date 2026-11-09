@@ -2452,7 +2452,7 @@ struct StartupProvision {
             .round_timeout_us = 40'000,
             .operation_timeout_us = 240'000,
             .query_interval_us = 50'000,
-            .confirmation_lifetime_us = 80'000,
+            .confirmation_lifetime_us = 100'000, // >= query + round
             .maximum_sends = 2,
             .maximum_rounds = 4};
         return o;
