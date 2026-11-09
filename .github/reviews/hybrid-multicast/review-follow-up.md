@@ -41,7 +41,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | --- | --- | --- |
 | BL-1 | Fixed in source; local true-default build and 84 gates pass | Inspect fresh hosted default-build jobs |
 | BL-2 | Fixed; hosted Win32/x64 builds and selected provider tests pass at 18b4595 | Broader Windows hybrid failures remain BL-3/BL-4/BL-5; no local Windows claim |
-| BL-3 | Partitioning implemented at 2f31b96; local results below; hosted and residual budget checks pending | Keep all cases/deadlines; inspect current CI and remaining GCC CPU-oracle/rotation costs |
+| BL-3 | Partitioning implemented at 2f31b96; the aggregate unit gate is split once more, see below; hosted budgets inspected on 9 November | Keep all cases/deadlines; watch the remaining GCC CPU-oracle/rotation costs |
 | BL-4 | Open: Windows `srt-live-transmit -version` hang | Native debugger/thread evidence and same-base comparison |
 | BL-5 | Native wire bound retained; forced waits checked with injected clock and zero-wait counterexample | Native Windows after-fix CI pending; source fix does not qualify Windows hybrid transport |
 | BL-6 | Partial: scope/labels corrected; matching-cache failure flags recovered | Enforce build/source identity, reject stale binary, test CLI record production; obtain missing platform evidence |
@@ -377,6 +377,19 @@ original; kept busy until 10 ms, it is detached and nothing is authorized).
 passes unmodified.
 
 Not shown: a production-default contention run on a real network.
+
+## Aggregate unit gate split (BL-3, residual)
+
+On 9 November the aggregate gate `robotweax_srt_tests` took 20.1 s and 24.7 s
+on two Windows Debug runs and then hit its 30 s budget on a third after 918 of
+about 1616 cases, on a runner that was running at roughly half the usual
+speed. The same gate passed in 19.8 s on the rerun. The 249 canonical group
+unit cases (`compat_group_*`) were a third of its time, so they now run as
+`robotweax_srt_group_unit_tests` with its own 30 s budget, and the aggregate
+excludes `compat_group_`. Both gates together own exactly the 1164 cases the
+aggregate owned before, with no duplicate; the partition check in
+`interop/tests/test_ci_build_scope.py` and the gate list of the optional
+retransmission-limit job include the new gate. No budget was raised.
 
 ## Source layout change
 

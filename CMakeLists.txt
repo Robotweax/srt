@@ -638,7 +638,16 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover
-            tsbpd_rtt multicast_dispatch hybrid_ hybrid_network_ hybrid_key_network_ hybrid_load_network_ hybrid_soak_network_ hybrid_harness_network_ compat_idle_readiness_ arq_transport_)
+            tsbpd_rtt multicast_dispatch hybrid_ hybrid_network_ hybrid_key_network_ hybrid_load_network_ hybrid_soak_network_ hybrid_harness_network_ compat_idle_readiness_ arq_transport_
+            compat_group_)
+    # The canonical group unit cases are a third of the aggregate's time; they
+    # run in their own bounded process so neither sits near its budget on a
+    # slow Debug or instrumented runner. Same ownership rules as above.
+    add_test(NAME robotweax_srt_group_unit_tests
+        COMMAND robotweax_srt_tests --include compat_group_ --exclude srt_compat_
+            tsbpd_rtt compat_group_closed_member_retains_bounded_copy
+            compat_group_connect_joins_with_unread_messages_across_rollover)
+    set_tests_properties(robotweax_srt_group_unit_tests PROPERTIES LABELS "unit;group")
     add_test(NAME robotweax_srt_hybrid_model_tests
         COMMAND robotweax_srt_tests --include hybrid_ --exclude multicast_dispatch
             investigation_hybrid_ hybrid_network_ hybrid_key_network_
@@ -883,7 +892,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests
             compat_group_closed_member_retains_bounded_copy_after_oversized_message)
     set_tests_properties(
-        robotweax_srt_tests robotweax_srt_tsbpd_rtt_tests robotweax_srt_socket_api_tests
+        robotweax_srt_tests robotweax_srt_group_unit_tests
+        robotweax_srt_tsbpd_rtt_tests robotweax_srt_socket_api_tests
         robotweax_srt_hybrid_model_tests robotweax_srt_idle_readiness_tests
         robotweax_srt_transport_runtime_tests
         robotweax_srt_group_join_rollover_tests
