@@ -347,9 +347,11 @@ jobs:
           -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS=ON
           -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
           -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
+      # A fixed job count: an unlimited --parallel starts every compile at
+      # once, and the runner killed this build when the test sources grew.
       - name: Build
         if: needs.changes.outputs.core_tests == 'true'
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 4
       - name: Build selected public consumers
         if: needs.changes.outputs.core_tests != 'true'
         shell: bash
