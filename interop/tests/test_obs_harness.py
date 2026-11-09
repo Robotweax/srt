@@ -175,6 +175,34 @@ class ObsHarnessTests(unittest.TestCase):
             self.assertIsNone(status["receiver_exit"])
             self.assertEqual(status["capture_bytes"], 0)
 
+    def test_macos_desktop_startup_exit_reaches_the_crash_report_collector(self):
+        collector = ROOT / "tests/obs/collect_macos_failure.py"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "desktop"
+            reports = Path(directory) / "home/Library/Logs/DiagnosticReports"
+            root.mkdir()
+            reports.mkdir(parents=True)
+            child = SimpleNamespace(pid=4321, returncode=-5, poll=lambda: -5)
+            with self.assertRaisesRegex(RuntimeError, "OBS exited with -5"):
+                macos_desktop.wait_for(
+                    child, lambda: False, "visible idle OBS window",
+                    status=root / "idle-startup-endpoint-status.json",
+                )
+            status = json.loads((root / "idle-startup-endpoint-status.json").read_text())
+            self.assertEqual(status["desktop_pid"], 4321)
+            self.assertEqual(status["desktop_exit"], -5)
+            self.assertNotIn("receiver_pid", status)
+            (reports / "OBS-startup.ips").write_text('{"pid" : 4321, "procName" : "OBS"}\n')
+            (reports / "OBS-unrelated.ips").write_text('{"pid" : 43210, "procName" : "OBS"}\n')
+            subprocess.run(
+                [sys.executable, str(collector), str(root)], check=True,
+                env={**os.environ, "HOME": str(Path(directory) / "home")},
+            )
+            self.assertTrue((root / "OBS-startup.ips").is_file())
+            self.assertFalse((root / "OBS-unrelated.ips").exists())
+            inventory = json.loads((root / "failure-report-inventory.json").read_text())
+            self.assertEqual(inventory, {"endpoint_pids": [4321], "reports": ["OBS-startup.ips"]})
+
     def test_macos_desktop_window_requires_initialized_scenes(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory)
