@@ -55,22 +55,22 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | L-8 | Measured: the per-poll send buffer probes are constant-time (2 to 13 ns a pair, no growth to 8192 packets); the coordinated fanout scan is bounded and measured with the sender benchmark; see below | Re-measure if the probes change |
 | T-1 | Fixed in source: the candidate check is compiled only with the hybrid control option; see below | Hosted default and enabled builds; no behavior difference was observable before the fix |
 | T-2 | Fixed in source: activation runs only for a coordinated listener; see below | No dedicated regression; existing bonding, dispatch and coordinated suites |
-| T-3 | Open: equal endpoints/re-listen and documented contract | Reproduce native ownership/bind behavior; explicitly support or reject/document |
-| T-4 | Open: native source syscalls under record lock | Check rollback/close races before moving work outside lock |
+| T-3 | Fixed in source and documented: a source sharing the control endpoint (or its port next to a wildcard control bind) is `SRT_EINVPARAM` at listen; re-listen on a retained port documented; see below | Hosted builds |
+| T-4 | Fixed in source: the transmitter's native socket setup runs from a snapshot outside the record mutex, with re-validation before the commit; see below | Hosted builds; no deterministic lock-scope regression |
 | T-5 | Documented and pinned: a coordinated sender group reads 0, accepts 0 and rejects other values with `SRT_EINVOP`; see below | None |
 | T-6 | Fixed in source: datagrams rejected before decoding count as filtered; counters documented precisely; see below | Hosted builds |
 | T-7 | Fixed in source: a superseded multicast route is retired on the channel that published it; see below | Hosted builds |
 | T-8 | Fixed in source and documented: frozen network options report `SRT_EBOUNDSOCK`/`SRT_ECONNSOCK`; source readback states documented; see below | Hosted builds |
 | H-1 | Fixed in source: the join budget is armed by the first pump after publication; see below | Network-level evidence with a slow fallback confirmation |
 | H-2 | Fixed in source: recovery and return compare local multicast receipt with the transit-settled report; native lag test added; see below | Hosted builds; WAN evidence still absent |
-| H-3 | Open: report/query freshness configuration | Define valid interval/round/lifetime bounds and rejection tests |
-| H-4 | Open: progress/setup clock domains | End-to-end injected-clock regression without wall-clock mixing |
-| H-5 | Open: terminal response policy and one-shot fallback | Validate/document manual backstop and transient-refusal semantics |
-| H-6 | Open: receiver lock across join/thread start | Delayed join plus query-service/freshness contention regression |
-| S-1 | Open: first valid foreign-nonce OFFER consumes attempt | Test precise availability contract before considering any protocol retry change |
-| S-2 | Open: source announcement authentication timing | Document trust boundary; cryptographic transcript changes need separate compatibility review |
-| S-3 | Open: pre-auth queue starvation/overflow | Bounded adversarial queue model and explicitly chosen availability contract |
-| S-4 | Open: storage assertions/version/credential-strength documentation | Add meaningful static bounds and precise supported-version/entropy limits |
+| H-3 | Fixed in source: provisioning requires lifetime >= query spacing + round and millisecond floors; see below | Hosted hybrid builds |
+| H-4 | Fixed in source: hybrid progress arrivals and startup deadlines use the service clock; see below | Hosted hybrid builds; no injected-clock path exists through `attach_native_control` |
+| H-5 | Documented: closed control owner is terminal per connection, fallback allowance spent on transient refusals, manual backstop required; see below | None |
+| H-6 | Fixed in source: the join worker starts before the receiver and membership locks are taken; see below | Hosted hybrid builds; no deterministic lock-scope regression, see below |
+| S-1 | Documented and pinned: the first decodable OFFER with matching IDs binds the single attempt; see below | Protocol retry change only after a separate review |
+| S-2 | Documented: the ordinary proof covers key material only, the announcement steers the join first, the hybrid exchange fails closed later; see below | Transcript change only after a separate compatibility review |
+| S-3 | Documented as an availability limit (unauthenticated inputs can occupy the 16 slots until the deadline); see below | Decision pending: reserved exchange slot or enqueue-time MAC check |
+| S-4 | Fixed: `Admission` storage bound asserted, version digit asserted, credential-strength note added; see below | None |
 
 ## Harness follow-up
 
@@ -101,20 +101,33 @@ suite timing, automation and source/binary attestation findings remain open.
 
 ## Additional confirmed receive-key finding
 
-**KM-1 remains open:** old-generation DATA above the receive frontier at KM
+**KM-1 is fixed on `main`.** Pull request 388 (merge `a6459de`,
+`fix/km1-receive-key-generation`) changed the receive-side key selection in
+`src/crypto.cpp` so that old-generation DATA above the receive frontier at KM
+replacement is decrypted with the retained key, with regressions in
+`tests/test_crypto.cpp`, documentation in `docs/encryption.md` and
+`docs/limitations.md`, and a CHANGELOG entry. This branch carries that fix
+through the merge of `main` at `f2c7757`. The diagnosis below is kept as the
+record of the defect as it was found; its statements about an open defect and
+an unchanged receive implementation describe the state before pull request
+388.
+
+**KM-1 as found:** old-generation DATA above the receive frontier at KM
 replacement is routed to the replacement key. A standalone public-API diagnostic
 fails CTR/GCM without clocks/network in five configurations; four controls per
 build match and the two lagging-frontier round trips fail. Exact opaque key-ID
 traces bind wrong selection to the reported failing DATA position in all four
 native v2 captures. CTR can silently publish wrong plaintext; GCM rejects.
-The affected receive implementation is unchanged from Robotweax v0.3.2. This is
-not a GCC-only or sanitizer-only issue, and no production fix is claimed.
+The affected receive implementation was unchanged from Robotweax v0.3.2 at the
+time of the diagnosis. This is not a GCC-only or sanitizer-only issue; the
+production fix is the one named above.
 
 [Canonical diagnosis and limits](README.md#gcc-datakm-diagnosis-receive-generation-misrouting)
 and [record](records/review-gcc-km.json) preserve every diagnostic failure.
 All original 32 finding states remain; this additional blocker does not close
-L-3 or explain distinct freshness failures. Safe CTR generation/lifetime binding
-and bounded authenticated GCM selection need dedicated production regressions.
+L-3 or explain distinct freshness failures. The CTR generation/lifetime binding
+and the bounded authenticated GCM selection have their production regressions
+in `tests/test_crypto.cpp` since pull request 388.
 No payload-format guessing, widened deadline or sanitizer exemption is accepted.
 
 ## Deterministic listener-close follow-up
@@ -610,6 +623,110 @@ documented: `SRT_EINVPARAM` while unset, the configured value until listen,
 the bound endpoint after listen, `SRT_EINVSOCK` after close. Regression:
 `multicast_dispatch_independent_network_options_freeze_with_socket_state_errors`
 fails before the change at the bound-socket expectation.
+
+## Independent source socket: T-3, T-4
+
+T-3. The documentation said the control endpoint "can differ from the
+multicast source in address, port or both", which implied equality was
+allowed, while an equal endpoint failed `srt_listen` with `SRT_ESOCKFAIL`
+from the kernel's bind. Supporting equality is not an option: with
+`SO_REUSEADDR` on both sockets the kernel would hand unicast control
+datagrams to the send-only source socket, and the same holds for the control
+socket's port next to a wildcard control bind. `prepare_multicast_transmitter`
+now rejects both shapes with `SRT_EINVPARAM` before any syscall; the same
+port on a different specific address stays allowed, and the independent
+transmitter still does not inherit `SRTO_REUSEADDR`. The documentation
+states the rule and that the source port stays bound while a dispatch group
+retains the channel, so a re-listen on the same fixed port fails with
+`SRT_ESOCKFAIL` until the group releases it. Regression:
+`multicast_dispatch_independent_source_cannot_share_the_control_endpoint`
+(same endpoint, and wildcard control on the source port) fails before the
+change at the error code.
+
+T-4. `listen_socket` ran the transmitter's `socket`/`setsockopt`/`bind`/
+`getsockname` under the record mutex. It now validates and snapshots the
+options and control endpoint under the mutex, runs the native setup from the
+snapshot without it, then re-validates state and profile (including the post
+option `SRTO_MAXBW` for the coordinated profile) before committing; a state
+change in between (close, another listen, connect) fails with the state's own
+error and drops the new socket. The multicast and source options are frozen
+once bound, so the snapshot cannot go stale for them. There is no
+deterministic regression for the lock scope; the dispatch and option suites
+cover the restructured path.
+
+## Experimental hybrid control: H-3, H-4, H-5, H-6
+
+H-3. `ReceiverBridge::valid_configuration` bounded every interval on its own
+but not their relation, so a host could choose a confirmation lifetime shorter
+than one query spacing plus one round and get periodic `fresh=false` holes in
+which proof, overlap, return, membership `uc_ready` and automatic candidates
+all refuse; it also accepted microsecond query spacing that floods the
+source's bounded record gate. Startup provisioning (`valid_options`) now
+requires `confirmation_lifetime_us >= query_interval_us + round_timeout_us`
+and query and retry spacing of at least one millisecond; the component's own
+validation is unchanged so unit tests can still exercise expiry with short
+lifetimes. Regression: three new invalid cases in
+`hybrid_setup_provisioning_requires_explicit_policy_callbacks_and_bounded_configuration`,
+failing before the change at the first of them. The dispatch fixture's
+lifetime moved from 80 ms to 100 ms to satisfy the relation (query 50 ms,
+round 40 ms).
+
+H-4. DATA arrival for hybrid progress was stamped with `Clock::now()` while
+every controller compares against `NativeService::now()`; the two agree in
+production and differ under an injected test clock. The runtime now stamps
+arrivals with the attached service's clock and applies the channel's ingress
+stamp only when that clock is the monotonic one. `StartupSession` compares its
+deadlines with `native_->now()`; its `start()` keeps `monotonic_now()` for the
+caller-supplied deadline, which is in that domain by construction because
+`attach_native_control` injects no clock. For the same reason no end-to-end
+injected-clock regression exists through the public setup path; the controller
+suites with injected clocks and the dispatch suites cover the change.
+
+H-5. Documentation only, as the review asked: a closed control owner (after a
+conflicting or defective authenticated reply) is terminal for the connection
+and needs a host backstop; the automatic fallback allowance is spent on
+transient refusals and the same revision is never retried.
+
+H-6. `MembershipRecovery::pump()` held the receiver's mutex across
+`register_ingress_route` and `channel->start()` (thread creation), and
+`ReceiverBridge::work()` only tries that lock, so a slow join skipped the
+receiver's query cycles. The worker now starts before any controller lock is
+taken (a running channel without a route drops datagrams unrouted); the
+route is registered under the locks as before, and a worker start failure
+still closes the recovery. There is no deterministic regression for the lock
+scope: the slow call is thread creation inside the library with no injection
+point; the hybrid suites (117 gates) pass with the change.
+
+## Experimental hybrid control: S-1, S-2, S-3, S-4
+
+S-1. The OFFER carries only the Caller's nonce; the Listener cannot verify a
+proof before it has issued its own nonce. It therefore binds the first
+decodable OFFER that names its socket IDs and credential ID, resolves the
+credential once and answers it; a later genuine OFFER is ignored and the
+attempt fails explicitly at the proof. The connection makes one attempt
+(`hybrid_attempted_`). Documented; pinned by
+`hybrid_exchange_first_matching_offer_binds_the_single_attempt`. A protocol
+retry would change the exchange and is left to a separate review.
+
+S-2. Documentation only: the ordinary session-authentication proof covers key
+material, not the `0x7f14`/`0x7f15` records; the announced source steers the
+Caller's join and DATA filter first; the hybrid exchange binds the source into
+its key derivation and fails closed after the join. Including the CONCLUSION
+payload in the authenticated material is a transcript change for a separate
+compatibility review.
+
+S-3. Documentation states the availability limit precisely: inputs are
+authenticated when processed, so unauthenticated datagrams that pass the
+subtype filter can occupy the 16 input slots until the attempt's deadline;
+the attempt then fails explicitly. A reserved exchange slot or an enqueue-time
+MAC check would remove the limit; that is a design choice for the owner.
+
+S-4. `static_assert(sizeof(Admission) < 8 * 1024)` pins the documented
+bound next to the existing exchange, service and bridge assertions; the
+session version constants are asserted below 10 because the domain salt
+spells the version as one ASCII digit; the documentation notes that a captured
+SELECTION record is an offline guessing oracle against a low-entropy pairwise
+credential.
 
 ## Source layout change
 

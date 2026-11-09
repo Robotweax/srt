@@ -173,14 +173,19 @@ Production input: `4d59666ebaf54df57b514d1069a5172df440af51`. This batch adds
 a standalone diagnostic and review evidence; it changes no production runtime,
 crypto algorithm, wire/API, default test registration or deadline.
 
-**KM-1, confirmed additional blocker:** replacement of an Even/Odd key stores
+**Resolution:** KM-1 is fixed on `main` by pull request 388 (merge `a6459de`),
+which this branch carries since the merge of `main` at `f2c7757`; the
+regressions live in `tests/test_crypto.cpp`. The paragraphs below record the
+diagnosis as it was made, before that fix.
+
+**KM-1, confirmed additional blocker at the time:** replacement of an Even/Odd key stores
 the highest accepted receive sequence as the retired key's ceiling. Old DATA
 can still be in flight *above* that value when KM arrives. The selector then
 routes it to a key two generations newer even though the correct key is still
 retained. CTR reports success with wrong plaintext; GCM rejects authentication.
-`src/crypto.cpp` and the OpenSSL provider are byte-identical to Robotweax v0.3.2.
-This is an inherited receive implementation, not evidence of a GCC compiler bug
-or a full baseline-binary result.
+`src/crypto.cpp` and the OpenSSL provider were byte-identical to Robotweax v0.3.2
+when this was diagnosed. This was an inherited receive implementation, not
+evidence of a GCC compiler bug or a full baseline-binary result.
 
 The [clock-free standalone probe](../../../tools/diagnostics/crypto_receive_order.cpp)
 reproduces this in macOS Release and Linux GCC Release/O1/Og plus LLVM O1 sanitizer
