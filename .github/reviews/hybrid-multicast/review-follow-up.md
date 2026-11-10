@@ -1025,10 +1025,37 @@ Two changes follow, both owner-approved in direction on 2026-11-10:
   locally. The timing report prints a `default` and a `held` phase; the hosted
   Windows job is the evidence for the effect.
 
+Result on `c955a19`, run 42833218258, windows-latest, `timeBeginPeriod(1)`
+accepted:
+
+| Requested | Default period, median | Period held, median |
+|---|---|---|
+| 100 µs sleep | 13.4 ms | 1.7 ms |
+| 1 ms sleep | 13.4 ms | 1.7 ms |
+| 1 ms timed wait | 13.7 ms | 1.3 ms |
+| 2 ms sleep | 4.2 ms (maximum 16.5 ms) | 2.7 ms |
+| 10 ms sleep | 12.1 ms | 11.0 ms |
+
+All four workflows passed on that head, including the Windows packaging
+jobs with the `winmm` dependency. The hybrid control workflow now runs every
+gate on Windows as on Linux; macOS keeps the exclusion of the gates labelled
+`hybrid` and `network`.
+
+Tried and not applied: one millisecond of catch-up credit in the group
+emitter (the schedule continues from the time the previous datagram was
+allowed, bounded to the credit behind the clock). With it,
+`multicast_dispatch_native_startup_setup_waits_for_uc_before_connected_plain_ctr_gcm`
+failed once in an ordinary local hybrid run and in 6 of 80 runs of its gate
+under CPU load, against 0 of 40 without the credit under the same load. Each
+inspected failure was send 56 of 80 returning `SRT_ECONNLOST` after the only
+member was detached with reason `history_full`: the source, allowed to catch
+up, outran the member's unicast copy by two key generations. The emitter's
+rule of no catch-up is therefore load-bearing for the balance between source
+and members, and the credit was dropped. The patch is kept outside the
+repository.
+
 Still open: the contract itself. A detached member stays connected without
-key announcements and without a signal. And the 17 gates labelled `hybrid`
-and `network` are still excluded on hosted Windows and macOS; whether Windows
-can run them with the finer period is not yet tried.
+key announcements and without a signal.
 
 ## Remaining harness and evidence work
 
