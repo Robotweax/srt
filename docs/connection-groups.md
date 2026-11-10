@@ -629,14 +629,16 @@ Repeats, pacing and readiness:
   share loss, for example behind one lossy link of the multicast tree. No
   single value fits every group, for three reasons. A shared repair reaches
   every receiver, also those that did not lose the packet, which discard it
-  as a duplicate. The first *n*−1 requesters are always repaired by unicast,
-  so a value above the number of receivers that share a loss never takes
-  effect. And loss that is private to one receiver triggers shared repairs
-  more often as the group grows: with independent 1% loss per receiver, about
-  15% of all packets would be repeated to the group at *n* = 1 and 1.1% at
-  *n* = 2 with 16 receivers, and 63% and 26% with 100 receivers. These
-  figures are binomial arithmetic, not measurements. A receiver whose first
-  request was suppressed and which also loses the shared repair needs a second
+  as a duplicate. The first *n*−1 requesters are initially scheduled for
+  unicast repair, so a value above the number of receivers that share a loss
+  never takes effect. And independent receiver losses reach the threshold
+  more often as the group grows: with independent 1% loss per receiver, the
+  probability that at least *n* receivers lose an original packet is about
+  15% at *n* = 1 and 1.1% at *n* = 2 with 16 receivers, and 63% and 26%
+  with 100 receivers. These figures are binomial arithmetic, not measured
+  multicast repeat rates; actual repeats also depend on requests arriving
+  within the tally window. A receiver whose first request was suppressed and
+  which also loses the shared repair needs a second
   NAK before it is repaired by unicast, which costs one more loss round within
   its latency. With a positive group `SRTO_MAXBW` the aggregate limit below
   already bounds unicast repeats under shared loss, so the threshold saves
