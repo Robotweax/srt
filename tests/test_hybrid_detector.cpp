@@ -450,6 +450,20 @@ TEST(hybrid_detector_policy_revision_change_discards_old_recovery_evidence)
     REQUIRE_EQ(a.recovery_data_advances, 0U);
     REQUIRE(!a.return_candidate);
 }
+TEST(hybrid_detector_report_that_carries_a_new_policy_keeps_its_mark)
+{
+    Fixture f;
+    f.mode(hd::Mode::unicast);
+    f.observe();
+    f.advance(110, 1);
+    f.input.now_us = 120;
+    f.mode(hd::Mode::unicast, 2);
+    f.report(2);
+    f.receive(2);
+    REQUIRE_EQ(f.observe().settled_multicast_next, 0U);
+    // No further report: the one that carried the new policy settles alone.
+    REQUIRE_EQ(f.tick(130).settled_multicast_next, 1002U);
+}
 
 TEST(
     hybrid_source_error_detector_accepts_failure_after_end_and_suppresses_transitions)

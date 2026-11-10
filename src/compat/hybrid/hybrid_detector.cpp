@@ -163,7 +163,25 @@ void PathDetector::observe(const Input& input) noexcept
         report_ && m.next_position > report_->next_position;
     const bool mc_received = data_ && d.multicast.next > data_->multicast.next;
     const bool all_received = data_ && d.all.next > data_->all.next;
-    if (!report_ || m.serial != report_->serial) {
+    const bool new_report = !report_ || m.serial != report_->serial;
+    report_ = m;
+    last_report_received_ = r.first_received_us;
+    data_ = d;
+    if (!input.policy.confirmed || now >= input.policy.expires_at_us
+        || m.revision != input.policy.revision || m.mode != input.policy.mode) {
+        unknown(Reason::policy, now);
+        return;
+    }
+    const bool changed_policy = policy_.confirmed
+        && (input.policy.revision != policy_.revision
+            || input.policy.mode != policy_.mode);
+    policy_ = input.policy;
+    if (sample_gap || expired || changed_policy)
+        reset_evidence();
+    // After the resets above, so that the report which carries a new policy
+    // or ends a sampling gap keeps its mark. A report whose mark an earlier
+    // reset removed is marked again with its original receipt time.
+    if (new_report || !report_mark_count_) {
         // Marks are kept at least one fifteenth of the transit bound apart,
         // so sixteen of them always span it: when the oldest is dropped, the
         // next one has already settled. A report inside that spacing raises
@@ -187,20 +205,6 @@ void PathDetector::observe(const Input& input) noexcept
                 .multicast_next = m.multicast_next};
         }
     }
-    report_ = m;
-    last_report_received_ = r.first_received_us;
-    data_ = d;
-    if (!input.policy.confirmed || now >= input.policy.expires_at_us
-        || m.revision != input.policy.revision || m.mode != input.policy.mode) {
-        unknown(Reason::policy, now);
-        return;
-    }
-    const bool changed_policy = policy_.confirmed
-        && (input.policy.revision != policy_.revision
-            || input.policy.mode != policy_.mode);
-    policy_ = input.policy;
-    if (sample_gap || expired || changed_policy)
-        reset_evidence();
     state_ = {.state = State::observing,
         .observed_at_us = now,
         .valid_until_us =
