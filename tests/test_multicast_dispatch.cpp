@@ -424,6 +424,54 @@ constexpr const char group_passphrase[] = "sixteen-char-key";
     return "dispatch payload " + std::to_string(index);
 }
 
+// Evidence for a delivery that is not the expected message. Readable text of
+// another index means a message was skipped or reordered; bytes that are not
+// a payload of this test mean the packet was decrypted with the wrong key.
+// The receive counters say whether the receiver dropped or failed to decrypt.
+void report_unexpected_message(SRTSOCKET receiver, int index, int first,
+    int count, int received, const std::array<char, 256>& buffer,
+    const SRT_MSGCTRL& control)
+{
+    const int error = received == SRT_ERROR ? srt_getlasterror(nullptr) : 0;
+    const std::size_t shown = received > 0
+        ? std::min<std::size_t>(static_cast<std::size_t>(received), 48U)
+        : 0U;
+    std::string text, hex;
+    for (std::size_t offset = 0; offset < shown; ++offset) {
+        const auto byte = static_cast<unsigned char>(buffer[offset]);
+        text.push_back(
+            byte >= 0x20U && byte < 0x7fU ? static_cast<char>(byte) : '.');
+        constexpr char digits[] = "0123456789abcdef";
+        hex.push_back(digits[byte >> 4U]);
+        hex.push_back(digits[byte & 0x0fU]);
+    }
+    std::fprintf(stderr,
+        "[DISPATCH_UNEXPECTED_MESSAGE] receiver=%d expected_index=%d "
+        "batch_first=%d batch_count=%d received=%d error=%d pktseq=%d "
+        "msgno=%d text=\"%s\" hex=%s\n",
+        static_cast<int>(receiver), index, first, count, received, error,
+        static_cast<int>(control.pktseq), static_cast<int>(control.msgno),
+        text.c_str(), hex.c_str());
+    SRT_TRACEBSTATS statistics {};
+    if (srt_bstats(receiver, &statistics, 0) == 0)
+        std::fprintf(stderr,
+            "[DISPATCH_UNEXPECTED_MESSAGE] receiver=%d unique=%lld "
+            "received=%lld loss=%d dropped=%d undecrypted=%d "
+            "retransmitted=%d belated=%lld\n",
+            static_cast<int>(receiver),
+            static_cast<long long>(statistics.pktRecvUniqueTotal),
+            static_cast<long long>(statistics.pktRecvTotal),
+            statistics.pktRcvLossTotal, statistics.pktRcvDropTotal,
+            statistics.pktRcvUndecryptTotal, statistics.pktRcvRetrans,
+            static_cast<long long>(statistics.pktRcvBelated));
+    else
+        std::fprintf(stderr,
+            "[DISPATCH_UNEXPECTED_MESSAGE] receiver=%d statistics "
+            "unavailable error=%d\n",
+            static_cast<int>(receiver), srt_getlasterror(nullptr));
+    std::fflush(stderr);
+}
+
 void expect_messages(SRTSOCKET receiver, int first, int count)
 {
     std::array<char, 256> buffer {};
@@ -432,6 +480,10 @@ void expect_messages(SRTSOCKET receiver, int first, int count)
         const std::string expected = message(index);
         const int received =
             srt_recvmsg2(receiver, buffer.data(), buffer.size(), &control);
+        if (received != static_cast<int>(expected.size())
+            || !std::equal(expected.begin(), expected.end(), buffer.begin()))
+            report_unexpected_message(
+                receiver, index, first, count, received, buffer, control);
         REQUIRE_EQ(received, static_cast<int>(expected.size()));
         REQUIRE(std::equal(expected.begin(), expected.end(), buffer.begin()));
     }
