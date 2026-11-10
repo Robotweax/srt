@@ -428,6 +428,20 @@ constexpr const char group_passphrase[] = "sixteen-char-key";
 // another index means a message was skipped or reordered; bytes that are not
 // a payload of this test mean the packet was decrypted with the wrong key.
 // The receive counters say whether the receiver dropped or failed to decrypt.
+// Sender group of the running stream scenario, for the report below.
+SRTSOCKET diagnostic_sender = SRT_INVALID_SOCK;
+struct DiagnosticSender {
+    explicit DiagnosticSender(SRTSOCKET sender)
+    {
+        diagnostic_sender = sender;
+    }
+    ~DiagnosticSender()
+    {
+        diagnostic_sender = SRT_INVALID_SOCK;
+    }
+    DiagnosticSender(const DiagnosticSender&) = delete;
+    DiagnosticSender& operator=(const DiagnosticSender&) = delete;
+};
 void report_unexpected_message(SRTSOCKET receiver, int index, int first,
     int count, int received, const std::array<char, 256>& buffer,
     const SRT_MSGCTRL& control)
@@ -469,6 +483,53 @@ void report_unexpected_message(SRTSOCKET receiver, int index, int first,
             "[DISPATCH_UNEXPECTED_MESSAGE] receiver=%d statistics "
             "unavailable error=%d\n",
             static_cast<int>(receiver), srt_getlasterror(nullptr));
+    // The group statistics above carry deliveries only. The member sockets
+    // count what arrived and could not be decrypted, which creates no loss,
+    // and the sender coordinator says whether it detached a member, which
+    // ends that member's key announcements.
+    std::vector<SRTSOCKET> members;
+    if (const auto group = GroupRegistry::instance().find(receiver)) {
+        std::lock_guard lock(group->mutex);
+        for (const auto& member : group->members)
+            members.push_back(member.public_data.id);
+    } else
+        members.push_back(receiver);
+    for (const SRTSOCKET member : members) {
+        std::shared_ptr<robotweax::srt::compat::ConnectionRuntime> runtime;
+        if (const auto record = SocketRegistry::instance().find(member)) {
+            std::lock_guard lock(record->mutex);
+            runtime = record->runtime;
+        }
+        if (!runtime)
+            continue;
+        const auto total = runtime->statistics(false, true).total;
+        std::fprintf(stderr,
+            "[DISPATCH_UNEXPECTED_MESSAGE] receiver=%d member=%d "
+            "member_unique=%llu member_undecryptable=%llu\n",
+            static_cast<int>(receiver), static_cast<int>(member),
+            static_cast<unsigned long long>(total.received_unique.packets),
+            static_cast<unsigned long long>(
+                total.receiver_undecryptable.packets));
+    }
+    std::shared_ptr<robotweax::srt::compat::GroupSendCoordinator> coordinator;
+    if (const auto group = GroupRegistry::instance().find(diagnostic_sender)) {
+        std::lock_guard lock(group->mutex);
+        if (group->dispatch)
+            coordinator = group->dispatch->coordinator;
+    }
+    if (coordinator) {
+        const auto state = coordinator->snapshot();
+        std::fprintf(stderr,
+            "[DISPATCH_UNEXPECTED_MESSAGE] sender=%d active_members=%zu "
+            "detached_members=%zu accepted_frames=%llu busy_sends=%llu "
+            "gated_sends=%llu full_sends=%llu\n",
+            static_cast<int>(diagnostic_sender), state.active_members,
+            state.detached_members,
+            static_cast<unsigned long long>(state.accepted_frames),
+            static_cast<unsigned long long>(state.busy_sends),
+            static_cast<unsigned long long>(state.gated_sends),
+            static_cast<unsigned long long>(state.full_sends));
+    }
     std::fflush(stderr);
 }
 
@@ -856,6 +917,7 @@ void run_dispatch_stream(const StreamScenario& scenario)
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
 
     // One send, three deliveries, in order.
+    const DiagnosticSender diagnostic {sender};
     const int first_batch = scenario.first_batch;
     for (int index = 0; index < first_batch; ++index) {
         const std::string payload = message(index);
