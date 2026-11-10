@@ -623,7 +623,24 @@ Repeats, pacing and readiness:
   unicast, including when the multicast repair was lost. A transient local
   multicast repair failure falls back to the member's unicast retry path.
   After a multicast attempt, window expiry restores unicast until the bounded
-  tally entry is evicted; failed repairs do not restart a multicast retry loop;
+  tally entry is evicted; failed repairs do not restart a multicast retry loop.
+
+  Choosing *n*: the default 0 is the recommended setting unless receivers
+  share loss, for example behind one lossy link of the multicast tree. No
+  single value fits every group, for three reasons. A shared repair reaches
+  every receiver, also those that did not lose the packet, which discard it
+  as a duplicate. The first *n*−1 requesters are always repaired by unicast,
+  so a value above the number of receivers that share a loss never takes
+  effect. And loss that is private to one receiver triggers shared repairs
+  more often as the group grows: with independent 1% loss per receiver, about
+  15% of all packets would be repeated to the group at *n* = 1 and 1.1% at
+  *n* = 2 with 16 receivers, and 63% and 26% with 100 receivers. These
+  figures are binomial arithmetic, not measurements. A receiver whose first
+  request was suppressed and which also loses the shared repair needs a second
+  NAK before it is repaired by unicast, which costs one more loss round within
+  its latency. With a positive group `SRTO_MAXBW` the aggregate limit below
+  already bounds unicast repeats under shared loss, so the threshold saves
+  repair traffic and is not needed as protection;
 - By default, `SRTO_MAXBW` set on the sender group reaches every member, so it caps the
   transmitting member's pacer and with it the multicast path, as well as each
   member's unicast repeats. A positive group value also limits the unicast
