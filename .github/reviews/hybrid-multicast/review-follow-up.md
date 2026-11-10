@@ -839,6 +839,46 @@ are compiled in every build, and the canonical DATA and sending work remains in
 directory are not edited. Where they name `src/compat/hybrid_*`, read
 `src/compat/hybrid/hybrid_*` for any revision after this change.
 
+## Hybrid control on hosted Windows
+
+The Release job of `experimental-hybrid-control.yml` runs on `windows-latest`
+since `c93c937` (MSVC, the image's OpenSSL). The configuration compiles and
+links there. The first hosted run (42774111162
+on `51b4946`) ran every gate; both attempts ended with 84 of 93 tests passed.
+All failures are gates labelled both `hybrid` and `network`; eight of those
+17 gates passed in each attempt, and the failing nine were not the same nine
+(`robotweax_srt_hybrid_key_multi_receiver_tests` failed only in the first
+attempt, `robotweax_srt_multicast_source_error_tests` only in the second).
+
+Measured in the failing load gate: the sender reached 85 and 89 packets per
+second against a target of 100 in the first attempt, and 79 against 100 and 96
+against 250 with 23 and 91 pacer resets in the second, where the gate then
+failed its own offered-rate check (`load offered-rate row=1 actual_pps=96
+target_pps=250`). The other failures are deadline or freshness expectations of
+the same cases (for example `next < 96`, `expected state.result ==
+confirmed`, `request_overlap() == accepted`, one late DATA drop per soak
+profile).
+
+Decision, applied in the workflow: Windows is treated like macOS. It compiles
+the whole configuration and runs every gate except those labelled both
+`hybrid` and `network`; Linux remains the hosted evidence for the excluded
+gates. No test, deadline or assertion changed.
+
+Not established: why the Windows sender falls behind. Neither the library nor
+the tests request a finer Windows timer resolution, so sleeps and timed waits
+of a few milliseconds may be rounded up to the scheduler tick; that would
+explain the rate and the short-deadline failures, but it is a hypothesis
+without a measurement. If it holds, it also bounds how tightly the
+experimental hybrid control timers can be configured on Windows outside the
+tests. The hybrid transport is therefore not qualified on Windows by hosted
+evidence; BL-5's remaining column already says so.
+
+Same push, unrelated job: `Mbed TLS 3.6 (macos-latest)` in CI run 42774111257
+failed its first attempt in `interop/run_mbedtls_peers.py` (`crypto_session_peer
+caller ... 24 ctr` timed out after 40 seconds, after the preceding pairs had
+passed) and passed on the second attempt. Recorded with the intermittent
+hosted failures above; one occurrence.
+
 ## Remaining harness and evidence work
 
 - Use normal failure reports and membership/control diagnostics to investigate
