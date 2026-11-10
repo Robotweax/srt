@@ -41,6 +41,31 @@ class MulticastQualificationTests(unittest.TestCase):
             with self.subTest(transcript=transcript), self.assertRaises(ValueError):
                 qualification.validate_native(transcript)
 
+    def test_tolerates_only_recorded_environment_skip_of_non_required_case(self):
+        names = sorted(qualification.REQUIRED)
+        skipped, reason = next(iter(qualification.ENVIRONMENT_SKIPS.items()))
+        self.assertFalse(set(qualification.ENVIRONMENT_SKIPS) & qualification.REQUIRED)
+        transcript = (self.transcript(names) .replace(f"{len(names)}/{len(names)} tests passed",
+                      f"[RUN] {skipped}\n[SKIP] {skipped}: {reason}\n"
+                      f"{len(names)}/{len(names) + 1} tests passed (1 skipped)"))
+        self.assertEqual(set(qualification.validate_native(
+            transcript, tolerated=qualification.ENVIRONMENT_SKIPS)), qualification.REQUIRED)
+        self.assertEqual(qualification.environment_skips(
+            transcript, qualification.ENVIRONMENT_SKIPS), {skipped: reason})
+        with self.assertRaises(ValueError):
+            qualification.validate_native(transcript)
+        for broken in [transcript.replace(reason, "different reason"),
+                       transcript.replace("(1 skipped)", ""),
+                       transcript.replace(f"[RUN] {skipped}\n", ""),
+                       transcript.replace(f"[SKIP] {skipped}: {reason}", f"[SKIP] {names[0]}: {reason}")]:
+            with self.subTest(transcript=broken), self.assertRaises(ValueError):
+                qualification.validate_native(broken, tolerated=qualification.ENVIRONMENT_SKIPS)
+        with self.assertRaises(ValueError):
+            qualification.validate_native(
+                transcript.replace(f"[SKIP] {skipped}: {reason}", f"[SKIP] {names[0]}: {reason}")
+                .replace(f"[RUN] {skipped}\n", ""),
+                tolerated={**qualification.ENVIRONMENT_SKIPS, names[0]: reason})
+
     def test_rejects_failure_or_invalid_summary(self):
         count = len(qualification.REQUIRED)
         for transcript in [self.transcript()+"[FAIL] failed\n", self.transcript()+"20/20 tests passed\n",

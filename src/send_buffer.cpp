@@ -1,8 +1,10 @@
 #include "robotweax/srt/send_buffer.hpp"
 
 #include "sender_drop_trace.hpp"
+#include "robotweax/srt/connection_group.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <stdexcept>
 #include <limits>
 #include <memory>
@@ -125,6 +127,10 @@ Error SendBuffer::enqueue_message(
         slot.dropped = false;
         slot.sent = false;
         slot.submitted = false;
+        slot.external_original = false;
+        slot.unicast_pending = false;
+        slot.unicast_selected = false;
+        slot.multicast_pending = false;
         slot.has_retransmission_send_time = false;
         slot.metadata.live.last_retransmission_send_microseconds = 0;
         slot.retransmission_queued = false;
@@ -137,6 +143,7 @@ Error SendBuffer::enqueue_message(
         last_buffered_enqueue_microseconds_ = enqueue_microseconds;
         ++sequence_span_;
         ++occupied_count_;
+        ++ordinary_unsent_count_;
         buffered_plaintext_bytes_ += payload_size;
         if (expiration_microseconds != 0U) {
             if (expiring_packet_count_ == 0U
@@ -146,6 +153,85 @@ Error SendBuffer::enqueue_message(
             }
             ++expiring_packet_count_;
         }
+    }
+    return Error::none;
+}
+
+Error SendBuffer::preflight_group_original(SequenceNumber sequence,
+    std::size_t plaintext_size, CryptoMode mode) const noexcept
+{
+    const auto* suite = crypto_suite_for_mode(mode);
+    if ((mode != CryptoMode::automatic && suite == nullptr)
+        || sequence != next_sequence() || plaintext_size == 0U
+        || plaintext_size > maximum_payload_size_
+        || (suite
+            && plaintext_size
+                > maximum_data_payload_size - suite->authentication_tag_size)
+        || next_sequence_position_ == std::numeric_limits<std::uint64_t>::max()
+        || ordinary_unsent_count_ != 0U)
+        return Error::invalid_state;
+    return available() == 0U ? Error::buffer_too_small : Error::none;
+}
+
+Error SendBuffer::import_group_original(const DataHeader& header,
+    std::span<const std::byte> wire_payload, std::size_t plaintext_size,
+    CryptoMode mode, std::uint64_t enqueue_microseconds,
+    std::uint64_t expiration_microseconds,
+    GroupOriginalDelivery delivery) noexcept
+{
+    if (static_cast<unsigned>(delivery)
+            > static_cast<unsigned>(GroupOriginalDelivery::overlap)
+        || header.retransmitted || header.message_number == 0U
+        || header.message_number > 0x03ff'ffffU
+        || static_cast<unsigned>(header.boundary) > 3U
+        || (header.destination_socket_id & group_handle_mask) == 0U
+        || (mode == CryptoMode::automatic
+                ? header.encryption_key != EncryptionKey::none
+                : (header.encryption_key != EncryptionKey::even
+                      && header.encryption_key != EncryptionKey::odd)))
+        return Error::invalid_state;
+    const auto checked =
+        preflight_group_original(header.sequence, plaintext_size, mode);
+    if (checked != Error::none)
+        return checked;
+    const auto* suite = crypto_suite_for_mode(mode);
+    const auto tag_size = suite ? suite->authentication_tag_size : 0U;
+    if (wire_payload.size() != plaintext_size + tag_size)
+        return Error::invalid_payload_size;
+    auto& slot = slots_[(head_ + sequence_span_) % capacity()];
+    slot = Slot {};
+    slot.header = header;
+    slot.sequence_position = next_sequence_position_++;
+    slot.payload_index = payloads_.acquire(wire_payload);
+    slot.payload_size = static_cast<std::uint16_t>(wire_payload.size());
+    slot.plaintext_size = static_cast<std::uint16_t>(plaintext_size);
+    slot.protection_mode = mode;
+    slot.occupied = true;
+    // The group owns immutable bytes on both paths. Multicast-only slots skip
+    // member selection; neither path authorizes ACKs before UDP submission.
+    slot.sent = delivery == GroupOriginalDelivery::multicast;
+    slot.external_original = true;
+    slot.unicast_pending = delivery != GroupOriginalDelivery::multicast;
+    slot.multicast_pending = delivery != GroupOriginalDelivery::unicast;
+    slot.enqueue_microseconds = enqueue_microseconds;
+    slot.metadata.live.expiration_microseconds = expiration_microseconds;
+    if (occupied_count_ == 0U)
+        first_buffered_enqueue_microseconds_ = enqueue_microseconds;
+    last_buffered_enqueue_microseconds_ = enqueue_microseconds;
+    ++sequence_span_;
+    if (slot.unicast_pending)
+        ++pending_group_unicast_count_;
+    else if (next_unsent_offset_ == sequence_span_ - 1U)
+        next_unsent_offset_ = sequence_span_;
+    ++occupied_count_;
+    packets_in_flight_ += static_cast<std::size_t>(slot.sent);
+    ++external_unsubmitted_count_;
+    buffered_plaintext_bytes_ += plaintext_size;
+    if (expiration_microseconds != 0U) {
+        if (expiring_packet_count_ == 0U
+            || expiration_microseconds < earliest_expiration_microseconds_)
+            earliest_expiration_microseconds_ = expiration_microseconds;
+        ++expiring_packet_count_;
     }
     return Error::none;
 }
@@ -195,6 +281,12 @@ void SendBuffer::discard_slot(
 {
     const bool was_dropped = slot.dropped;
     if (slot.occupied) {
+        if (!slot.external_original && !slot.sent)
+            --ordinary_unsent_count_;
+        if (slot.unicast_pending || slot.unicast_selected)
+            --pending_group_unicast_count_;
+        if (slot.external_original && !slot.submitted)
+            --external_unsubmitted_count_;
         payloads_.release(slot.payload_index);
         if (slot.sent) {
             --packets_in_flight_;
@@ -229,6 +321,9 @@ void SendBuffer::discard_slot(
     slot.drop_request_queued = false;
     slot.sent = false;
     slot.submitted = false;
+    slot.external_original = false;
+    slot.unicast_pending = slot.unicast_selected = false;
+    slot.multicast_pending = false;
     slot.retransmission_queued = false;
     slot.has_retransmission_send_time = false;
     if (retain_drop_marker) {
@@ -378,6 +473,8 @@ bool SendBuffer::queue_retransmission(SequenceNumber sequence) noexcept
         return false;
     }
     auto* slot = &stored;
+    if (slot->external_original && !slot->submitted)
+        return false;
     if (!slot->sent || slot->retransmission_queued) {
         return true;
     }
@@ -399,10 +496,12 @@ std::optional<OutboundPacket> SendBuffer::peek_new_packet() const noexcept
 {
     for (auto offset = next_unsent_offset_; offset < sequence_span_; ++offset) {
         const auto& slot = slots_[(head_ + offset) % capacity()];
-        if (slot.occupied && !slot.sent) {
+        if (slot.occupied && (!slot.sent || slot.unicast_pending)) {
             return OutboundPacket {.header = slot.header,
                 .payload = payloads_.get(slot.payload_index),
-                .sequence_position = slot.sequence_position};
+                .sequence_position = slot.sequence_position,
+                .canonical_group = slot.external_original,
+                .plaintext_size = slot.plaintext_size};
         }
     }
     return std::nullopt;
@@ -429,21 +528,32 @@ std::optional<OutboundPacket> SendBuffer::next_packet(
             .header = header,
             .payload = payloads_.get(slot->payload_index),
             .sequence_position = slot->sequence_position,
+            .canonical_group = slot->external_original,
+            .plaintext_size = slot->plaintext_size,
         };
     }
 
     while (next_unsent_offset_ < sequence_span_) {
         auto& slot = slots_[(head_ + next_unsent_offset_) % capacity()];
         ++next_unsent_offset_;
-        if (slot.occupied && !slot.sent) {
+        if (slot.occupied && (!slot.sent || slot.unicast_pending)) {
+            if (!slot.sent)
+                ++packets_in_flight_;
             slot.sent = true;
-            slot.submitted = !defer_retransmission_commit;
-            slot.first_send_microseconds = now_microseconds;
-            ++packets_in_flight_;
+            if (slot.external_original) {
+                slot.unicast_pending = false;
+                slot.unicast_selected = true;
+            } else {
+                --ordinary_unsent_count_;
+                slot.submitted = !defer_retransmission_commit;
+                slot.first_send_microseconds = now_microseconds;
+            }
             return OutboundPacket {
                 .header = slot.header,
                 .payload = payloads_.get(slot.payload_index),
                 .sequence_position = slot.sequence_position,
+                .canonical_group = slot.external_original,
+                .plaintext_size = slot.plaintext_size,
             };
         }
     }
@@ -459,7 +569,9 @@ std::optional<OutboundPacket> SendBuffer::peek_retransmission_packet() noexcept
             header.retransmitted = true;
             return OutboundPacket {.header = header,
                 .payload = payloads_.get(slot->payload_index),
-                .sequence_position = slot->sequence_position};
+                .sequence_position = slot->sequence_position,
+                .canonical_group = slot->external_original,
+                .plaintext_size = slot->plaintext_size};
         }
         retransmission_head_ = (retransmission_head_ + 1U) % capacity();
         --retransmission_size_;
@@ -544,8 +656,144 @@ bool SendBuffer::has_pending_retransmission() noexcept
 
 void SendBuffer::note_packet_submitted(SequenceNumber sequence) noexcept
 {
-    if (auto* slot = find(sequence); slot != nullptr && slot->sent)
+    if (auto* slot = find(sequence);
+        slot != nullptr && slot->sent && !slot->external_original) {
         slot->submitted = true;
+    }
+}
+
+std::optional<SendBuffer::GroupOriginalSubmission>
+SendBuffer::group_original_submission(SequenceNumber sequence) const noexcept
+{
+    const auto offset = sequence.distance_from(first_sequence_);
+    if (offset < 0 || static_cast<std::size_t>(offset) >= sequence_span_)
+        return std::nullopt;
+    const auto& slot =
+        slots_[(head_ + static_cast<std::size_t>(offset)) % capacity()];
+    if (!slot.occupied || !slot.external_original)
+        return std::nullopt;
+    return GroupOriginalSubmission {sequence, slot.sequence_position};
+}
+
+bool SendBuffer::note_group_original_submitted(
+    GroupOriginalSubmission submission, std::uint64_t now_microseconds) noexcept
+{
+    if (auto* slot = find(submission.sequence); slot != nullptr
+        && slot->external_original
+        && slot->sequence_position == submission.sequence_position
+        && slot->multicast_pending) {
+        slot->multicast_pending = false;
+        record_group_submission(*slot, now_microseconds);
+        return true;
+    }
+    return false;
+}
+
+void SendBuffer::record_group_submission(
+    Slot& slot, std::uint64_t now_microseconds) noexcept
+{
+    // The first of the two delivery paths authorizes the original and starts
+    // its sender-drop clock. The other path's later report leaves both alone.
+    if (slot.submitted)
+        return;
+    if (!slot.sent) {
+        slot.sent = true;
+        ++packets_in_flight_;
+    }
+    slot.first_send_microseconds = now_microseconds;
+    slot.submitted = true;
+    --external_unsubmitted_count_;
+}
+
+bool SendBuffer::note_group_unicast_submitted(
+    GroupOriginalSubmission token, std::uint64_t now) noexcept
+{
+    if (auto* slot = find(token.sequence); slot && slot->external_original
+        && slot->sequence_position == token.sequence_position
+        && slot->unicast_selected) {
+        slot->unicast_selected = false;
+        --pending_group_unicast_count_;
+        record_group_submission(*slot, now);
+        return true;
+    }
+    return false;
+}
+
+std::size_t SendBuffer::new_packet_flow_count() const noexcept
+{
+    const auto next = peek_new_packet();
+    return next && next->canonical_group
+        ? static_cast<std::size_t>(
+              next->header.sequence.distance_from(first_sequence_))
+        : packets_in_flight_;
+}
+
+std::optional<OutboundPacket>
+SendBuffer::first_pending_group_unicast() const noexcept
+{
+    if (!pending_group_unicast_count_)
+        return {};
+    for (std::size_t offset = 0; offset < sequence_span_; ++offset) {
+        const auto& slot = slots_[(head_ + offset) % capacity()];
+        if (slot.occupied && (slot.unicast_pending || slot.unicast_selected))
+            return OutboundPacket {.header = slot.header,
+                .payload = payloads_.get(slot.payload_index),
+                .sequence_position = slot.sequence_position,
+                .canonical_group = true,
+                .plaintext_size = slot.plaintext_size};
+    }
+    return {};
+}
+
+SendBuffer::GroupRecovery SendBuffer::group_recovery(
+    SequenceNumber next, std::size_t limit) const noexcept
+{
+    if (next != next_sequence())
+        return {.error = Error::invalid_state};
+    if (sequence_span_ > limit)
+        return {.error = Error::buffer_too_small};
+    GroupRecovery result;
+    for (std::size_t offset = 0; offset < sequence_span_; ++offset) {
+        const auto& slot = slots_[(head_ + offset) % capacity()];
+        if (!slot.occupied || !slot.external_original)
+            return {.error = Error::invalid_state};
+        const auto expiration = slot.metadata.live.expiration_microseconds;
+        if (expiration
+            && (!result.earliest_expiration_microseconds
+                || expiration < result.earliest_expiration_microseconds))
+            result.earliest_expiration_microseconds = expiration;
+        if (slot.unicast_pending || slot.unicast_selected)
+            continue;
+        if (slot.submitted)
+            result.repairs +=
+                static_cast<std::size_t>(!slot.retransmission_queued);
+        else
+            ++result.originals;
+    }
+    return result;
+}
+
+SendBuffer::GroupRecovery SendBuffer::recover_group_prefix(
+    SequenceNumber next, std::size_t limit) noexcept
+{
+    const auto result = group_recovery(next, limit);
+    if (result.error != Error::none)
+        return result;
+    for (std::size_t offset = 0; offset < sequence_span_; ++offset) {
+        auto& slot = slots_[(head_ + offset) % capacity()];
+        if (slot.unicast_pending || slot.unicast_selected)
+            continue;
+        if (slot.submitted) {
+            const auto queued = queue_retransmission(slot.header.sequence);
+            assert(queued);
+            (void)queued;
+        } else {
+            slot.unicast_pending = true;
+            ++pending_group_unicast_count_;
+            next_unsent_offset_ = std::min(next_unsent_offset_, offset);
+        }
+    }
+    return result;
 }
 
 Error SendBuffer::acknowledge_submitted_before(SequenceNumber sequence) noexcept
@@ -557,15 +805,21 @@ Error SendBuffer::acknowledge_submitted_before(SequenceNumber sequence) noexcept
     if (static_cast<std::size_t>(signed_count) > sequence_span_) {
         return Error::invalid_control_payload;
     }
-    const auto count = static_cast<std::size_t>(signed_count);
+    auto count = static_cast<std::size_t>(signed_count);
     // Validate the whole prefix before retiring any data. Dropped messages
     // remain valid cumulative ACK progress, even if never transmitted.
     for (std::size_t index = 0; index < count; ++index) {
         const auto& slot = slots_[(head_ + index) % capacity()];
-        if (slot.occupied && !slot.submitted)
+        if (!slot.occupied || slot.submitted)
+            continue;
+        if (!slot.external_original)
             return Error::invalid_control_payload;
+        // The group has not reported this original's UDP submission yet.
+        count = index;
+        break;
     }
-    return acknowledge_before(sequence);
+    return acknowledge_before(
+        first_sequence_.advanced(static_cast<std::uint32_t>(count)));
 }
 
 Error SendBuffer::acknowledge_before(SequenceNumber sequence) noexcept
@@ -592,6 +846,19 @@ Error SendBuffer::acknowledge_before(SequenceNumber sequence) noexcept
     return Error::none;
 }
 
+std::optional<SequenceNumber>
+SendBuffer::first_unsubmitted_group_original() const noexcept
+{
+    if (external_unsubmitted_count_ == 0U)
+        return std::nullopt;
+    for (std::size_t offset = 0; offset < sequence_span_; ++offset) {
+        const auto& slot = slots_[(head_ + offset) % capacity()];
+        if (slot.occupied && slot.external_original && !slot.submitted)
+            return first_sequence_.advanced(static_cast<std::uint32_t>(offset));
+    }
+    return std::nullopt;
+}
+
 std::size_t SendBuffer::dropped_prefix(std::size_t end) const noexcept
 {
     std::size_t result = 0;
@@ -610,6 +877,18 @@ Error SendBuffer::validate_retransmission_range(
     if (signed_count < 0 || first_offset < 0 || last_offset < first_offset
         || static_cast<std::size_t>(last_offset) >= sequence_span_) {
         return Error::invalid_control_payload;
+    }
+
+    if (external_unsubmitted_count_ != 0U) {
+        // An external original bypasses member selection, but acceptance is
+        // not evidence that it reached UDP. Preserve the existing fast path
+        // for ordinary send buffers and fully submitted group histories.
+        for (auto offset = static_cast<std::size_t>(first_offset);
+            offset <= static_cast<std::size_t>(last_offset); ++offset) {
+            const auto& slot = slots_[(head_ + offset) % capacity()];
+            if (slot.occupied && slot.external_original && !slot.submitted)
+                return Error::invalid_control_payload;
+        }
     }
 
     // Original DATA is emitted in order. Everything below the cursor is
@@ -697,7 +976,8 @@ bool SendBuffer::request_retransmission_of_last_sent() noexcept
 {
     for (std::size_t offset = sequence_span_; offset > 0U; --offset) {
         const auto& slot = slots_[(head_ + offset - 1U) % capacity()];
-        if (slot.occupied && slot.sent && !slot.dropped) {
+        if (slot.occupied && slot.sent && !slot.dropped
+            && (!slot.external_original || slot.submitted)) {
             return queue_retransmission(slot.header.sequence);
         }
     }
@@ -710,6 +990,7 @@ std::size_t SendBuffer::request_retransmission_of_all_sent() noexcept
     for (std::size_t offset = 0; offset < sequence_span_; ++offset) {
         auto& slot = slots_[(head_ + offset) % capacity()];
         if (!slot.occupied || !slot.sent
+            || (slot.external_original && !slot.submitted)
             || slot.retransmission_queued) {
             continue;
         }
@@ -856,7 +1137,8 @@ SendDropResult SendBuffer::drop_messages_older_than(
     // first-send times grow along the buffer and unsent packets follow the
     // sent prefix.
     const auto& first = slots_[head_];
-    if (!first.sent || first.first_send_microseconds > cutoff_microseconds) {
+    if (!first.sent || (first.external_original && !first.submitted)
+        || first.first_send_microseconds > cutoff_microseconds) {
         return result;
     }
     result.first_message_number = first.header.message_number;
@@ -876,7 +1158,7 @@ SendDropResult SendBuffer::drop_messages_older_than(
             && (slot.header.boundary == MessageBoundary::subsequent
                 || slot.header.boundary == MessageBoundary::last);
         if (!continues_dropped_message
-            && (!slot.sent
+            && (!slot.sent || (slot.external_original && !slot.submitted)
                 || slot.first_send_microseconds > cutoff_microseconds)) {
             break;
         }

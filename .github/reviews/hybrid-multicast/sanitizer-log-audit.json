@@ -1,0 +1,10 @@
+{
+  "audited_sanitizer_logs": 88,
+  "diagnostic_pattern": "(?:AddressSanitizer:|LeakSanitizer:|UndefinedBehaviorSanitizer:|runtime error:)",
+  "findings": [],
+  "qualified_code": "997cfe2438eab1b0e9bdac2c797a7be7daf31c11",
+  "documentation_head": "de62cd32ad320deed84411608cb67920b2d0b24e",
+  "branch": "dev/hybrid-multicast",
+  "worktree": "clean",
+  "takeover_entries": 1
+}

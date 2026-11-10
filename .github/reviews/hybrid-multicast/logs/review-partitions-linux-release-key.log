@@ -1,0 +1,21 @@
+Internal ctest changing into directory: <source>/build-linux-release
+Test project <source>/build-linux-release
+    Start 21: robotweax_srt_hybrid_key_timing_tests
+1/4 Test #21: robotweax_srt_hybrid_key_timing_tests ...........   Passed    5.62 sec
+    Start 22: robotweax_srt_hybrid_key_response_tests
+2/4 Test #22: robotweax_srt_hybrid_key_response_tests .........   Passed    3.60 sec
+    Start 23: robotweax_srt_hybrid_key_multi_receiver_tests
+3/4 Test #23: robotweax_srt_hybrid_key_multi_receiver_tests ...   Passed    4.60 sec
+    Start 24: robotweax_srt_hybrid_key_admission_tests
+4/4 Test #24: robotweax_srt_hybrid_key_admission_tests ........   Passed    4.61 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Label Time Summary:
+fault-injection    =  18.43 sec*proc (4 tests)
+hybrid             =  18.43 sec*proc (4 tests)
+integration        =  18.43 sec*proc (4 tests)
+key-management     =  18.43 sec*proc (4 tests)
+network            =  18.43 sec*proc (4 tests)
+
+Total Test time (real) =  18.44 sec

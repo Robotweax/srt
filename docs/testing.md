@@ -43,8 +43,13 @@ through this variable, because Linux loopback need not deliver IPv6 multicast.
 The required CI multicast job checks IPv4 loopback dispatch and the public
 MPEG-TS sample in plain, CTR and GCM modes on OpenSSL Linux/macOS/Windows,
 Mbed TLS Linux, and experimental BCrypt Windows. It requires every named
-dispatch regression to execute and rejects skips, missing cases, unsuccessful
-processes and incomplete summaries. Evidence records the exact source SHA,
+dispatch regression to execute and rejects skips of required cases, missing
+cases, unsuccessful processes and incomplete summaries. A non-required case may
+be skipped only for a host limitation listed in `tools/qualify_multicast.py`
+with its exact reason; today that is the independent source-IP rejoin case on
+hosts without a second assigned IPv4 address, such as hosted Windows runners.
+Such a skip is recorded under `environment_skips` in the evidence and leaves
+that case unqualified on that host. Evidence records the exact source SHA,
 platform, configured backend and logs. Its result participates in the required
 CI gate. To run this matrix alone, dispatch the `CI` workflow on the candidate
 branch with the `multicast_only` input set to `true`. That focused run does not
@@ -122,6 +127,33 @@ partitions each retain all 400 bidirectional samples for one AES key size and a
 30-second budget, allowing for platform timer coalescing without changing the
 Sensor TTL or correctness assertions. The optional retransmission-limit CI
 configuration runs all these partitions.
+
+Multicast dispatch uses separate serial partitions for the common, independent
+and coordinated cases. Hybrid-control builds also separate startup, conclusions,
+control transitions, source errors and rejoin. The direct `multicast_dispatch`
+selector still runs the complete profile used by qualification tools. The hybrid
+model and native investigation cases have separate budgets, as do the two
+multi-receiver fault scenarios. Each native key scenario also has its own
+process. Each new CTest partition has a 30-second process
+limit. Case filters change only ownership; operation counts, packet comparisons,
+playout, confirmation and recovery deadlines are preserved. The optional
+retransmission-limit job includes cases moved out of the general aggregate.
+
+To inspect individual case wall times on a POSIX host, enable runner diagnostics:
+
+```sh
+ROBOTWEAX_TEST_TIMING=1 ctest --test-dir build -V -R multicast
+```
+
+Each completed case emits `[TIME]` with its name and elapsed microseconds,
+including cleanup. These are process-budget diagnostics, not packet latency
+measurements. The default output is unchanged.
+
+The correlated-prefix repair test checks the aggregate wire envelope at every
+observed physical submission. A slow or coarse host may never exhaust credit;
+that does not violate the envelope. Frozen-clock budget/coordinator cases force
+exhaustion and verify quota waits, while a coarse-clock case checks that all
+repairs can obey the envelope with zero waits.
 
 The native crypto recovery regression also drives 32 key announcements before
 replaying recorded initial KMREQ material, then requires exact DATA recovery

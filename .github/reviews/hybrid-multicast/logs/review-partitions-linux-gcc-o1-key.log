@@ -1,0 +1,21 @@
+Internal ctest changing into directory: <source>/build-linux-sanitized-o1
+Test project <source>/build-linux-sanitized-o1
+    Start 21: robotweax_srt_hybrid_key_timing_tests
+1/4 Test #21: robotweax_srt_hybrid_key_timing_tests ...........   Passed    5.75 sec
+    Start 22: robotweax_srt_hybrid_key_response_tests
+2/4 Test #22: robotweax_srt_hybrid_key_response_tests .........   Passed    3.78 sec
+    Start 23: robotweax_srt_hybrid_key_multi_receiver_tests
+3/4 Test #23: robotweax_srt_hybrid_key_multi_receiver_tests ...   Passed    5.75 sec
+    Start 24: robotweax_srt_hybrid_key_admission_tests
+4/4 Test #24: robotweax_srt_hybrid_key_admission_tests ........   Passed    5.45 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Label Time Summary:
+fault-injection    =  20.73 sec*proc (4 tests)
+hybrid             =  20.73 sec*proc (4 tests)
+integration        =  20.73 sec*proc (4 tests)
+key-management     =  20.73 sec*proc (4 tests)
+network            =  20.73 sec*proc (4 tests)
+
+Total Test time (real) =  20.73 sec

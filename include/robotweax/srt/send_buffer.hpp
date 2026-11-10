@@ -27,7 +27,11 @@ struct OutboundPacket {
     DataHeader header{};
     std::span<const std::byte> payload{};
     std::uint64_t sequence_position = 0;
+    bool canonical_group = false;
+    std::size_t plaintext_size = 0;
 };
+
+enum class GroupOriginalDelivery : std::uint8_t { multicast, unicast, overlap };
 
 struct SendDropResult {
     std::size_t packets = 0;
@@ -91,6 +95,17 @@ public:
     }
     [[nodiscard]] bool synchronize_empty(
         SequenceNumber next_sequence) noexcept;
+    [[nodiscard]] std::uint64_t next_sequence_position() const noexcept
+    {
+        return next_sequence_position_;
+    }
+    [[nodiscard]] std::size_t new_packet_flow_count() const noexcept;
+    [[nodiscard]] std::size_t pending_group_unicast() const noexcept
+    {
+        return pending_group_unicast_count_;
+    }
+    [[nodiscard]] std::optional<OutboundPacket>
+    first_pending_group_unicast() const noexcept;
 
     [[nodiscard]] Error enqueue_message(
         std::span<const std::byte> message,
@@ -106,6 +121,38 @@ public:
         PacketTimestamp timestamp,
         std::uint32_t destination_socket_id,
         std::uint64_t enqueue_microseconds = 0) noexcept;
+
+    // Dispatch coordinator's recovery history for an original emitted by a
+    // group-owned transport. Keep this buffer externally serialized from
+    // preflight through import; preflight is read-only and allocation-free.
+    // Do not mix with queued, never-selected ordinary originals. No implicit
+    // cursor rebasing: membership catch-up must synchronize explicitly.
+    [[nodiscard]] Error preflight_group_original(SequenceNumber sequence,
+        std::size_t plaintext_size, CryptoMode mode) const noexcept;
+    // Import the exact canonical header/body (GCM body includes its tag).
+    // mode AUTOMATIC means plaintext; CTR/GCM require an EVEN/ODD selector.
+    // Acceptance does not authorize ACK/NAK. Unicast and overlap schedule an
+    // exact original on the member path; multicast keeps only recovery history.
+    // The emitting path reports each original only after complete UDP submission.
+    [[nodiscard]] Error import_group_original(const DataHeader& header,
+        std::span<const std::byte> wire_payload, std::size_t plaintext_size,
+        CryptoMode mode, std::uint64_t enqueue_microseconds = 0,
+        std::uint64_t expiration_microseconds = 0,
+        GroupOriginalDelivery delivery =
+            GroupOriginalDelivery::multicast) noexcept;
+    struct GroupRecovery {
+        Error error = Error::none;
+        std::size_t originals = 0;
+        std::size_t repairs = 0;
+        // Exact minimum across this validated live prefix (zero means no TTL).
+        std::uint64_t earliest_expiration_microseconds = 0;
+    };
+    // Explicit bounded retained-prefix recovery; tombstones refuse the whole
+    // operation, while selected native retries retain their immutable state.
+    [[nodiscard]] GroupRecovery group_recovery(
+        SequenceNumber next, std::size_t limit = 256) const noexcept;
+    [[nodiscard]] GroupRecovery recover_group_prefix(
+        SequenceNumber next, std::size_t limit = 256) noexcept;
 
     // now_microseconds records when an original packet is first selected
     // for transmission; sender too-late drop measures age from that time.
@@ -135,11 +182,47 @@ public:
         EncryptionKey key, CryptoMode mode,
         std::span<const std::byte> protected_payload) noexcept;
     void note_packet_submitted(SequenceNumber sequence) noexcept;
+    struct GroupOriginalSubmission {
+        SequenceNumber sequence {};
+        std::uint64_t sequence_position = 0;
+    };
+    // Capture at admission, never resolve a later completion by sequence alone.
+    // The coordinator must separately fence the member/stream incarnation;
+    // the local monotonic position prevents aliases after 31-bit rollover.
+    [[nodiscard]] std::optional<GroupOriginalSubmission>
+    group_original_submission(SequenceNumber sequence) const noexcept;
+    // Separate from ordinary member completions. Each delivery path reports
+    // its own wire submission once: the group's multicast report for a
+    // multicast-eligible original, and this member's unicast completion for
+    // a selected copy. Whichever arrives first stamps the first-send age and
+    // authorizes this exact external original; the other path still returns
+    // true once, so an overlap original records both wire submissions in
+    // either order. Repeated reports of one path return false and never
+    // restart the sender-drop clock.
+    bool note_group_original_submitted(GroupOriginalSubmission submission,
+        std::uint64_t now_microseconds) noexcept;
+    bool note_group_unicast_submitted(GroupOriginalSubmission submission,
+        std::uint64_t now_microseconds) noexcept;
     // Wire ACKs require successful submission; acknowledge_before is also
     // used for trusted, locally confirmed group-prefix retirement.
+    //
+    // An ACK that covers an ordinary packet never selected for sending is
+    // invalid as a whole. A canonical group original differs: its datagram
+    // can reach the receiver before the group reports the UDP submission to
+    // this member, so a genuine ACK can run ahead of that report. Such an ACK
+    // retires the submitted prefix and stops at the first unsubmitted group
+    // original, which a later cumulative ACK retires once it is submitted.
+    // An unsubmitted original is never retired by a wire ACK. After success
+    // first_sequence() is the boundary that was retired, unless `sequence`
+    // was already behind it.
     [[nodiscard]] Error acknowledge_submitted_before(
         SequenceNumber sequence) noexcept;
     [[nodiscard]] Error acknowledge_before(SequenceNumber sequence) noexcept;
+    // The oldest canonical group original whose UDP submission has not been
+    // reported to this buffer, if any. Loss reports are honored only below
+    // it. An ordinary buffer never has one.
+    [[nodiscard]] std::optional<SequenceNumber>
+    first_unsubmitted_group_original() const noexcept;
     // Validates the complete sequence range without changing retransmission
     // or drop-request state. Every current packet must already have appeared
     // on the wire, or be a retained tombstone for a previously dropped
@@ -230,6 +313,10 @@ private:
         bool drop_request_queued = false;
         bool sent = false;
         bool submitted = false;
+        bool external_original = false;
+        bool unicast_pending = false;
+        bool unicast_selected = false;
+        bool multicast_pending = false; // Multicast report still expected.
         bool retransmission_queued = false;
         bool has_retransmission_send_time = false;
     };
@@ -237,6 +324,7 @@ private:
     static_assert(sizeof(Slot) <= 80U, "sender slot metadata budget exceeded");
 
     [[nodiscard]] Slot* find(SequenceNumber sequence) noexcept;
+    void record_group_submission(Slot&, std::uint64_t now) noexcept;
     void discard_slot(Slot& slot, bool retain_drop_marker = false) noexcept;
     void refresh_first_buffered_enqueue_time() noexcept;
     void refresh_buffered_enqueue_time_bounds() noexcept;
@@ -278,6 +366,9 @@ private:
     std::size_t drop_request_head_ = 0;
     std::size_t drop_request_size_ = 0;
     std::size_t packets_in_flight_ = 0;
+    std::size_t external_unsubmitted_count_ = 0;
+    std::size_t ordinary_unsent_count_ = 0;
+    std::size_t pending_group_unicast_count_ = 0;
 };
 
 } // namespace robotweax::srt

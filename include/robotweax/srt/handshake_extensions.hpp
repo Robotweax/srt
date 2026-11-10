@@ -32,6 +32,8 @@ enum class HandshakeExtensionType : std::uint16_t {
     implementation_identity = 0x7f13,
     // Listener -> Caller announcement of a multicast dispatch group.
     multicast_dispatch = 0x7f14,
+    // Bilateral fixed-source profile; separate from the legacy announcement.
+    multicast_source = 0x7f15,
 };
 
 enum class CongestionController : std::uint8_t {

@@ -1,0 +1,2798 @@
+{
+  "license": "MIT",
+  "production_input": "4d59666ebaf54df57b514d1069a5172df440af51",
+  "pre_diagnosis_review_head": "8e8c3364eef2cf6eb663fb8408c58ad916f8e63b",
+  "status": "Confirmed receive-key generation routing defect; diagnostic evidence only, no production fix or qualification.",
+  "finding": "KM-1: receive frontier at KM replacement is not the true old-generation sequence boundary. Delayed old-generation DATA above that frontier selects the replacement key, despite the old key remaining in bounded history. CTR can return success with wrong plaintext; GCM rejects.",
+  "source_scope": "src/crypto.cpp and src/crypto_openssl.cpp are byte-identical to Robotweax v0.3.2/e45d0e. crypto.hpp only adds an unrelated inline schedule-identity accessor. Inherited receive implementation; no full baseline binary run or third-party upstream defect claim.",
+  "reproducer": {
+    "production_source": "4d59666ebaf54df57b514d1069a5172df440af51",
+    "checkout": "8e8c3364eef2cf6eb663fb8408c58ad916f8e63b",
+    "diagnostic_source_sha256": "16f041f7ba43af667f8e2bb054508c9ceb8f10247e59486775778f9f6c3c140c",
+    "scope": "Negative/control diagnostic, no clocks/network/private access. Exit 1 means a real round-trip mismatch, never a passing qualification. Current source unchanged; existing manually bound libraries.",
+    "runs": [
+      {
+        "name": "mac-release",
+        "command": [
+          "/tmp/pr387-km-order-probe-final-mac"
+        ],
+        "build": [
+          "c++",
+          "-std=c++20",
+          "-I",
+          "include",
+          "tools/diagnostics/crypto_receive_order.cpp",
+          "build-hybrid-control/librobotweax-srt.a",
+          "/opt/homebrew/Cellar/openssl@4/4.1.0/lib/libcrypto.dylib",
+          "-o",
+          "/tmp/pr387-km-order-probe-final-mac"
+        ],
+        "returncode": 1,
+        "rows": [
+          {
+            "mode": "ctr",
+            "scenario": "ordered-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "ctr",
+            "scenario": "lagging-frontier",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 122,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": false
+          },
+          {
+            "mode": "ctr",
+            "scenario": "advanced-frontier-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "gcm",
+            "scenario": "ordered-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "gcm",
+            "scenario": "lagging-frontier",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 122,
+            "km_exchanges": 2,
+            "error": 15,
+            "plaintext_matches": false
+          },
+          {
+            "mode": "gcm",
+            "scenario": "advanced-frontier-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          }
+        ],
+        "log": "/tmp/pr387-km-mac-release-probe-final.log",
+        "log_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+        "linked_library_sha256": "3fd7f8d839740d0e08561b462a20330d57d9c7ce4524f8160e5615813fad744c",
+        "probe_binary_sha256": "dab35efbcfc8b54c846bebc526a24ac1591921d0483b1d6ded9bd72464a1c459",
+        "library_configuration": {
+          "production_source": "4d59666ebaf54df57b514d1069a5172df440af51",
+          "flags": {
+            "CMAKE_BUILD_TYPE": "Release",
+            "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+            "CMAKE_CXX_FLAGS": "",
+            "CMAKE_CXX_FLAGS_DEBUG": "-g",
+            "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+            "ENABLE_AEAD_API_PREVIEW": "ON",
+            "ENABLE_MAXREXMITBW": "OFF",
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+          },
+          "cache_sha256": "c675533ba24933c841c1da1d2faffe15ddd6cd2615764b29a28477fd7ab9a4e9",
+          "binding": "Manual committed-source rebuild from prior milestone; not embedded/enforced."
+        }
+      },
+      {
+        "name": "linux-release",
+        "command": [
+          "/tmp/pr387-km-order-probe-linux-release"
+        ],
+        "build": [
+          "c++",
+          "-std=c++20",
+          "-DENABLE_AEAD_API_PREVIEW=1",
+          "-I",
+          "include",
+          "-O3",
+          "/tmp/pr387-km-order-probe-final.cpp",
+          "build-linux-release/librobotweax-srt.a",
+          "-lcrypto",
+          "-pthread",
+          "-o",
+          "/tmp/pr387-km-order-probe-linux-release"
+        ],
+        "returncode": 1,
+        "rows": [
+          {
+            "mode": "ctr",
+            "scenario": "ordered-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "ctr",
+            "scenario": "lagging-frontier",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 122,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": false
+          },
+          {
+            "mode": "ctr",
+            "scenario": "advanced-frontier-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "gcm",
+            "scenario": "ordered-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "gcm",
+            "scenario": "lagging-frontier",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 122,
+            "km_exchanges": 2,
+            "error": 15,
+            "plaintext_matches": false
+          },
+          {
+            "mode": "gcm",
+            "scenario": "advanced-frontier-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          }
+        ],
+        "log": "/tmp/pr387-km-linux-release-probe-final.log",
+        "log_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+        "linked_library_sha256": "08bdb07d59002400e2bf0ceedfc8003f75dc6fa4bf09a624446775d2ad1dbfb1",
+        "probe_binary_sha256": "2f995c2ba3d976efbe9d4c915ae3caec5da9278baa3eae4ee4da442bcde56209",
+        "library_configuration": {
+          "production_source": "4d59666ebaf54df57b514d1069a5172df440af51",
+          "flags": {
+            "CMAKE_BUILD_TYPE": "Release",
+            "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+            "CMAKE_CXX_FLAGS": "",
+            "CMAKE_CXX_FLAGS_DEBUG": "-g",
+            "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+            "ENABLE_AEAD_API_PREVIEW": "ON",
+            "ENABLE_MAXREXMITBW": "OFF",
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+          },
+          "cache_sha256": "90ffd50803c1d552dbc2737d901c744f5600648a2ff77b5b4ef6dd4dd56c84ec",
+          "binding": "Manual committed-source rebuild from prior milestone; not embedded/enforced."
+        }
+      },
+      {
+        "name": "linux-gcc-o1",
+        "command": [
+          "/tmp/pr387-km-order-probe-linux-gcc-o1"
+        ],
+        "build": [
+          "c++",
+          "-std=c++20",
+          "-DENABLE_AEAD_API_PREVIEW=1",
+          "-I",
+          "include",
+          "-g",
+          "-O1",
+          "-fsanitize=address,undefined",
+          "-fno-omit-frame-pointer",
+          "/tmp/pr387-km-order-probe-final.cpp",
+          "build-linux-sanitized-o1/librobotweax-srt.a",
+          "-lcrypto",
+          "-pthread",
+          "-o",
+          "/tmp/pr387-km-order-probe-linux-gcc-o1"
+        ],
+        "returncode": 1,
+        "rows": [
+          {
+            "mode": "ctr",
+            "scenario": "ordered-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "ctr",
+            "scenario": "lagging-frontier",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 122,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": false
+          },
+          {
+            "mode": "ctr",
+            "scenario": "advanced-frontier-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "gcm",
+            "scenario": "ordered-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "gcm",
+            "scenario": "lagging-frontier",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 122,
+            "km_exchanges": 2,
+            "error": 15,
+            "plaintext_matches": false
+          },
+          {
+            "mode": "gcm",
+            "scenario": "advanced-frontier-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          }
+        ],
+        "log": "/tmp/pr387-km-linux-gcc-o1-probe-final.log",
+        "log_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+        "linked_library_sha256": "4ea6425a1067fa4d6cf2143518dcccf4e07cf52c98fee8c33ee3c8f8a9257baa",
+        "probe_binary_sha256": "36dc3093fa392638dbf3c8fc522f9ff6ee21bfcdb447a7eaea0c37c30fbb9308",
+        "library_configuration": {
+          "production_source": "4d59666ebaf54df57b514d1069a5172df440af51",
+          "flags": {
+            "CMAKE_BUILD_TYPE": "Debug",
+            "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+            "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+            "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+            "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+            "ENABLE_AEAD_API_PREVIEW": "ON",
+            "ENABLE_MAXREXMITBW": "ON",
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+          },
+          "cache_sha256": "dc0db18e3aaa2bf02bd93a6c4e7f5eaceae0499901e3e8fc81a5f112d5601710",
+          "binding": "Manual committed-source rebuild from prior milestone; not embedded/enforced."
+        }
+      },
+      {
+        "name": "linux-gcc-og",
+        "command": [
+          "/tmp/pr387-km-order-probe-linux-gcc-og"
+        ],
+        "build": [
+          "c++",
+          "-std=c++20",
+          "-DENABLE_AEAD_API_PREVIEW=1",
+          "-I",
+          "include",
+          "-g",
+          "-Og",
+          "-fsanitize=address,undefined",
+          "-fno-omit-frame-pointer",
+          "/tmp/pr387-km-order-probe-final.cpp",
+          "build-linux-sanitized-og/librobotweax-srt.a",
+          "-lcrypto",
+          "-pthread",
+          "-o",
+          "/tmp/pr387-km-order-probe-linux-gcc-og"
+        ],
+        "returncode": 1,
+        "rows": [
+          {
+            "mode": "ctr",
+            "scenario": "ordered-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "ctr",
+            "scenario": "lagging-frontier",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 122,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": false
+          },
+          {
+            "mode": "ctr",
+            "scenario": "advanced-frontier-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "gcm",
+            "scenario": "ordered-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "gcm",
+            "scenario": "lagging-frontier",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 122,
+            "km_exchanges": 2,
+            "error": 15,
+            "plaintext_matches": false
+          },
+          {
+            "mode": "gcm",
+            "scenario": "advanced-frontier-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          }
+        ],
+        "log": "/tmp/pr387-km-linux-gcc-og-probe-final.log",
+        "log_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+        "linked_library_sha256": "c751e899fc94d1826583fe7ef6087dee160eff4698dcaa9e6ee5913a35ac758f",
+        "probe_binary_sha256": "d4406e8e7d035b0be98e579c8519bb63a74fcbe34728253861f4d6b70c020f50",
+        "library_configuration": {
+          "production_source": "4d59666ebaf54df57b514d1069a5172df440af51",
+          "flags": {
+            "CMAKE_BUILD_TYPE": "Debug",
+            "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+            "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+            "CMAKE_CXX_FLAGS_DEBUG": "-g -Og",
+            "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+            "ENABLE_AEAD_API_PREVIEW": "ON",
+            "ENABLE_MAXREXMITBW": "ON",
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+          },
+          "cache_sha256": "83fd5c38a2a2f9a89efa4a949c3b8e1e2e29109e3fc068772eff08dba371a89d",
+          "binding": "Manual committed-source rebuild from prior milestone; not embedded/enforced."
+        }
+      },
+      {
+        "name": "linux-llvm",
+        "command": [
+          "/tmp/pr387-km-order-probe-linux-llvm"
+        ],
+        "build": [
+          "<lab>/llvm-toolchain/clang++",
+          "-std=c++20",
+          "-DENABLE_AEAD_API_PREVIEW=1",
+          "-I",
+          "include",
+          "-g",
+          "-O1",
+          "-fsanitize=address,undefined",
+          "-fno-omit-frame-pointer",
+          "/tmp/pr387-km-order-probe-final.cpp",
+          "build-linux-sanitized-clang/librobotweax-srt.a",
+          "-lcrypto",
+          "-pthread",
+          "-o",
+          "/tmp/pr387-km-order-probe-linux-llvm"
+        ],
+        "returncode": 1,
+        "rows": [
+          {
+            "mode": "ctr",
+            "scenario": "ordered-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "ctr",
+            "scenario": "lagging-frontier",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 122,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": false
+          },
+          {
+            "mode": "ctr",
+            "scenario": "advanced-frontier-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "gcm",
+            "scenario": "ordered-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          },
+          {
+            "mode": "gcm",
+            "scenario": "lagging-frontier",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 122,
+            "km_exchanges": 2,
+            "error": 15,
+            "plaintext_matches": false
+          },
+          {
+            "mode": "gcm",
+            "scenario": "advanced-frontier-control",
+            "delayed_position": 23,
+            "sequence": 123,
+            "last_accepted_before_reuse": 155,
+            "km_exchanges": 2,
+            "error": 0,
+            "plaintext_matches": true
+          }
+        ],
+        "log": "/tmp/pr387-km-linux-llvm-probe-final.log",
+        "log_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+        "linked_library_sha256": "f32a389eefbc60ce03af3e0a6402920c01e47a6418820e4ca5d4eabf45750e7e",
+        "probe_binary_sha256": "3ce23363332949603d64c26bc81c84c6e73778e12a81a8c40d287583f6cbabe6",
+        "library_configuration": {
+          "production_source": "4d59666ebaf54df57b514d1069a5172df440af51",
+          "flags": {
+            "CMAKE_BUILD_TYPE": "Debug",
+            "CMAKE_CXX_COMPILER": "<lab>/llvm-toolchain/clang++",
+            "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+            "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+            "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+            "ENABLE_AEAD_API_PREVIEW": "ON",
+            "ENABLE_MAXREXMITBW": "ON",
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+          },
+          "cache_sha256": "5bafb39d0dba9c509b0c9aa3018b9dae06587a867234c1e6c1a83eec9313a60a",
+          "binding": "Manual committed-source rebuild from prior milestone; not embedded/enforced."
+        }
+      }
+    ],
+    "interpretation": "Receive frontier at KM replacement is not the actual old-generation upper sequence bound. Four controls match and two lagging-frontier round trips fail in each build. CTR returns Error::none with wrong plaintext; GCM returns authentication_failure. Not GCC/compiler-specific; no native/whole-feature qualification.",
+    "diagnostic_source": "tools/diagnostics/crypto_receive_order.cpp",
+    "implementation_inherited_from_base": {
+      "src/crypto.cpp": {
+        "byte_identical": true,
+        "current_sha256": "dd83e8417c88c9a077b1da7e026637d840ddfce616333d94d57138fd1fa0cbf5",
+        "base_sha256": "dd83e8417c88c9a077b1da7e026637d840ddfce616333d94d57138fd1fa0cbf5"
+      },
+      "src/crypto_openssl.cpp": {
+        "byte_identical": true,
+        "current_sha256": "14362d37dcf7f97b9dbc7fcd105d3891887652aedc05a8fe4d7e8069d57a0b04",
+        "base_sha256": "14362d37dcf7f97b9dbc7fcd105d3891887652aedc05a8fe4d7e8069d57a0b04"
+      },
+      "include/robotweax/srt/crypto.hpp": {
+        "byte_identical": false,
+        "current_sha256": "0a0952583d105fb7302e5e76dbb8a5f72195a824ddd9937e4906cf639d128cdd",
+        "base_sha256": "b7e35aa267f6e002e5c4403e96e5ffce234e49e05c6fa4d656aeb54dc7620481"
+      },
+      "header_change": "One added inline uses_shared_transmit_schedule accessor; receive-key layouts and the reproduced receive implementation are unchanged. No full v0.3.2 binary run is claimed."
+    }
+  },
+  "native_v1": {
+    "source": "4d59666ebaf54df57b514d1069a5172df440af51",
+    "diagnostic_overlay": true,
+    "qualification": false,
+    "binary_sha256": "e8ad872100b503bd150aac4797117434b306fefde035d4c389c8ab552054b9af",
+    "cache_sha256": "29c98566b77b35f6e658b7ae98778cd5f4b7d0681b07b17ace2455b05802c9ff",
+    "overlay_patch_sha256": "fb79961565f92386aad2ab944804b70b2269032f702c7284d80db7d7e04f4e0e",
+    "runs": [
+      {
+        "selection": "crypto_session_",
+        "command": [
+          "timeout",
+          "--kill-after=2s",
+          "30s",
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "build-km-gcc-o1/robotweax_srt_tests",
+          "--include",
+          "crypto_session_"
+        ],
+        "returncode": 0,
+        "log": "/tmp/pr387-km-trace-crypto_session_.log",
+        "log_sha256": "e5dab7d1ceea86d0392121dfb91baf3f7834466a42d6184070a86542a132f279",
+        "summary": [
+          "34/34 tests passed"
+        ],
+        "failures": [],
+        "trace_end": [],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "selection": "compat_group_encoder",
+        "command": [
+          "timeout",
+          "--kill-after=2s",
+          "30s",
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "build-km-gcc-o1/robotweax_srt_tests",
+          "--include",
+          "compat_group_encoder"
+        ],
+        "returncode": 0,
+        "log": "/tmp/pr387-km-trace-compat_group_encoder.log",
+        "log_sha256": "7f71467f44fb4c6d69578cbdcb5ef2e10bddd9d1510bb4fcd8ed1da8d987e643",
+        "summary": [
+          "15/15 tests passed"
+        ],
+        "failures": [],
+        "trace_end": [],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "selection": "hybrid_soak_network_upper_profile_ctr",
+        "command": [
+          "timeout",
+          "--kill-after=2s",
+          "30s",
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ROBOTWEAX_TEST_KM_TRACE=1",
+          "build-km-gcc-o1/robotweax_srt_tests",
+          "--include",
+          "hybrid_soak_network_upper_profile_ctr"
+        ],
+        "returncode": 1,
+        "log": "/tmp/pr387-km-trace-hybrid_soak_network_upper_profile_ctr.log",
+        "log_sha256": "2e86f793d25fd736bf38745d405c507ca3fc201a55a1c6796f39c360b67c2ca7",
+        "summary": [
+          "0/1 tests passed"
+        ],
+        "failures": [
+          "[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=58 received=16827703578304028715 bytes=1316 canonical=0 offered=119 unique=67 dropped=0 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=1",
+          "[FAIL] hybrid_soak_network_upper_profile_ctr: soak DATA crypto=1 peer=1 expected=58 bytes=1316"
+        ],
+        "trace_end": [
+          "[KM_TRACE_END] offered=2143 written=2143 capacity=16384"
+        ],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "selection": "hybrid_soak_network_upper_profile_gcm",
+        "command": [
+          "timeout",
+          "--kill-after=2s",
+          "30s",
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ROBOTWEAX_TEST_KM_TRACE=1",
+          "build-km-gcc-o1/robotweax_srt_tests",
+          "--include",
+          "hybrid_soak_network_upper_profile_gcm"
+        ],
+        "returncode": 1,
+        "log": "/tmp/pr387-km-trace-hybrid_soak_network_upper_profile_gcm.log",
+        "log_sha256": "f8a9acc67487c5e470e620480414ebc59a7fd1ea6a229f23f1ee55857b171362",
+        "summary": [
+          "0/1 tests passed"
+        ],
+        "failures": [
+          "[HYBRID_SOAK_FAILURE] crypto=2 peer=1 expected=60 received=64 bytes=1316 canonical=1 offered=120 unique=79 dropped=21 undecryptable=17 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=1",
+          "[HYBRID_SOAK_FAILURE] crypto=2 peer=0 expected=60 received=64 bytes=1316 canonical=1 offered=120 unique=91 dropped=26 undecryptable=22 sender_dropped=0 joined=1 route_epoch=1 mode=1 revision=1 fresh=1",
+          "[FAIL] hybrid_soak_network_upper_profile_gcm: soak DATA crypto=2 peer=0 expected=60 bytes=1316"
+        ],
+        "trace_end": [
+          "[KM_TRACE_END] offered=1946 written=1946 capacity=16384"
+        ],
+        "sanitizer_diagnostics": []
+      }
+    ]
+  },
+  "native_v2": {
+    "source": "4d59666ebaf54df57b514d1069a5172df440af51",
+    "diagnostic_overlay": true,
+    "qualification": false,
+    "binary_sha256": "a649a3c018e4a191f23718221b3c0da878ca5d5808ceaa42b81bce5e6c15bab8",
+    "cache_sha256": "29c98566b77b35f6e658b7ae98778cd5f4b7d0681b07b17ace2455b05802c9ff",
+    "overlay_patch_sha256": "3b88d126b862400f261e0e984d6435f1d41d5a5a24043787abf3c7d213f5c8af",
+    "header_sha256": "9a07180f488fd9d79f09f59f94ce7614fe5f1b75acd2762f0aff7d9ce7126383",
+    "key_ids": "Opaque IDs from exact comparison of bounded synthetic-key copies; no key/digest is emitted; copies wiped on trace dump.",
+    "runs": [
+      {
+        "selection": "crypto_session_",
+        "command": [
+          "timeout",
+          "--kill-after=2s",
+          "30s",
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "build-km-gcc-o1/robotweax_srt_tests",
+          "--include",
+          "crypto_session_"
+        ],
+        "returncode": 0,
+        "log": "/tmp/pr387-km-trace-v2-crypto_session_.log",
+        "log_sha256": "5bfd1c0399ae71b1d3c94651368aca05c3706af97f62ae4635cd71d6dc5b0911",
+        "summary": [
+          "34/34 tests passed"
+        ],
+        "failures": [],
+        "trace_end": [],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "selection": "compat_group_encoder",
+        "command": [
+          "timeout",
+          "--kill-after=2s",
+          "30s",
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "build-km-gcc-o1/robotweax_srt_tests",
+          "--include",
+          "compat_group_encoder"
+        ],
+        "returncode": 0,
+        "log": "/tmp/pr387-km-trace-v2-compat_group_encoder.log",
+        "log_sha256": "347a45a5754aba592656c86dbb692bfde815cda11d393935f4d910c34bb7cfae",
+        "summary": [
+          "15/15 tests passed"
+        ],
+        "failures": [],
+        "trace_end": [],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "selection": "hybrid_soak_network_upper_profile_ctr",
+        "command": [
+          "timeout",
+          "--kill-after=2s",
+          "30s",
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ROBOTWEAX_TEST_KM_TRACE=1",
+          "build-km-gcc-o1/robotweax_srt_tests",
+          "--include",
+          "hybrid_soak_network_upper_profile_ctr"
+        ],
+        "returncode": 1,
+        "log": "/tmp/pr387-km-trace-v2-hybrid_soak_network_upper_profile_ctr.log",
+        "log_sha256": "f9c7886ad43b29d592c0bd18d96540fde2f6ce836527130cb2857c7b159da5c2",
+        "summary": [
+          "0/1 tests passed"
+        ],
+        "failures": [
+          "[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=30 received=16073597832026670141 bytes=1316 canonical=0 offered=88 unique=42 dropped=0 undecryptable=0 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=1",
+          "[FAIL] hybrid_soak_network_upper_profile_ctr: soak DATA crypto=1 peer=1 expected=30 bytes=1316"
+        ],
+        "trace_end": [
+          "[KM_TRACE_END] offered=2122 written=2122 capacity=16384"
+        ],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "selection": "hybrid_soak_network_upper_profile_gcm",
+        "command": [
+          "timeout",
+          "--kill-after=2s",
+          "30s",
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ROBOTWEAX_TEST_KM_TRACE=1",
+          "build-km-gcc-o1/robotweax_srt_tests",
+          "--include",
+          "hybrid_soak_network_upper_profile_gcm"
+        ],
+        "returncode": 1,
+        "log": "/tmp/pr387-km-trace-v2-hybrid_soak_network_upper_profile_gcm.log",
+        "log_sha256": "88f4e1a089e8e7925e7820bec07d5791ebb111d5f89c11db443d7c9b6cba0a11",
+        "summary": [
+          "0/1 tests passed"
+        ],
+        "failures": [
+          "[HYBRID_SOAK_FAILURE] crypto=2 peer=1 expected=62 received=64 bytes=1316 canonical=1 offered=120 unique=72 dropped=10 undecryptable=8 sender_dropped=0 joined=1 route_epoch=1 mode=0 revision=3 fresh=1",
+          "[FAIL] hybrid_soak_network_upper_profile_gcm: soak DATA crypto=2 peer=1 expected=62 bytes=1316"
+        ],
+        "trace_end": [
+          "[KM_TRACE_END] offered=2677 written=2677 capacity=16384"
+        ],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "selection": "hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr",
+        "command": [
+          "timeout",
+          "--kill-after=2s",
+          "30s",
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ROBOTWEAX_TEST_KM_TRACE=1",
+          "build-km-gcc-o1/robotweax_srt_tests",
+          "--include",
+          "hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr"
+        ],
+        "returncode": 1,
+        "log": "/tmp/pr387-km-trace-v2-hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr.log",
+        "log_sha256": "11583f2f834fdc5abd6a964ac83f4442c60797a11178e3171773ae418b7afb3e",
+        "summary": [
+          "0/1 tests passed"
+        ],
+        "failures": [
+          "[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr: load DATA row=1 crypto=1 position=62 bytes=1316"
+        ],
+        "trace_end": [
+          "[KM_TRACE_END] offered=6262 written=6262 capacity=16384"
+        ],
+        "sanitizer_diagnostics": []
+      },
+      {
+        "selection": "hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm",
+        "command": [
+          "timeout",
+          "--kill-after=2s",
+          "30s",
+          "env",
+          "ROBOTWEAX_TEST_TIMING=1",
+          "ROBOTWEAX_TEST_KM_TRACE=1",
+          "build-km-gcc-o1/robotweax_srt_tests",
+          "--include",
+          "hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm"
+        ],
+        "returncode": 1,
+        "log": "/tmp/pr387-km-trace-v2-hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm.log",
+        "log_sha256": "a3dfd7d5f95ec442037a435ddb15797ceea4bd4c49a6b261d7967b378a3e2663",
+        "summary": [
+          "0/1 tests passed"
+        ],
+        "failures": [
+          "[FAIL] hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm: load DATA row=1 crypto=2 position=62 bytes=1316"
+        ],
+        "trace_end": [
+          "[KM_TRACE_END] offered=6424 written=6424 capacity=16384"
+        ],
+        "sanitizer_diagnostics": []
+      }
+    ]
+  },
+  "native_v2_analysis": {
+    "pr387-km-trace-v2-hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr.log": {
+      "events": 6262,
+      "encoded_large": 256,
+      "correct_decrypt_observations": 941,
+      "wrong_plaintext": 3,
+      "authentication_errors": 0,
+      "all_failed_decode_observations_use_wrong_known_key": true,
+      "generation_pairs": [
+        [
+          1,
+          3
+        ]
+      ],
+      "reported_failing_position": 62,
+      "reported_position_key_mismatch_witness": {
+        "decode": {
+          "index": 5550,
+          "name": "ctr_clear",
+          "us": 4966957019448,
+          "context": 18,
+          "args": [
+            201433681,
+            2,
+            0,
+            11280231963323808044,
+            1316,
+            0
+          ]
+        },
+        "source_encode": {
+          "index": 4933,
+          "name": "encode",
+          "us": 4966956876721,
+          "context": 20,
+          "args": [
+            201433681,
+            1,
+            62,
+            62,
+            1316,
+            0
+          ]
+        },
+        "selected": {
+          "index": 5548,
+          "name": "rx_select",
+          "us": 4966957019435,
+          "context": 18,
+          "args": [
+            201433681,
+            2,
+            0,
+            201433682,
+            1,
+            61
+          ]
+        },
+        "selected_key_event": {
+          "index": 5549,
+          "name": "rx_key_select",
+          "us": 4966957019440,
+          "context": 18,
+          "args": [
+            201433681,
+            14,
+            2,
+            0,
+            0,
+            0
+          ]
+        },
+        "expected_key_id": 12,
+        "actual_key_id": 14,
+        "selected_encoder_generations": [
+          {
+            "encoder_context": 20,
+            "generation": 3
+          }
+        ],
+        "latest_install": [
+          {
+            "index": 5480,
+            "name": "rx_key_install",
+            "us": 4966957003545,
+            "context": 18,
+            "args": [
+              2,
+              14,
+              201433680,
+              1,
+              0,
+              0
+            ]
+          }
+        ],
+        "latest_replacement": [
+          {
+            "index": 5479,
+            "name": "rx_replace",
+            "us": 4966957003540,
+            "context": 18,
+            "args": [
+              2,
+              201433680,
+              1,
+              1,
+              0,
+              61
+            ]
+          }
+        ],
+        "wire_out": [
+          {
+            "index": 5044,
+            "name": "wire_out_data",
+            "us": 4966956900390,
+            "context": 2,
+            "args": [
+              201433681,
+              2,
+              0,
+              1,
+              4966956899775,
+              0
+            ]
+          },
+          {
+            "index": 5529,
+            "name": "wire_out_data",
+            "us": 4966957014697,
+            "context": 10,
+            "args": [
+              201433681,
+              2,
+              0,
+              1,
+              4966957014514,
+              0
+            ]
+          },
+          {
+            "index": 5530,
+            "name": "wire_out_data",
+            "us": 4966957014701,
+            "context": 10,
+            "args": [
+              201433681,
+              2,
+              0,
+              1,
+              4966957014515,
+              0
+            ]
+          }
+        ]
+      },
+      "first_wrong": [
+        {
+          "decode": {
+            "index": 5546,
+            "name": "ctr_clear",
+            "us": 4966957018755,
+            "context": 18,
+            "args": [
+              201433682,
+              2,
+              0,
+              6469856695293848068,
+              1316,
+              0
+            ]
+          },
+          "source_encode": {
+            "index": 4952,
+            "name": "encode",
+            "us": 4966956880787,
+            "context": 20,
+            "args": [
+              201433682,
+              1,
+              63,
+              63,
+              1316,
+              0
+            ]
+          },
+          "selected": {
+            "index": 5544,
+            "name": "rx_select",
+            "us": 4966957018743,
+            "context": 18,
+            "args": [
+              201433682,
+              2,
+              0,
+              201433680,
+              1,
+              61
+            ]
+          },
+          "selected_key_event": {
+            "index": 5545,
+            "name": "rx_key_select",
+            "us": 4966957018747,
+            "context": 18,
+            "args": [
+              201433682,
+              14,
+              2,
+              0,
+              0,
+              0
+            ]
+          },
+          "expected_key_id": 12,
+          "actual_key_id": 14,
+          "selected_encoder_generations": [
+            {
+              "encoder_context": 20,
+              "generation": 3
+            }
+          ],
+          "latest_install": [
+            {
+              "index": 5480,
+              "name": "rx_key_install",
+              "us": 4966957003545,
+              "context": 18,
+              "args": [
+                2,
+                14,
+                201433680,
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "latest_replacement": [
+            {
+              "index": 5479,
+              "name": "rx_replace",
+              "us": 4966957003540,
+              "context": 18,
+              "args": [
+                2,
+                201433680,
+                1,
+                1,
+                0,
+                61
+              ]
+            }
+          ],
+          "wire_out": [
+            {
+              "index": 5092,
+              "name": "wire_out_data",
+              "us": 4966956910230,
+              "context": 2,
+              "args": [
+                201433682,
+                2,
+                0,
+                1,
+                4966956909977,
+                0
+              ]
+            },
+            {
+              "index": 5205,
+              "name": "wire_out_data",
+              "us": 4966956935093,
+              "context": 2,
+              "args": [
+                201433682,
+                2,
+                1,
+                1,
+                4966956934663,
+                0
+              ]
+            },
+            {
+              "index": 5517,
+              "name": "wire_out_data",
+              "us": 4966957012398,
+              "context": 10,
+              "args": [
+                201433682,
+                2,
+                0,
+                1,
+                4966957012014,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "decode": {
+            "index": 5550,
+            "name": "ctr_clear",
+            "us": 4966957019448,
+            "context": 18,
+            "args": [
+              201433681,
+              2,
+              0,
+              11280231963323808044,
+              1316,
+              0
+            ]
+          },
+          "source_encode": {
+            "index": 4933,
+            "name": "encode",
+            "us": 4966956876721,
+            "context": 20,
+            "args": [
+              201433681,
+              1,
+              62,
+              62,
+              1316,
+              0
+            ]
+          },
+          "selected": {
+            "index": 5548,
+            "name": "rx_select",
+            "us": 4966957019435,
+            "context": 18,
+            "args": [
+              201433681,
+              2,
+              0,
+              201433682,
+              1,
+              61
+            ]
+          },
+          "selected_key_event": {
+            "index": 5549,
+            "name": "rx_key_select",
+            "us": 4966957019440,
+            "context": 18,
+            "args": [
+              201433681,
+              14,
+              2,
+              0,
+              0,
+              0
+            ]
+          },
+          "expected_key_id": 12,
+          "actual_key_id": 14,
+          "selected_encoder_generations": [
+            {
+              "encoder_context": 20,
+              "generation": 3
+            }
+          ],
+          "latest_install": [
+            {
+              "index": 5480,
+              "name": "rx_key_install",
+              "us": 4966957003545,
+              "context": 18,
+              "args": [
+                2,
+                14,
+                201433680,
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "latest_replacement": [
+            {
+              "index": 5479,
+              "name": "rx_replace",
+              "us": 4966957003540,
+              "context": 18,
+              "args": [
+                2,
+                201433680,
+                1,
+                1,
+                0,
+                61
+              ]
+            }
+          ],
+          "wire_out": [
+            {
+              "index": 5044,
+              "name": "wire_out_data",
+              "us": 4966956900390,
+              "context": 2,
+              "args": [
+                201433681,
+                2,
+                0,
+                1,
+                4966956899775,
+                0
+              ]
+            },
+            {
+              "index": 5529,
+              "name": "wire_out_data",
+              "us": 4966957014697,
+              "context": 10,
+              "args": [
+                201433681,
+                2,
+                0,
+                1,
+                4966957014514,
+                0
+              ]
+            },
+            {
+              "index": 5530,
+              "name": "wire_out_data",
+              "us": 4966957014701,
+              "context": 10,
+              "args": [
+                201433681,
+                2,
+                0,
+                1,
+                4966957014515,
+                0
+              ]
+            }
+          ]
+        }
+      ],
+      "first_authentication_errors": [],
+      "monitor_failures": [],
+      "trace_complete": true,
+      "key_id_overflow": 0,
+      "scope": "Repeated original/repair/copy decrypt observations, not unique lost messages or independent tests. Opaque key IDs use exact byte equality, no key/digest output. Diagnostic overlay may perturb schedules; no qualification."
+    },
+    "pr387-km-trace-v2-hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm.log": {
+      "events": 6424,
+      "encoded_large": 256,
+      "correct_decrypt_observations": 939,
+      "wrong_plaintext": 0,
+      "authentication_errors": 36,
+      "all_failed_decode_observations_use_wrong_known_key": true,
+      "generation_pairs": [
+        [
+          1,
+          3
+        ]
+      ],
+      "reported_failing_position": 62,
+      "reported_position_key_mismatch_witness": {
+        "decode": {
+          "index": 5586,
+          "name": "gcm_clear",
+          "us": 4966961800890,
+          "context": 18,
+          "args": [
+            335399048,
+            2,
+            15,
+            18446744073709551615,
+            1316,
+            0
+          ]
+        },
+        "source_encode": {
+          "index": 5007,
+          "name": "encode",
+          "us": 4966961656309,
+          "context": 20,
+          "args": [
+            335399048,
+            1,
+            62,
+            62,
+            1316,
+            0
+          ]
+        },
+        "selected": {
+          "index": 5584,
+          "name": "rx_select",
+          "us": 4966961800866,
+          "context": 18,
+          "args": [
+            335399048,
+            2,
+            0,
+            335399047,
+            1,
+            61
+          ]
+        },
+        "selected_key_event": {
+          "index": 5585,
+          "name": "rx_key_select",
+          "us": 4966961800870,
+          "context": 18,
+          "args": [
+            335399048,
+            14,
+            2,
+            0,
+            0,
+            0
+          ]
+        },
+        "expected_key_id": 12,
+        "actual_key_id": 14,
+        "selected_encoder_generations": [
+          {
+            "encoder_context": 20,
+            "generation": 3
+          }
+        ],
+        "latest_install": [
+          {
+            "index": 5543,
+            "name": "rx_key_install",
+            "us": 4966961791353,
+            "context": 18,
+            "args": [
+              2,
+              14,
+              335399047,
+              1,
+              0,
+              0
+            ]
+          }
+        ],
+        "latest_replacement": [
+          {
+            "index": 5542,
+            "name": "rx_replace",
+            "us": 4966961791348,
+            "context": 18,
+            "args": [
+              2,
+              335399047,
+              1,
+              1,
+              0,
+              61
+            ]
+          }
+        ],
+        "wire_out": [
+          {
+            "index": 5108,
+            "name": "wire_out_data",
+            "us": 4966961682526,
+            "context": 2,
+            "args": [
+              335399048,
+              2,
+              0,
+              1,
+              4966961682132,
+              0
+            ]
+          },
+          {
+            "index": 5569,
+            "name": "wire_out_data",
+            "us": 4966961798725,
+            "context": 10,
+            "args": [
+              335399048,
+              2,
+              0,
+              1,
+              4966961798126,
+              0
+            ]
+          },
+          {
+            "index": 5570,
+            "name": "wire_out_data",
+            "us": 4966961798730,
+            "context": 10,
+            "args": [
+              335399048,
+              2,
+              0,
+              1,
+              4966961798127,
+              0
+            ]
+          }
+        ]
+      },
+      "first_wrong": [],
+      "first_authentication_errors": [
+        {
+          "decode": {
+            "index": 5582,
+            "name": "gcm_clear",
+            "us": 4966961800620,
+            "context": 18,
+            "args": [
+              335399049,
+              2,
+              15,
+              18446744073709551615,
+              1316,
+              0
+            ]
+          },
+          "source_encode": {
+            "index": 5024,
+            "name": "encode",
+            "us": 4966961661214,
+            "context": 20,
+            "args": [
+              335399049,
+              1,
+              63,
+              63,
+              1316,
+              0
+            ]
+          },
+          "selected": {
+            "index": 5580,
+            "name": "rx_select",
+            "us": 4966961800594,
+            "context": 18,
+            "args": [
+              335399049,
+              2,
+              0,
+              335399047,
+              1,
+              61
+            ]
+          },
+          "selected_key_event": {
+            "index": 5581,
+            "name": "rx_key_select",
+            "us": 4966961800599,
+            "context": 18,
+            "args": [
+              335399049,
+              14,
+              2,
+              0,
+              0,
+              0
+            ]
+          },
+          "expected_key_id": 12,
+          "actual_key_id": 14,
+          "selected_encoder_generations": [
+            {
+              "encoder_context": 20,
+              "generation": 3
+            }
+          ],
+          "latest_install": [
+            {
+              "index": 5543,
+              "name": "rx_key_install",
+              "us": 4966961791353,
+              "context": 18,
+              "args": [
+                2,
+                14,
+                335399047,
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "latest_replacement": [
+            {
+              "index": 5542,
+              "name": "rx_replace",
+              "us": 4966961791348,
+              "context": 18,
+              "args": [
+                2,
+                335399047,
+                1,
+                1,
+                0,
+                61
+              ]
+            }
+          ],
+          "wire_out": [
+            {
+              "index": 5197,
+              "name": "wire_out_data",
+              "us": 4966961705372,
+              "context": 2,
+              "args": [
+                335399049,
+                2,
+                1,
+                1,
+                4966961704649,
+                0
+              ]
+            },
+            {
+              "index": 5295,
+              "name": "wire_out_data",
+              "us": 4966961727766,
+              "context": 2,
+              "args": [
+                335399049,
+                2,
+                1,
+                1,
+                4966961727648,
+                0
+              ]
+            },
+            {
+              "index": 5556,
+              "name": "wire_out_data",
+              "us": 4966961796250,
+              "context": 10,
+              "args": [
+                335399049,
+                2,
+                0,
+                1,
+                4966961795670,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "decode": {
+            "index": 5586,
+            "name": "gcm_clear",
+            "us": 4966961800890,
+            "context": 18,
+            "args": [
+              335399048,
+              2,
+              15,
+              18446744073709551615,
+              1316,
+              0
+            ]
+          },
+          "source_encode": {
+            "index": 5007,
+            "name": "encode",
+            "us": 4966961656309,
+            "context": 20,
+            "args": [
+              335399048,
+              1,
+              62,
+              62,
+              1316,
+              0
+            ]
+          },
+          "selected": {
+            "index": 5584,
+            "name": "rx_select",
+            "us": 4966961800866,
+            "context": 18,
+            "args": [
+              335399048,
+              2,
+              0,
+              335399047,
+              1,
+              61
+            ]
+          },
+          "selected_key_event": {
+            "index": 5585,
+            "name": "rx_key_select",
+            "us": 4966961800870,
+            "context": 18,
+            "args": [
+              335399048,
+              14,
+              2,
+              0,
+              0,
+              0
+            ]
+          },
+          "expected_key_id": 12,
+          "actual_key_id": 14,
+          "selected_encoder_generations": [
+            {
+              "encoder_context": 20,
+              "generation": 3
+            }
+          ],
+          "latest_install": [
+            {
+              "index": 5543,
+              "name": "rx_key_install",
+              "us": 4966961791353,
+              "context": 18,
+              "args": [
+                2,
+                14,
+                335399047,
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "latest_replacement": [
+            {
+              "index": 5542,
+              "name": "rx_replace",
+              "us": 4966961791348,
+              "context": 18,
+              "args": [
+                2,
+                335399047,
+                1,
+                1,
+                0,
+                61
+              ]
+            }
+          ],
+          "wire_out": [
+            {
+              "index": 5108,
+              "name": "wire_out_data",
+              "us": 4966961682526,
+              "context": 2,
+              "args": [
+                335399048,
+                2,
+                0,
+                1,
+                4966961682132,
+                0
+              ]
+            },
+            {
+              "index": 5569,
+              "name": "wire_out_data",
+              "us": 4966961798725,
+              "context": 10,
+              "args": [
+                335399048,
+                2,
+                0,
+                1,
+                4966961798126,
+                0
+              ]
+            },
+            {
+              "index": 5570,
+              "name": "wire_out_data",
+              "us": 4966961798730,
+              "context": 10,
+              "args": [
+                335399048,
+                2,
+                0,
+                1,
+                4966961798127,
+                0
+              ]
+            }
+          ]
+        }
+      ],
+      "monitor_failures": [],
+      "trace_complete": true,
+      "key_id_overflow": 0,
+      "scope": "Repeated original/repair/copy decrypt observations, not unique lost messages or independent tests. Opaque key IDs use exact byte equality, no key/digest output. Diagnostic overlay may perturb schedules; no qualification."
+    },
+    "pr387-km-trace-v2-hybrid_soak_network_upper_profile_ctr.log": {
+      "events": 2122,
+      "encoded_large": 81,
+      "correct_decrypt_observations": 312,
+      "wrong_plaintext": 13,
+      "authentication_errors": 0,
+      "all_failed_decode_observations_use_wrong_known_key": true,
+      "generation_pairs": [
+        [
+          0,
+          2
+        ]
+      ],
+      "reported_failing_position": 30,
+      "reported_position_key_mismatch_witness": {
+        "decode": {
+          "index": 1057,
+          "name": "ctr_clear",
+          "us": 4966951017201,
+          "context": 7,
+          "args": [
+            844281387,
+            1,
+            0,
+            16073597832026670141,
+            1316,
+            0
+          ]
+        },
+        "source_encode": {
+          "index": 516,
+          "name": "encode",
+          "us": 4966950945727,
+          "context": 9,
+          "args": [
+            844281387,
+            0,
+            30,
+            30,
+            1316,
+            0
+          ]
+        },
+        "selected": {
+          "index": 1053,
+          "name": "rx_select",
+          "us": 4966951017188,
+          "context": 7,
+          "args": [
+            844281387,
+            1,
+            0,
+            844281388,
+            1,
+            29
+          ]
+        },
+        "selected_key_event": {
+          "index": 1055,
+          "name": "rx_key_select",
+          "us": 4966951017193,
+          "context": 7,
+          "args": [
+            844281387,
+            5,
+            1,
+            0,
+            0,
+            0
+          ]
+        },
+        "expected_key_id": 2,
+        "actual_key_id": 5,
+        "selected_encoder_generations": [
+          {
+            "encoder_context": 9,
+            "generation": 2
+          }
+        ],
+        "latest_install": [
+          {
+            "index": 933,
+            "name": "rx_key_install",
+            "us": 4966951000532,
+            "context": 7,
+            "args": [
+              1,
+              5,
+              844281386,
+              1,
+              0,
+              0
+            ]
+          }
+        ],
+        "latest_replacement": [
+          {
+            "index": 932,
+            "name": "rx_replace",
+            "us": 4966951000527,
+            "context": 7,
+            "args": [
+              1,
+              844281386,
+              1,
+              1,
+              0,
+              29
+            ]
+          }
+        ],
+        "wire_out": [
+          {
+            "index": 917,
+            "name": "wire_out_data",
+            "us": 4966950998931,
+            "context": 2,
+            "args": [
+              844281387,
+              1,
+              0,
+              1,
+              4966950998520,
+              0
+            ]
+          },
+          {
+            "index": 918,
+            "name": "wire_out_data",
+            "us": 4966950998938,
+            "context": 2,
+            "args": [
+              844281387,
+              1,
+              0,
+              1,
+              4966950998521,
+              0
+            ]
+          },
+          {
+            "index": 1043,
+            "name": "wire_out_data",
+            "us": 4966951015806,
+            "context": 10,
+            "args": [
+              844281387,
+              1,
+              0,
+              1,
+              4966951014760,
+              0
+            ]
+          }
+        ]
+      },
+      "first_wrong": [
+        {
+          "decode": {
+            "index": 955,
+            "name": "ctr_clear",
+            "us": 4966951003121,
+            "context": 7,
+            "args": [
+              844281388,
+              1,
+              0,
+              2546497859809032929,
+              1316,
+              0
+            ]
+          },
+          "source_encode": {
+            "index": 532,
+            "name": "encode",
+            "us": 4966950948959,
+            "context": 9,
+            "args": [
+              844281388,
+              0,
+              31,
+              31,
+              1316,
+              0
+            ]
+          },
+          "selected": {
+            "index": 953,
+            "name": "rx_select",
+            "us": 4966951003108,
+            "context": 7,
+            "args": [
+              844281388,
+              1,
+              0,
+              844281386,
+              1,
+              29
+            ]
+          },
+          "selected_key_event": {
+            "index": 954,
+            "name": "rx_key_select",
+            "us": 4966951003113,
+            "context": 7,
+            "args": [
+              844281388,
+              5,
+              1,
+              0,
+              0,
+              0
+            ]
+          },
+          "expected_key_id": 2,
+          "actual_key_id": 5,
+          "selected_encoder_generations": [
+            {
+              "encoder_context": 9,
+              "generation": 2
+            }
+          ],
+          "latest_install": [
+            {
+              "index": 933,
+              "name": "rx_key_install",
+              "us": 4966951000532,
+              "context": 7,
+              "args": [
+                1,
+                5,
+                844281386,
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "latest_replacement": [
+            {
+              "index": 932,
+              "name": "rx_replace",
+              "us": 4966951000527,
+              "context": 7,
+              "args": [
+                1,
+                844281386,
+                1,
+                1,
+                0,
+                29
+              ]
+            }
+          ],
+          "wire_out": [
+            {
+              "index": 947,
+              "name": "wire_out_data",
+              "us": 4966951002282,
+              "context": 10,
+              "args": [
+                844281388,
+                1,
+                0,
+                1,
+                4966951001152,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "decode": {
+            "index": 1057,
+            "name": "ctr_clear",
+            "us": 4966951017201,
+            "context": 7,
+            "args": [
+              844281387,
+              1,
+              0,
+              16073597832026670141,
+              1316,
+              0
+            ]
+          },
+          "source_encode": {
+            "index": 516,
+            "name": "encode",
+            "us": 4966950945727,
+            "context": 9,
+            "args": [
+              844281387,
+              0,
+              30,
+              30,
+              1316,
+              0
+            ]
+          },
+          "selected": {
+            "index": 1053,
+            "name": "rx_select",
+            "us": 4966951017188,
+            "context": 7,
+            "args": [
+              844281387,
+              1,
+              0,
+              844281388,
+              1,
+              29
+            ]
+          },
+          "selected_key_event": {
+            "index": 1055,
+            "name": "rx_key_select",
+            "us": 4966951017193,
+            "context": 7,
+            "args": [
+              844281387,
+              5,
+              1,
+              0,
+              0,
+              0
+            ]
+          },
+          "expected_key_id": 2,
+          "actual_key_id": 5,
+          "selected_encoder_generations": [
+            {
+              "encoder_context": 9,
+              "generation": 2
+            }
+          ],
+          "latest_install": [
+            {
+              "index": 933,
+              "name": "rx_key_install",
+              "us": 4966951000532,
+              "context": 7,
+              "args": [
+                1,
+                5,
+                844281386,
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "latest_replacement": [
+            {
+              "index": 932,
+              "name": "rx_replace",
+              "us": 4966951000527,
+              "context": 7,
+              "args": [
+                1,
+                844281386,
+                1,
+                1,
+                0,
+                29
+              ]
+            }
+          ],
+          "wire_out": [
+            {
+              "index": 917,
+              "name": "wire_out_data",
+              "us": 4966950998931,
+              "context": 2,
+              "args": [
+                844281387,
+                1,
+                0,
+                1,
+                4966950998520,
+                0
+              ]
+            },
+            {
+              "index": 918,
+              "name": "wire_out_data",
+              "us": 4966950998938,
+              "context": 2,
+              "args": [
+                844281387,
+                1,
+                0,
+                1,
+                4966950998521,
+                0
+              ]
+            },
+            {
+              "index": 1043,
+              "name": "wire_out_data",
+              "us": 4966951015806,
+              "context": 10,
+              "args": [
+                844281387,
+                1,
+                0,
+                1,
+                4966951014760,
+                0
+              ]
+            }
+          ]
+        }
+      ],
+      "first_authentication_errors": [],
+      "monitor_failures": [],
+      "trace_complete": true,
+      "key_id_overflow": 0,
+      "scope": "Repeated original/repair/copy decrypt observations, not unique lost messages or independent tests. Opaque key IDs use exact byte equality, no key/digest output. Diagnostic overlay may perturb schedules; no qualification."
+    },
+    "pr387-km-trace-v2-hybrid_soak_network_upper_profile_gcm.log": {
+      "events": 2677,
+      "encoded_large": 113,
+      "correct_decrypt_observations": 420,
+      "wrong_plaintext": 0,
+      "authentication_errors": 22,
+      "all_failed_decode_observations_use_wrong_known_key": true,
+      "generation_pairs": [
+        [
+          1,
+          3
+        ]
+      ],
+      "reported_failing_position": 62,
+      "reported_position_key_mismatch_witness": {
+        "decode": {
+          "index": 1689,
+          "name": "gcm_clear",
+          "us": 4966952327500,
+          "context": 7,
+          "args": [
+            634628040,
+            2,
+            15,
+            18446744073709551615,
+            1316,
+            0
+          ]
+        },
+        "source_encode": {
+          "index": 1069,
+          "name": "encode",
+          "us": 4966952241384,
+          "context": 9,
+          "args": [
+            634628040,
+            1,
+            62,
+            62,
+            1316,
+            0
+          ]
+        },
+        "selected": {
+          "index": 1687,
+          "name": "rx_select",
+          "us": 4966952327475,
+          "context": 7,
+          "args": [
+            634628040,
+            2,
+            0,
+            634628039,
+            1,
+            61
+          ]
+        },
+        "selected_key_event": {
+          "index": 1688,
+          "name": "rx_key_select",
+          "us": 4966952327479,
+          "context": 7,
+          "args": [
+            634628040,
+            6,
+            2,
+            0,
+            0,
+            0
+          ]
+        },
+        "expected_key_id": 4,
+        "actual_key_id": 6,
+        "selected_encoder_generations": [
+          {
+            "encoder_context": 9,
+            "generation": 3
+          }
+        ],
+        "latest_install": [
+          {
+            "index": 1575,
+            "name": "rx_key_install",
+            "us": 4966952303056,
+            "context": 7,
+            "args": [
+              2,
+              6,
+              634628039,
+              1,
+              0,
+              0
+            ]
+          }
+        ],
+        "latest_replacement": [
+          {
+            "index": 1574,
+            "name": "rx_replace",
+            "us": 4966952303051,
+            "context": 7,
+            "args": [
+              2,
+              634628039,
+              1,
+              1,
+              0,
+              61
+            ]
+          }
+        ],
+        "wire_out": [
+          {
+            "index": 1547,
+            "name": "wire_out_data",
+            "us": 4966952298745,
+            "context": 2,
+            "args": [
+              634628040,
+              2,
+              0,
+              1,
+              4966952297927,
+              0
+            ]
+          },
+          {
+            "index": 1669,
+            "name": "wire_out_data",
+            "us": 4966952324934,
+            "context": 10,
+            "args": [
+              634628040,
+              2,
+              0,
+              1,
+              4966952324793,
+              0
+            ]
+          },
+          {
+            "index": 1670,
+            "name": "wire_out_data",
+            "us": 4966952324939,
+            "context": 10,
+            "args": [
+              634628040,
+              2,
+              0,
+              1,
+              4966952324794,
+              0
+            ]
+          }
+        ]
+      },
+      "first_wrong": [],
+      "first_authentication_errors": [
+        {
+          "decode": {
+            "index": 1686,
+            "name": "gcm_clear",
+            "us": 4966952326965,
+            "context": 7,
+            "args": [
+              634628041,
+              2,
+              15,
+              18446744073709551615,
+              1316,
+              0
+            ]
+          },
+          "source_encode": {
+            "index": 1099,
+            "name": "encode",
+            "us": 4966952245655,
+            "context": 9,
+            "args": [
+              634628041,
+              1,
+              63,
+              63,
+              1316,
+              0
+            ]
+          },
+          "selected": {
+            "index": 1684,
+            "name": "rx_select",
+            "us": 4966952326939,
+            "context": 7,
+            "args": [
+              634628041,
+              2,
+              0,
+              634628039,
+              1,
+              61
+            ]
+          },
+          "selected_key_event": {
+            "index": 1685,
+            "name": "rx_key_select",
+            "us": 4966952326944,
+            "context": 7,
+            "args": [
+              634628041,
+              6,
+              2,
+              0,
+              0,
+              0
+            ]
+          },
+          "expected_key_id": 4,
+          "actual_key_id": 6,
+          "selected_encoder_generations": [
+            {
+              "encoder_context": 9,
+              "generation": 3
+            }
+          ],
+          "latest_install": [
+            {
+              "index": 1575,
+              "name": "rx_key_install",
+              "us": 4966952303056,
+              "context": 7,
+              "args": [
+                2,
+                6,
+                634628039,
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "latest_replacement": [
+            {
+              "index": 1574,
+              "name": "rx_replace",
+              "us": 4966952303051,
+              "context": 7,
+              "args": [
+                2,
+                634628039,
+                1,
+                1,
+                0,
+                61
+              ]
+            }
+          ],
+          "wire_out": [
+            {
+              "index": 1658,
+              "name": "wire_out_data",
+              "us": 4966952322680,
+              "context": 10,
+              "args": [
+                634628041,
+                2,
+                0,
+                1,
+                4966952322363,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "decode": {
+            "index": 1689,
+            "name": "gcm_clear",
+            "us": 4966952327500,
+            "context": 7,
+            "args": [
+              634628040,
+              2,
+              15,
+              18446744073709551615,
+              1316,
+              0
+            ]
+          },
+          "source_encode": {
+            "index": 1069,
+            "name": "encode",
+            "us": 4966952241384,
+            "context": 9,
+            "args": [
+              634628040,
+              1,
+              62,
+              62,
+              1316,
+              0
+            ]
+          },
+          "selected": {
+            "index": 1687,
+            "name": "rx_select",
+            "us": 4966952327475,
+            "context": 7,
+            "args": [
+              634628040,
+              2,
+              0,
+              634628039,
+              1,
+              61
+            ]
+          },
+          "selected_key_event": {
+            "index": 1688,
+            "name": "rx_key_select",
+            "us": 4966952327479,
+            "context": 7,
+            "args": [
+              634628040,
+              6,
+              2,
+              0,
+              0,
+              0
+            ]
+          },
+          "expected_key_id": 4,
+          "actual_key_id": 6,
+          "selected_encoder_generations": [
+            {
+              "encoder_context": 9,
+              "generation": 3
+            }
+          ],
+          "latest_install": [
+            {
+              "index": 1575,
+              "name": "rx_key_install",
+              "us": 4966952303056,
+              "context": 7,
+              "args": [
+                2,
+                6,
+                634628039,
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "latest_replacement": [
+            {
+              "index": 1574,
+              "name": "rx_replace",
+              "us": 4966952303051,
+              "context": 7,
+              "args": [
+                2,
+                634628039,
+                1,
+                1,
+                0,
+                61
+              ]
+            }
+          ],
+          "wire_out": [
+            {
+              "index": 1547,
+              "name": "wire_out_data",
+              "us": 4966952298745,
+              "context": 2,
+              "args": [
+                634628040,
+                2,
+                0,
+                1,
+                4966952297927,
+                0
+              ]
+            },
+            {
+              "index": 1669,
+              "name": "wire_out_data",
+              "us": 4966952324934,
+              "context": 10,
+              "args": [
+                634628040,
+                2,
+                0,
+                1,
+                4966952324793,
+                0
+              ]
+            },
+            {
+              "index": 1670,
+              "name": "wire_out_data",
+              "us": 4966952324939,
+              "context": 10,
+              "args": [
+                634628040,
+                2,
+                0,
+                1,
+                4966952324794,
+                0
+              ]
+            }
+          ]
+        }
+      ],
+      "monitor_failures": [],
+      "trace_complete": true,
+      "key_id_overflow": 0,
+      "scope": "Repeated original/repair/copy decrypt observations, not unique lost messages or independent tests. Opaque key IDs use exact byte equality, no key/digest output. Diagnostic overlay may perturb schedules; no qualification."
+    }
+  },
+  "trace_build": {
+    "base_source": "4d59666ebaf54df57b514d1069a5172df440af51",
+    "source": "<diagnostic-source>",
+    "configure": [
+      "cmake",
+      "-S",
+      ".",
+      "-B",
+      "build-km-gcc-o1",
+      "-G",
+      "Ninja",
+      "-DCMAKE_BUILD_TYPE=Debug",
+      "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "-DCMAKE_CXX_FLAGS_DEBUG=-g -O1",
+      "-DENABLE_AEAD_API_PREVIEW=ON",
+      "-DENABLE_MAXREXMITBW=ON",
+      "-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON",
+      "-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL=ON",
+      "-DROBOTWEAX_SRT_BUILD_TOOLS=OFF",
+      "-DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF"
+    ],
+    "build": [
+      "cmake",
+      "--build",
+      "build-km-gcc-o1",
+      "--target",
+      "robotweax_srt_tests",
+      "-j4"
+    ],
+    "scope": "Dirty diagnostic overlay in isolated detached worktree; no qualification. Full ASan/UBSan with default options. Bounded 16384-event ring, atomic writes and post-test output only; synthetic DATA identity, no secrets."
+  },
+  "prior_head_ci": {
+    "repo": "Robotweax/srt",
+    "head": "8e8c3364eef2cf6eb663fb8408c58ad916f8e63b",
+    "run_id": 42504832051,
+    "scope": "Connector returns first page only; job result snapshot, no artifact-level causality attribution for Windows failures.",
+    "jobs": [
+      {
+        "id": 128805105643,
+        "name": "DCO sign-off",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805105859,
+        "name": "Change classification",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166528,
+        "name": "GCC 15 Release epoll",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166556,
+        "name": "Documentation",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166559,
+        "name": "macos-latest Release",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166566,
+        "name": "Linux Release",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166601,
+        "name": "C++ format guard",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166619,
+        "name": "Python harness tests",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166640,
+        "name": "windows-latest Release",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166697,
+        "name": "macos-latest Debug",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166698,
+        "name": "ubuntu-latest Debug",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166699,
+        "name": "windows-latest Debug",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166714,
+        "name": "Shared library (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166715,
+        "name": "srt-live-transmit / macos-latest",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166751,
+        "name": "Fuzz smoke",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166752,
+        "name": "Mbed TLS 3.6 (macos-latest)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166761,
+        "name": "Multicast (windows-latest, openssl)",
+        "status": "completed",
+        "conclusion": "failure"
+      },
+      {
+        "id": 128805166768,
+        "name": "Shared library (macos-latest)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166773,
+        "name": "Multicast (ubuntu-latest, mbedtls)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166782,
+        "name": "Multicast (ubuntu-latest, openssl)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166784,
+        "name": "Multicast (windows-latest, bcrypt)",
+        "status": "completed",
+        "conclusion": "failure"
+      },
+      {
+        "id": 128805166810,
+        "name": "Prepare reference interoperability",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166824,
+        "name": "Thread sanitizer",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166848,
+        "name": "Multicast (macos-latest, openssl)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166858,
+        "name": "AES-GCM platform/ABI (windows-latest)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166863,
+        "name": "srt-live-transmit / ubuntu-latest",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166864,
+        "name": "Shared library (windows-latest)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166895,
+        "name": "srt-live-transmit / windows-latest",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805166998,
+        "name": "Mbed TLS 3.6 (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "id": 128805167055,
+        "name": "Address/undefined sanitizers",
+        "status": "completed",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "trace_limits": "16384 bounded event slots, opaque context/key IDs, exact equality of at most 128 synthetic keys retained only in diagnostic memory and wiped at dump. No keys/digests/salts/passphrases/ciphertext/tags/addresses are emitted. All v2 captures are complete with zero key-ID overflow. Post-test dump avoids per-packet log I/O; instrumentation still perturbs schedules and is never qualification.",
+  "native_counts": "Four v2 native failures, one case each. 13+3 CTR wrong-plaintext and 22+36 GCM auth-failure observations include repeated originals/repairs/copies, not unique lost messages. Both trace versions pass the same 34 crypto-session and 15 encoder controls; not 98 unique tests.",
+  "causal_boundary": "Wrong-key selection is directly bound to encoded generations and the reported failing DATA position in all four v2 captures. Their control-freshness monitor did not fail; prior separate GCC freshness, other drops, KM readiness and all historical failures are not thereby explained or qualified.",
+  "initial_overlay_build_failure": "First diagnostic overlay build failed strict old-style-cast/sign-conversion checks. Explicit casts corrected the scratch trace; warnings-as-errors and sanitizers remain enabled. Failed build log/generator and corrected versions retained in local archive. No native result exists for that failed build.",
+  "environment": "Same existing Ubuntu24.04.4 ARM64 Lima lab; GCC13 Debug -g -O1 ASan/UBSan for native overlays. ASAN_OPTIONS/UBSAN_OPTIONS/TSAN_OPTIONS/soak duration unset. Native gates remain serial; build/focused checks precede native captures. Every selected process is bounded at 30s and every profile retains the existing four-second workload. No retry substitutes for a failed profile.",
+  "next": "Define a safe activation/generation association or lifetime rule for CTR; never select keys from a plaintext guess. Consider separately bounded authenticated candidate selection for GCM, with replay/range/work-budget tests. Add production regressions proving delayed old DATA, reordered KM, repeated selector reuse and sequence rollover before claiming a fix. Diagnose separate freshness failures independently.",
+  "checks": "Standalone source compiles with strict warnings; source/binary/library/cache/log identities recorded. No production/include/test/CMake/workflow modification in this diagnosis batch. Remaining review findings and enforced source-binding gap stay open."
+}

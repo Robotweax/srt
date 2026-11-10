@@ -50,7 +50,7 @@ namespace {
     // Multicast dispatch transmits from this same socket, so its multicast
     // hop limit, outgoing interface and loopback are configured here. The
     // options are harmless on sockets that never send to a group address.
-    if (options.multicast_group_set) {
+    if (options.multicast_group_set && !options.multicast_independent) {
         if (options.multicast_group.family != socket.family()) {
             return fail(SRT_EINVPARAM);
         }
@@ -60,7 +60,7 @@ namespace {
             return fail(SRT_ESOCKFAIL, socket.last_system_error());
         }
     }
-    if (options.multicast_interface_set
+    if (options.multicast_interface_set && !options.multicast_independent
         && options.multicast_interface.family == socket.family()
         && socket.set_multicast_interface(options.multicast_interface)
             != Error::none) {

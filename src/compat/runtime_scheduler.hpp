@@ -1,5 +1,7 @@
 #pragma once
 
+#include "compat/platform_timer.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -23,8 +25,8 @@ public:
         std::size_t shard_count = 0;
         std::size_t queue_capacity_per_shard = 0;
         std::size_t timer_capacity_per_shard = 0;
-        // Independent, preallocated persistent service slots. The production
-        // service leaves this at zero until a client is integrated.
+        // Independent, preallocated persistent service slots. Standalone pools
+        // opt in; the process service supplies its bounded multicast budget.
         std::size_t service_capacity_per_shard = 0;
     };
 
@@ -189,6 +191,7 @@ private:
         std::size_t service_pending = 0;
         std::size_t next_service = 0;
         bool service_turn = true;
+        bool timer_turn = true;
         std::size_t head = 0;
         std::size_t size = 0;
         std::uint64_t next_timer_order = 1U;
@@ -199,6 +202,9 @@ private:
 
     void run(std::size_t shard_index) noexcept;
 
+    // Worker deadlines and the waits of callers that this scheduler wakes
+    // are in the millisecond range and below.
+    PlatformTimerResolution timer_resolution_;
     Configuration configuration_;
     std::uint64_t service_scope_ = 0;
     std::vector<std::unique_ptr<Shard>> shards_;

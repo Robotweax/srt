@@ -1,0 +1,336 @@
+#pragma once
+
+#include "compat/group_runtime_admission.hpp"
+#include "compat/hybrid/hybrid_reporting.hpp"
+
+namespace robotweax::srt::compat {
+
+// Single-packet Live dispatch actor for the coordinated sender profile.
+// Owns the publication/close gate and authoritative advertised cursor. Callers
+// must not hold registry/group metadata or runtime locks when entering it.
+// Factory construction alone may reserve idle services under a registry lock
+// with an already running scheduler and bound source; it performs no I/O.
+// Lock order: publication -> emitter -> distinct runtimes (try-lock only).
+// Its two reserved services require explicit scheduler capacity; close before
+// scheduler stop. The borrowed crypto provider outlives the actor and its work.
+class GroupSendCoordinator {
+public:
+    using Clock = GroupMulticastEmitter::Clock;
+    static constexpr std::size_t maximum_members = 64;
+    struct Configuration {
+        GroupMulticastEmitter::Configuration source;
+        Clock::time_point timestamp_origin {};
+        std::shared_ptr<SharedTransmitKeySchedule> key_schedule;
+        std::uint32_t initial_message = 1;
+        std::size_t member_capacity = 16;
+        std::size_t fanout_batch = 64;
+        // Minimum busy attempts, for completion and with a busy grace also
+        // for admission, before a member is detached, bounded independently
+        // of source slots. Completion attempts follow the send rate, so with
+        // a busy grace the member must also have stayed busy for that long.
+        // Admission attempts are at least admission_retry_interval apart but
+        // can be much further apart on a coarse platform timer, so the grace
+        // alone could pass within two or three of them.
+        std::uint32_t maximum_busy_attempts = 8;
+        Clock::duration poll_interval = std::chrono::milliseconds {1};
+        // How long send() stays refused after a member admission was busy,
+        // before the next attempt. A busy member is usually inside one poll
+        // for tens of microseconds; the gate only bounds how often callers
+        // retry. Never longer than poll_interval.
+        Clock::duration admission_retry_interval =
+            std::chrono::microseconds {100};
+        // Optional transient runtime/KM busy grace, for admission and for
+        // completion fanout. No sealing while retrying.
+        Clock::duration admission_busy_grace {};
+        std::shared_ptr<ReadinessSource> readiness;
+        // Borrowed monotonic admission clock, serialized by the actor gate.
+        GroupMulticastEmitter::ClockFunction admission_clock = nullptr;
+        void* admission_clock_context = nullptr;
+        // Bound original recipients, including retired policies with queued
+        // native copies. This is not an aggregate wire/repair bandwidth budget.
+        // No public switching API selects these internal delivery policies.
+        std::size_t maximum_unicast_members = 4;
+        // Aggregate original/repair wire bytes, including IP/UDP. Zero derives
+        // source rate * max(1, maximum_unicast_members), saturating on overflow.
+        // One MTU of burst credit. No public rate override selects this value.
+        std::uint64_t aggregate_unicast_wire_bytes_per_second = 0;
+        GroupUnicastBudget::ClockFunction unicast_budget_clock = nullptr;
+        void* unicast_budget_clock_context = nullptr;
+    };
+    enum class Status : std::uint8_t {
+        accepted,
+        // No member could take the message because none existed or all had
+        // already left: the timeline advances and no datagram is emitted.
+        advanced_without_receivers,
+        // No member remains, and at least one was detached during this call,
+        // or during an earlier call that left the sequence unsettled,
+        // although its session is still established. Nothing is consumed or
+        // emitted; the message is not sent.
+        receivers_lost,
+        full,
+        busy,
+        expired,
+        invalid,
+        failed,
+        closed
+    };
+    enum class Detachment : std::uint8_t {
+        none,
+        admission_busy,
+        history_full,
+        stale,
+        closed,
+        invalid,
+        expired,
+        crypto_error,
+        source_not_submitted,
+        completion_busy,
+        invalid_completion,
+        source_unavailable
+    };
+    struct Member {
+        std::uint64_t id = 0;
+        Detachment detachment = Detachment::none;
+        GroupOriginalDelivery delivery = GroupOriginalDelivery::multicast;
+        std::uint64_t revision = 0;
+        SequenceNumber effective_sequence {};
+        std::uint64_t effective_position = 0;
+        // At most detach, one source recovery, then detach again per lifetime.
+        // Used by public-row refresh to reject delayed status observations.
+        std::uint64_t status_revision = 0;
+    };
+    enum class TransitionStatus : std::uint8_t {
+        applied,
+        unchanged,
+        busy,
+        stale,
+        full,
+        unavailable,
+        exhausted,
+        closed,
+        invalid
+    };
+    struct Transition {
+        TransitionStatus status = TransitionStatus::stale;
+        Member member {};
+        SendBuffer::GroupRecovery prefix {};
+        bool prefix_scheduled = false;
+    };
+    // Internal single-writer policy command. The expected revision fences old
+    // requests; only future admissions use the new mode. Retained-prefix replay
+    // is explicit, all-or-nothing, bounded to 256 slots and separately classified
+    // as unsent originals or submitted repairs. Queued native retries survive.
+    [[nodiscard]] Transition set_delivery(std::uint64_t member,
+        std::uint64_t expected_revision, GroupOriginalDelivery,
+        bool recover_retained_prefix = false) noexcept;
+    enum class SourceMode : std::uint8_t { multicast, unicast_only };
+    struct RecoveryMember {
+        std::uint64_t id = 0;
+        std::uint64_t expected_revision = 0;
+    };
+    struct SourceRecovery {
+        TransitionStatus status = TransitionStatus::stale;
+        std::uint64_t revision = 0;
+        SequenceNumber effective_sequence {};
+        std::uint64_t effective_position = 0;
+        std::size_t members = 0;
+        SendBuffer::GroupRecovery prefix {};
+    };
+    // Explicit internal recovery after a terminal native multicast error and
+    // complete outcome drain. Atomically validate selected member lifetimes,
+    // revisions, retained prefixes/keys and full-stream budget. Recover every
+    // selected prefix and force future originals to unicast; detach others.
+    // No source restart, rewind, multicast return, new join or public command.
+    [[nodiscard]] SourceRecovery recover_source_to_unicast(
+        std::uint64_t expected_revision,
+        std::span<const RecoveryMember>) noexcept;
+    struct Snapshot {
+        SequenceNumber next_sequence {};
+        std::uint32_t next_message = 1;
+        std::size_t active_members = 0;
+        std::size_t detached_members = 0;
+        std::size_t inflight_frames = 0;
+        std::uint64_t accepted_frames = 0;
+        std::uint64_t unused_frames = 0;
+        std::uint64_t applied_completions = 0;
+        std::uint64_t abandoned_completions = 0;
+        std::uint64_t delegated_completions = 0;
+        std::uint64_t duplicate_completions = 0;
+        std::size_t unicast_members = 0;
+        std::size_t unicast_reservations = 0;
+        std::size_t unicast_recipient_limit = 0;
+        GroupUnicastBudget::Snapshot unicast_budget;
+        SourceMode source_mode = SourceMode::multicast;
+        std::uint64_t source_revision = 0;
+        SequenceNumber source_effective_sequence {};
+        std::uint64_t source_effective_position = 0;
+        GroupMulticastEmitter::Failure source_failure =
+            GroupMulticastEmitter::Failure::none;
+        std::uint64_t unicast_only_frames = 0;
+        // Diagnostics for the admission path: sends refused because a member
+        // admission was busy, sends refused while the busy retry gate was
+        // closed, and sends refused for a full queue or source.
+        std::uint64_t busy_sends = 0;
+        std::uint64_t gated_sends = 0;
+        std::uint64_t full_sends = 0;
+        // Remaining closed time of the busy retry gate on the admission
+        // clock; zero when the gate is open. A caller refused with busy can
+        // sleep for it instead of polling.
+        Clock::duration retry_wait {};
+        bool writable = false;
+        bool failed = false;
+        bool closed = false;
+    };
+    [[nodiscard]] static std::shared_ptr<GroupSendCoordinator> create(
+        Configuration, std::shared_ptr<RuntimeScheduler>,
+        CryptoProvider& = default_crypto_provider()) noexcept;
+    [[nodiscard]] static std::shared_ptr<GroupSendCoordinator>
+    create_for_testing(
+        Configuration, CryptoProvider& = default_crypto_provider()) noexcept;
+    ~GroupSendCoordinator();
+
+    // Empty history and exact current advertised ISN required. Failed addition
+    // preserves the runtime. Detached members stay visible until removal;
+    // they cannot resume across a skipped frame. Explicit source-error recovery
+    // can restore a complete retained prefix without skipping. Removal revokes ownership,
+    // but leaves the established session available for explicit recovery/close.
+    [[nodiscard]] std::optional<Member> add_member(
+        const std::shared_ptr<ConnectionRuntime>&) noexcept;
+    void remove_member(std::uint64_t id) noexcept;
+    [[nodiscard]] std::size_t members(std::span<Member>) const noexcept;
+    // Admission uses detach-on-unavailable, including KM busy after the optional
+    // grace. Full source/fanout capacity rejects before member mutation or
+    // sealing. A source failure never authorizes a receiver's history.
+    // A key-horizon limit rejects before KM preparation can replace a selector
+    // used by a still-pending original. This fences local backlog only; it does
+    // not prove remote receipt or qualify reordered/delayed network KM traffic.
+    [[nodiscard]] Status send(std::span<const std::byte>, PacketTimestamp,
+        Clock::time_point deadline = Clock::time_point::max(),
+        bool in_order = true) noexcept;
+    [[nodiscard]] Snapshot snapshot() const noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    // Host declares actual application production/activity for this source
+    // incarnation. Refresh before expiry; ended is terminal. No DATA mutation.
+    [[nodiscard]] bool declare_source_activity(hybrid::Activity,
+        std::uint64_t produced_next, std::uint32_t lifetime_us) noexcept;
+    // Local observations, not remote delivery, contiguous progress or policy
+    // authorization. No sample if the member/runtime lifetime is unavailable.
+    [[nodiscard]] std::optional<hybrid::SourceDataProgress> data_progress(
+        std::uint64_t member) const noexcept;
+#endif
+    [[nodiscard]] const std::shared_ptr<ReadinessSource>&
+    readiness_source() const noexcept
+    {
+        return readiness_;
+    }
+    void close() noexcept;
+    void pump_for_testing() noexcept;
+
+private:
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    friend class hybrid::CoordinatorBridge;
+#endif
+    friend struct GroupSendCoordinatorTestAccess;
+    struct Membership {
+        Member state;
+        std::weak_ptr<ConnectionRuntime> runtime;
+        GroupRuntimeAdmission::Binding binding;
+        std::optional<Clock::time_point> busy_since;
+        // Consecutive busy admissions since busy_since, saturating at
+        // maximum_busy_attempts.
+        std::uint32_t busy_attempts = 0;
+        // This member's admission detachment set lost_connected_member_ and
+        // no send has settled the sequence since.
+        bool lost_connected = false;
+        bool unicast_lease = false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        std::uint64_t join_position = 0;
+        SequenceNumber join_sequence;
+        struct OverlapWindow {
+            std::uint64_t root = 0, revision = 0, boundary = 0, opened_us = 0,
+                          not_after_us = 0, end_position = 0;
+        };
+        std::optional<OverlapWindow> overlap_window;
+        std::uint64_t expired_overlap_root = 0, expired_overlap_revision = 0;
+        // Exact local recovery receipt, only for an already approved UC lease.
+        std::uint64_t hybrid_root = 0, recovered_hybrid_root = 0,
+                      recovered_member_revision = 0,
+                      recovered_source_revision = 0;
+#endif
+    };
+    struct Recipient {
+        std::uint64_t member = 0;
+        std::optional<GroupRuntimeAdmission::Ticket> ticket {};
+        std::uint32_t busy_attempts = 0;
+        // First busy completion attempt for this ticket, admission clock.
+        std::optional<Clock::time_point> busy_since {};
+    };
+    struct Frame {
+        std::vector<Recipient> recipients;
+        GroupMulticastEmitter::Outcome outcome;
+        std::size_t count = 0;
+        std::size_t remaining = 0;
+        bool occupied = false;
+        bool completed = false;
+        std::optional<std::uint64_t> crypto_generation;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        std::uint64_t position = 0;
+#endif
+    };
+    struct Work {
+        std::weak_ptr<GroupSendCoordinator> owner;
+    };
+    struct Publication;
+    explicit GroupSendCoordinator(Configuration);
+    [[nodiscard]] static std::shared_ptr<GroupSendCoordinator> make(
+        Configuration, std::shared_ptr<RuntimeScheduler>, CryptoProvider&,
+        bool) noexcept;
+    static void run(void*) noexcept;
+    static bool publish(void*) noexcept;
+    static bool skip(void*) noexcept;
+    void drive() noexcept;
+    void advance_cursor() noexcept;
+    void detach(std::uint64_t, Detachment) noexcept;
+    // Settles the pending loss, if any, for a send that ends the sequence.
+    [[nodiscard]] bool take_lost_connected_member() noexcept;
+    void update_readiness() noexcept;
+    [[nodiscard]] bool crypto_writable() const noexcept;
+    [[nodiscard]] Status advance_empty(Clock::time_point) noexcept;
+    [[nodiscard]] Clock::time_point admission_now() const noexcept;
+    [[nodiscard]] Clock::time_point source_now() const noexcept;
+    [[nodiscard]] bool source_writable() const noexcept;
+    void fail() noexcept;
+    void observe_source_failure() noexcept;
+
+    mutable std::mutex publication_;
+    Configuration configuration_;
+    Snapshot state_;
+    std::vector<Membership> members_;
+    std::vector<std::shared_ptr<Frame>> frames_;
+    std::size_t fanout_cursor_ = 0;
+    std::uint64_t next_member_ = 1;
+    std::uint64_t next_position_ = 0;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    hybrid::DataHighWater multicast_originals_;
+    hybrid::SourceActivity source_activity_;
+    void expire_overlaps_locked(bool admission = false) noexcept;
+#endif
+    std::size_t maximum_payload_ = 0;
+    std::unique_ptr<GroupPacketEncoder> encoder_;
+    std::shared_ptr<GroupMulticastEmitter> emitter_;
+    std::shared_ptr<GroupUnicastBudget> unicast_budget_;
+    std::shared_ptr<RuntimeScheduler> scheduler_;
+    RuntimeScheduler::ServiceToken service_ {};
+    std::shared_ptr<Work> work_;
+    std::shared_ptr<ReadinessSource> readiness_;
+    bool manual_ = false;
+    bool terminal_failure_ = false;
+    std::optional<Clock::time_point> retry_at_;
+    // A member was detached during admission although its session is still
+    // established, and no send has settled the sequence since: the call
+    // returned busy, expired or full. Kept so that the retry reports the loss.
+    // Dropped when every member that set it has been removed: the
+    // application already knows those members are gone.
+    bool lost_connected_member_ = false;
+};
+} // namespace robotweax::srt::compat

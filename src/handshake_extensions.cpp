@@ -63,7 +63,9 @@ void write_u32(std::byte* bytes, std::uint32_t value) noexcept
             HandshakeExtensionType::implementation_identity)
         || type
         == static_cast<std::uint16_t>(
-            HandshakeExtensionType::multicast_dispatch);
+            HandshakeExtensionType::multicast_dispatch)
+        || type
+        == static_cast<std::uint16_t>(HandshakeExtensionType::multicast_source);
 }
 
 } // namespace

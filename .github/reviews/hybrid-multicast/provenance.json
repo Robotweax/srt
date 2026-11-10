@@ -1,0 +1,719 @@
+{
+  "license": "MIT",
+  "original_archive_manifest_sha256": "58f6b471317ef3b37cc7a625be3481da8da56e6f3f672c0ef218c682dbb97fa9",
+  "redaction": "Absolute host/build paths and long hexadecimal failure addresses only; no payload, test count, outcome, metric or original artifact hash changed.",
+  "files": [
+    {
+      "source_artifact": "mac-enabled-long/qualification.json",
+      "published_file": "records/mac-enabled.json",
+      "original_sha256": "ee477aa464509c2bb273a2343142e5ac3e1d56f71dc13f20412747e03812d57c",
+      "published_sha256": "92ad81b7cf015507411e725005b816771073c76d9a3e6853a00e2c5a3c8fb3e3",
+      "redacted": true
+    },
+    {
+      "source_artifact": "mac-enabled-long/native.log",
+      "published_file": "logs/mac-enabled-native.log",
+      "original_sha256": "156c187dbd66eeed8bda4781989d134fc3f524dc42f63813ec3e55202b555a62",
+      "published_sha256": "156c187dbd66eeed8bda4781989d134fc3f524dc42f63813ec3e55202b555a62",
+      "redacted": false
+    },
+    {
+      "source_artifact": "mac-sanitized-long/qualification.json",
+      "published_file": "records/mac-sanitized.json",
+      "original_sha256": "4b1d6d5a01e5e08a98def98aa1be53da3cc846ed2e9bdfab80393ddc14ff895d",
+      "published_sha256": "82e6560fbcc8a843fec03198cc49fda1c320eb4f007454c09e612de617a1440a",
+      "redacted": true
+    },
+    {
+      "source_artifact": "mac-sanitized-long/native.log",
+      "published_file": "logs/mac-sanitized-native.log",
+      "original_sha256": "d9714735e9b4f09fbba790021a9631af05a5ade0c10c47c2b18b304255a746d9",
+      "published_sha256": "d9714735e9b4f09fbba790021a9631af05a5ade0c10c47c2b18b304255a746d9",
+      "redacted": false
+    },
+    {
+      "source_artifact": "linux-release-long/qualification.json",
+      "published_file": "records/linux-release.json",
+      "original_sha256": "dd489957df8a385159e8c176fefc9ad280343d7a55fe591410fd7e8d1599c579",
+      "published_sha256": "734b98181aed9fb9fdfe45b5c04f7562b5d498c35f2897e722b85c888994a82e",
+      "redacted": true
+    },
+    {
+      "source_artifact": "linux-release-long/native.log",
+      "published_file": "logs/linux-release-native.log",
+      "original_sha256": "2f226179a658570e1721eae5b83fd09465d51ca939c67c4914d969734dd84f07",
+      "published_sha256": "2f226179a658570e1721eae5b83fd09465d51ca939c67c4914d969734dd84f07",
+      "redacted": false
+    },
+    {
+      "source_artifact": "linux-sanitized-long/qualification.json",
+      "published_file": "records/linux-sanitized.json",
+      "original_sha256": "f752edfb3d09548ca300dcbccd367bb83577854c4572f14ec29ae164b16971cf",
+      "published_sha256": "97d18b6320d176db820dd4c58da263b66594270ed7fd2af6270afc234b49256e",
+      "redacted": true
+    },
+    {
+      "source_artifact": "linux-sanitized-long/native.log",
+      "published_file": "logs/linux-sanitized-native.log",
+      "original_sha256": "a6cee68d9233bd99cad3d04ed7df1b08ef1b73b3e168a9085cf1b691d7abcf15",
+      "published_sha256": "a6cee68d9233bd99cad3d04ed7df1b08ef1b73b3e168a9085cf1b691d7abcf15",
+      "redacted": false
+    },
+    {
+      "source_artifact": "hybrid-linux-final2-mac-default-ctest.log",
+      "published_file": "logs/mac-default-ctest.log",
+      "original_sha256": "8245df0e1536fc04080e9d715f6bff2633b9b2c9d5f6232f06cc250b86e00c02",
+      "published_sha256": "f1083b715c2573f17b4b2022da9eed1c29881ff018bb4d3f6bca7f792761919c",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-final2-mac-enabled-ctest.log",
+      "published_file": "logs/mac-enabled-ctest.log",
+      "original_sha256": "f1b20324928e3e4d29cc1fae0d30decaace46c767e1eae0042af74de0b0cc320",
+      "published_sha256": "a7cb129cced77efe32bdddb3ab5f3824148cc4eb8d31e2413c1a8db19f421bf5",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-final2-linux-ctest.log",
+      "published_file": "logs/linux-ctest.log",
+      "original_sha256": "b186341cdfaacf8ca1e298d7eacef62f3ac36725a17b76befbac7f679e45facd",
+      "published_sha256": "dcd3f94129b2cad759b74ce66c7d9011b54498dbbc89d32f6c589df917dd6e92",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-clock-final-linux-sanitized-failure-qualification.json",
+      "published_file": "failures/gcc-o0.json",
+      "original_sha256": "947567a29a96c18bc67c32f64f91f5031c0966314d12902c9c0771af25db8d69",
+      "published_sha256": "e6059b41e8a47fa0b47262350489f21c7f3a22f43bf8348b3069e9237f224db0",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-clock-final-linux-sanitized-failure-native.log",
+      "published_file": "failures/gcc-o0.log",
+      "original_sha256": "b0ed02bdab27c5f50cba24960de29334c083d40e5d8ab0e71b67ec56ab0d7fe7",
+      "published_sha256": "c46bd07f39a753ccb3210918070338403079ae31c1314f490b780be28a300cb0",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-og-smoke-failure-qualification.json",
+      "published_file": "failures/gcc-og.json",
+      "original_sha256": "8e9622306177dd4cab069b364656a10f93756f6d16edd718f242ca5be1c2e48f",
+      "published_sha256": "01b4014cc32f41ec40fc2b7a6df98032e3a221ff193bcf690332ffc8a0b27160",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-og-smoke-failure-native.log",
+      "published_file": "failures/gcc-og.log",
+      "original_sha256": "26e3358db9ced6b110a320dde2a8b1553953ed0eada4d8aa9b440a36ffbcbe39",
+      "published_sha256": "26e3358db9ced6b110a320dde2a8b1553953ed0eada4d8aa9b440a36ffbcbe39",
+      "redacted": false
+    },
+    {
+      "source_artifact": "hybrid-linux-final2-smoke-failure-qualification.json",
+      "published_file": "failures/gcc-o1.json",
+      "original_sha256": "4788a3a5e6e880e1e9a9ae71df0ea66a28b3bf3d32b4af843363457045cf3623",
+      "published_sha256": "96003f3d4dd46e5d82aaa9ef807f5c7b9cf54b703d28ec95c54e471d09a3f41c",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-final2-smoke-failure-native.log",
+      "published_file": "failures/gcc-o1.log",
+      "original_sha256": "eb394984db75efdd3ed4986e86baf4e86e4e0c83d1481063874f57f0c24a3cf4",
+      "published_sha256": "4c224ba0d2c034acfe19135cdae1db26ee50697e20267d47a5a31626d9cdcf28",
+      "redacted": true
+    },
+    {
+      "source_artifact": "hybrid-linux-payload-diagnostic-run.log",
+      "published_file": "failures/canonical-drop-diagnostic.log",
+      "original_sha256": "fd0559574daff972c0d472760b7238d61af31dd8418b01d56d8fdeb12cf96c24",
+      "published_sha256": "fd0559574daff972c0d472760b7238d61af31dd8418b01d56d8fdeb12cf96c24",
+      "redacted": false
+    },
+    {
+      "source_artifact": "focused-names.json",
+      "published_file": "focused-test-names.json",
+      "original_sha256": "bcc2b05cd384d5349d46453f3a430493b4f08fd2f5bf3588da170e87ea67674c",
+      "published_sha256": "bcc2b05cd384d5349d46453f3a430493b4f08fd2f5bf3588da170e87ea67674c",
+      "redacted": false
+    },
+    {
+      "source_artifact": "sanitizer-log-audit.json",
+      "published_file": "sanitizer-log-audit.json",
+      "original_sha256": "ed96ee86f2da433e5556aeed1bd50c882ada4e547efd1b99f113296e4720b843",
+      "published_sha256": "ed96ee86f2da433e5556aeed1bd50c882ada4e547efd1b99f113296e4720b843",
+      "redacted": false
+    }
+  ],
+  "review_followup_files": [
+    {
+      "source_artifact": "pr387-default-before-build.log",
+      "published_file": "failures/review-bl1-default-before.log",
+      "original_sha256": "05dad840662b57e0e88396c4f9bc9161f74468aeda9273264e7ce65c90fff5a6",
+      "published_sha256": "ebd923043fb1e9696285b9e57ed17b2aa676ece3a0f7ae817be3c0b38667361d",
+      "redacted": true
+    },
+    {
+      "source_artifact": "pr387-win32-before.log",
+      "published_file": "failures/review-bl2-win32-before.log",
+      "original_sha256": "7a7eb06c58f402eee7b5d67523823a909866a2f2e9250d237e4d71b0a63b0e61",
+      "published_sha256": "247f6cca673f1531ddf36c25cd632a351a74b9218220df0383592dbf1284ac82",
+      "redacted": true
+    },
+    {
+      "source_artifact": "pr387-build-fixes-default-ctest.log",
+      "published_file": "logs/review-repository-default-ctest.log",
+      "original_sha256": "6d352afa70ae8ed02145358aa9901aef714f650d15a33b6363e7214fc127aeb6",
+      "published_sha256": "76387e0fa57490d5133b063c8d94d3c94b4772332ab46b985bf798bf4c4132f3",
+      "redacted": true
+    },
+    {
+      "source_artifact": "pr387-build-fixes-enabled-compat_group_budget.log",
+      "published_file": "logs/review-enabled-compat_group_budget.log",
+      "original_sha256": "b67b2658f318efddd01466344c4e0abd6edf34a7ca6d76d71ba55a9aa4a92e52",
+      "published_sha256": "b67b2658f318efddd01466344c4e0abd6edf34a7ca6d76d71ba55a9aa4a92e52",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-enabled-compat_group_wire_budget.log",
+      "published_file": "logs/review-enabled-compat_group_wire_budget.log",
+      "original_sha256": "270e85f8b9437ede61add36abb1d00b3891ac182bbaf6d6ea5bfa53758e8cc15",
+      "published_sha256": "270e85f8b9437ede61add36abb1d00b3891ac182bbaf6d6ea5bfa53758e8cc15",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-enabled-compat_group_coordinator.log",
+      "published_file": "logs/review-enabled-compat_group_coordinator.log",
+      "original_sha256": "3402425633b23881d9d71219419471b1a36faa05c57ee61c46db6d36640b9bf3",
+      "published_sha256": "3402425633b23881d9d71219419471b1a36faa05c57ee61c46db6d36640b9bf3",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-enabled-investigation_hybrid.log",
+      "published_file": "logs/review-enabled-investigation_hybrid.log",
+      "original_sha256": "7c2da24abb4629193969c6cb0a8361435d2ccff60aed283bd6d5b777223370e5",
+      "published_sha256": "7c2da24abb4629193969c6cb0a8361435d2ccff60aed283bd6d5b777223370e5",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-sanitized-compat_group_budget.log",
+      "published_file": "logs/review-sanitized-compat_group_budget.log",
+      "original_sha256": "b67b2658f318efddd01466344c4e0abd6edf34a7ca6d76d71ba55a9aa4a92e52",
+      "published_sha256": "b67b2658f318efddd01466344c4e0abd6edf34a7ca6d76d71ba55a9aa4a92e52",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-sanitized-compat_group_wire_budget.log",
+      "published_file": "logs/review-sanitized-compat_group_wire_budget.log",
+      "original_sha256": "270e85f8b9437ede61add36abb1d00b3891ac182bbaf6d6ea5bfa53758e8cc15",
+      "published_sha256": "270e85f8b9437ede61add36abb1d00b3891ac182bbaf6d6ea5bfa53758e8cc15",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-sanitized-compat_group_coordinator.log",
+      "published_file": "logs/review-sanitized-compat_group_coordinator.log",
+      "original_sha256": "3402425633b23881d9d71219419471b1a36faa05c57ee61c46db6d36640b9bf3",
+      "published_sha256": "3402425633b23881d9d71219419471b1a36faa05c57ee61c46db6d36640b9bf3",
+      "redacted": false
+    },
+    {
+      "source_artifact": "pr387-build-fixes-sanitized-investigation_hybrid.log",
+      "published_file": "logs/review-sanitized-investigation_hybrid.log",
+      "original_sha256": "4648219531afcabecb2791ed29ebd03145f7e96082490746cacf1a1ab597edaf",
+      "published_sha256": "4648219531afcabecb2791ed29ebd03145f7e96082490746cacf1a1ab597edaf",
+      "redacted": false
+    }
+  ],
+  "review_source": "https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185",
+  "review_followup_redactions": "Absolute paths plus trailing whitespace trimming for repository diff hygiene. Original artifact hashes are preserved; outcomes, counts and diagnostics are unchanged.",
+  "harness_followup_files": [
+    {
+      "source_artifact": "pr387-harness-clean-baseline-og-invalid.log",
+      "published_file": "failures/review-harness-before-og.log",
+      "original_sha256": "21637f8d9dfe2131a30ab5446b480a12d16a9a6be8db7d6836835e153812d19a",
+      "published_sha256": "21637f8d9dfe2131a30ab5446b480a12d16a9a6be8db7d6836835e153812d19a",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-harness-pool-only-og-invalid.log",
+      "published_file": "logs/review-harness-pool-only-og.log",
+      "original_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+      "published_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-harness-clean-baseline-o1-invalid.log",
+      "published_file": "failures/review-harness-before-o1.log",
+      "original_sha256": "30c1ffca676dd6946fba98315e5ec597c092e10af45f919fa2eccb2bd94f31ef",
+      "published_sha256": "a73963b14cea736b7f538a94a1780cb00fbc65486252eaa796e06f69d09424c8",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-harness-pool-only-o1-invalid.log",
+      "published_file": "logs/review-harness-pool-only-o1.log",
+      "original_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+      "published_sha256": "15741a0880ad774ec0a6fcd4b989545d588d87df2e9b94945623f1bccad86b73",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-harness-pool-only.patch",
+      "published_file": "records/review-harness-pool-only.patch",
+      "original_sha256": "c822a702f1d4375514527aecdbcd18db8c451de5820efa1abec041ea2ceb6583",
+      "published_sha256": "172f54186d761680ba10b69b28bc253ec6da78e578bfaab74a44d5267fda0673",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-harness-default-ctest.log",
+      "published_file": "logs/review-harness-repository-default.log",
+      "original_sha256": "0f7926408655c5f0e8e7d22045913411ea6dcdf2e674ba899739c3fc25af77ab",
+      "published_sha256": "1d309caa48ebd896fae2eefed7fc6d8195ceddcb0870cdf3add93e7bfca3863f",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-gcc-og.log",
+      "original_sha256": "0c085c2105adf12eec5593a54bb514d1f015b3763472ceaf283e83071d096f8a",
+      "published_sha256": "b3bd3de17674602c3751ea3222f876804788c48863be140dbdfa71da667f054c",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-gcc-o1.log",
+      "original_sha256": "50e2cd864f6d5d240727a527d21b0370e711cf2ef1d4fffa0004b23d0ea7afce",
+      "published_sha256": "6a4fd474c6f0646bf0b5daa1a7dd3d4c19fd41307f4b1cf804cd7f3764d38321",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-llvm-o1.log",
+      "original_sha256": "2d373735099286cc7b9f789a30f67598bb8e486c2a8f071c984752a911bd812e",
+      "published_sha256": "9514d4d26fab9e7cb875d5b077190c388b769e067cf4894ac395deb11d8ee028",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-gcc-release.log",
+      "original_sha256": "119821bcffc1e41d5eaa5a14cbc8b7c8e52c995719f6fb1b834e409a5700655c",
+      "published_sha256": "bd74c6dba37fac5d594cd2e4452c66b24196488ea4ffc8b03194555ed487fd2d",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-mac-release.log",
+      "original_sha256": "c03f580f7799210f52cbeb24d4178c4b4408d6fb4245830396b41ea780596045",
+      "published_sha256": "8a346f466dc7aef70f03490e0bbd650d11453703eee4f070fb78649ba9c402f7",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "concatenation of the per-gate logs listed in records/review-harness.json",
+      "published_file": "logs/review-harness-mac-sanitized.log",
+      "original_sha256": "0e6468ef80e6c6433005336396e166fd352b0f54213fddc3b289d1616a2d78b8",
+      "published_sha256": "fde39f146e8a54fedb709a9ef4fe698712befffdbaa635dfa8473f10185a2d80",
+      "redacted_or_trimmed": true
+    }
+  ],
+  "partition_followup_files": [
+    {
+      "source_artifact": "pr387-partition-mac-default-ctest.log",
+      "published_file": "logs/review-partitions-mac-default.log",
+      "original_sha256": "722c027056aa261ed7c0d866a3afee216c1ab324bbfa8f9d30316c777455bd1b",
+      "published_sha256": "1a49cd8da63ba71c4b3d9f01c2bbb6db1565a51e5161eec008dd065d5f452faa",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-mac-release-ctest.log",
+      "published_file": "logs/review-partitions-mac-release.log",
+      "original_sha256": "749d36ab4eabb7a7e80e44fa56e1471e49e161c53915e8b0c5fa4bbecbfc507c",
+      "published_sha256": "369735c89158667827c7bf3b263772dee735f96dc7aff8fe9954654a07f8f47d",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-mac-san-ctest.log",
+      "published_file": "logs/review-partitions-mac-san.log",
+      "original_sha256": "093e7b7302ee92cdafd3e55a4d825697970d01e290a70fa61f93e54f4dfe0cc1",
+      "published_sha256": "4ef718f71d1855c905b5aba251d67da95e44612e54947af7dd38bd99a7a6c13c",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-release-ctest.log",
+      "published_file": "logs/review-partitions-linux-release.log",
+      "original_sha256": "04e613ef0a6269169b3ef7da37ba648a1a8bd9f89d747065ff67f1a8900744f0",
+      "published_sha256": "2226baabe9f0e6e56797cfa8a027e0a9e3b43f6d4977cf14c27f9be27a4b6d63",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-llvm-ctest.log",
+      "published_file": "logs/review-partitions-linux-llvm.log",
+      "original_sha256": "5486c597acf30db78f53fc810fbcdb6f4134321d6fda6c73f285bf9594d3719f",
+      "published_sha256": "db845957c1d566a0e421abcde25757ab890f075835d340ebabef5d3504e85bba",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-gcc-o1-ctest.log",
+      "published_file": "logs/review-partitions-linux-gcc-o1.log",
+      "original_sha256": "14116d9bfc80079bab4632544ad3e2eed14edb85dc6e13d5c6c83b84d833092b",
+      "published_sha256": "226da27a384765b1b0c8f15429d697120d1038d0541029d1370a11388e412346",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-gcc-og-ctest.log",
+      "published_file": "logs/review-partitions-linux-gcc-og.log",
+      "original_sha256": "374eabf77c602a007f1d14c44e4ad174cf6a042757db401c83f5c2b551b228b9",
+      "published_sha256": "c2fadc7e2f8dc84515bb50f1bd5eb1d45ad16eea11d6092493268ed5dff1d04d",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-before-win-native.log",
+      "published_file": "failures/review-partitions-win-before.log",
+      "original_sha256": "621bb87e7ea3eed7844b03007c92c4a50fff5e6158e6ddcd2b6f905aa3c139d2",
+      "published_sha256": "57b580ae63d55e53d317a5cbbcd778f45609612347fd7afb4b89e3b7f86a6899",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-before-mac-native.log",
+      "published_file": "failures/review-partitions-mac-before.log",
+      "original_sha256": "c37220e2a8c3c94a0c25e8b34db60f8a2a63f4255f1e46eaef36dbc5eaf11627",
+      "published_sha256": "44f34e7cd558b1d350c42209a6441ed757ad3511bde2e1c0f19ce8e20a995995",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-mac-release-key-ctest.log",
+      "published_file": "logs/review-partitions-mac-release-key.log",
+      "original_sha256": "7e71bc02fc171cfd72b73ee8c3f42951af3f25d6b8f650b4d0febd7fcd9c28a2",
+      "published_sha256": "9011ead17966a5d95ea966d453f484ab9fccf416af75f5871fd80485359c1191",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-mac-san-key-ctest.log",
+      "published_file": "logs/review-partitions-mac-san-key.log",
+      "original_sha256": "4dc7f7f508e40b7e8c64617c1ee1574c9c76513146c74a9978c320b214572162",
+      "published_sha256": "41103dc99f016691c9af9a3a8b7b598f53dbf9157cd0063078b374aeca0d5530",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-release-key-ctest.log",
+      "published_file": "logs/review-partitions-linux-release-key.log",
+      "original_sha256": "60497c8d5539005287deaf7ae81548c46220b4449ab72082f3e513a5eb2f41f4",
+      "published_sha256": "b7a3b9c8cf74ed0221b2fbc13363fa4e5a06cc5977e273fb4cd4adab6b708e56",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-llvm-key-ctest.log",
+      "published_file": "logs/review-partitions-linux-llvm-key.log",
+      "original_sha256": "8bca6576ef88803684cdb81d71e1b6815ea32871962ff7f79d7c2589bcbd3928",
+      "published_sha256": "d7ebbf122f744b8d43cefedd0b8c8f762e49b0418268b1ea9f06375ad55e3116",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-gcc-o1-key-ctest.log",
+      "published_file": "logs/review-partitions-linux-gcc-o1-key.log",
+      "original_sha256": "fb619727c7f9845b2c860308a4331f32d83695f7e0897130d6fd240fce862966",
+      "published_sha256": "c06933b7937523125041b75335277addc9efed98c9b3da1f25174df25d90ac3d",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-linux-gcc-og-key-ctest.log",
+      "published_file": "logs/review-partitions-linux-gcc-og-key.log",
+      "original_sha256": "4f7d77b57bcdb17975c9772764052af10fa5ddc7c9655e8b2e431cf2d23f70c6",
+      "published_sha256": "8dc654e07446259ad648ea0496ea75fa9ff95316c1a2558055fcac7d009a060e",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-gcc-og-key-debugger.log",
+      "published_file": "failures/review-partitions-gcc-og-key-debugger.log",
+      "original_sha256": "c1e24a37d31d1b868bec766cc4c97dcd6777a35701e34159e566fb887d1ea5ff",
+      "published_sha256": "04d3bae837c1a386dc51af4411603a06615e7895fd030b543b4c2fb7a573411a",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-partition-gcc-og-key-deep-debugger.log",
+      "published_file": "failures/review-partitions-gcc-og-key-deep-debugger.log",
+      "original_sha256": "f21077223ec11201eed0c571c270b85af8649e0d2588f5026784c7bdd54f42c0",
+      "published_sha256": "f21077223ec11201eed0c571c270b85af8649e0d2588f5026784c7bdd54f42c0",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-partition-build-review-default-compat_group_wire_budget.log",
+      "published_file": "logs/review-partitions-build-review-default-compat_group_wire_budget.log",
+      "original_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "published_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-partition-build-hybrid-control-compat_group_wire_budget.log",
+      "published_file": "logs/review-partitions-build-hybrid-control-compat_group_wire_budget.log",
+      "original_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "published_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-partition-build-hybrid-control-sanitized-compat_group_wire_budget.log",
+      "published_file": "logs/review-partitions-build-hybrid-control-sanitized-compat_group_wire_budget.log",
+      "original_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "published_sha256": "639f1d0046252e5ef5574444d53fb2d25cae88d3e35f5b1d7191b71244946057",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-partition-python.log",
+      "published_file": "logs/review-partitions-python.log",
+      "original_sha256": "533912ae7a04fb490d871d32aef0951a9d3cea6f214b0c43f6522a73bee88325",
+      "published_sha256": "967cad131022fdfdd60bf4cdd8b10a7dcd4f580e8ab36fd8c0c125fad6cfa14c",
+      "redacted_or_trimmed": true
+    }
+  ],
+  "listener_close_followup_files": [
+    {
+      "source_artifact": "pr387-close-red.log",
+      "published_file": "failures/review-listener-close-before.log",
+      "original_sha256": "8d4b0964bb35fe02246747279b45d8f0c65a16367901bbebb167b2a3b994126b",
+      "published_sha256": "de2b37c6fd3d12de4b007fc8b32a44d6b5e61e0ce35ece9cb4d2ea43a8348f78",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-close-regression-only.patch",
+      "published_file": "records/review-listener-close-regression.patch",
+      "original_sha256": "ca727fc8a2f6695ac4c01e2153970e31865e3cc1747b5986cb212b5554d314d0",
+      "published_sha256": "4c736b3415dc1453d9d504b4e6d66788b3c01a15f017d31dabcab1b36a76ca9d",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-close-mac-default-scheduler.log",
+      "published_file": "logs/review-listener-close-mac-default-scheduler.log",
+      "original_sha256": "c78c94747747834a00af4a06fe360a2701e711a4e11c797f309f998cd6f1677f",
+      "published_sha256": "c78c94747747834a00af4a06fe360a2701e711a4e11c797f309f998cd6f1677f",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-close-mac-release-scheduler.log",
+      "published_file": "logs/review-listener-close-mac-release-scheduler.log",
+      "original_sha256": "a8d3fe781b1d6b40968adc81b36d585a1d3ce5dbe6726f1681c48ea5656f7d88",
+      "published_sha256": "a8d3fe781b1d6b40968adc81b36d585a1d3ce5dbe6726f1681c48ea5656f7d88",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-close-mac-asan-scheduler.log",
+      "published_file": "logs/review-listener-close-mac-asan-scheduler.log",
+      "original_sha256": "bcda598081707b7f30f03a627c6f853c69c5c86b67bef9beec2b075f89a46c21",
+      "published_sha256": "bcda598081707b7f30f03a627c6f853c69c5c86b67bef9beec2b075f89a46c21",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-close-mac-tsan-scheduler.log",
+      "published_file": "logs/review-listener-close-mac-tsan-scheduler.log",
+      "original_sha256": "e528fd46855fe582170ec3b35a6fe9866dee28c72522beb154615407c3c0e9e5",
+      "published_sha256": "e528fd46855fe582170ec3b35a6fe9866dee28c72522beb154615407c3c0e9e5",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-close-linux-release-scheduler.log",
+      "published_file": "logs/review-listener-close-linux-release-scheduler.log",
+      "original_sha256": "6a8416763acd879a5baa8719a471aa72419dbcf8ef72f550d7fe0ac42d051020",
+      "published_sha256": "6a8416763acd879a5baa8719a471aa72419dbcf8ef72f550d7fe0ac42d051020",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-close-linux-gcc-o1-scheduler.log",
+      "published_file": "logs/review-listener-close-linux-gcc-o1-scheduler.log",
+      "original_sha256": "7f35fe82653204ebac7e8ac5b9116bffb06f84fceca47090b527f6e48ef917b7",
+      "published_sha256": "7f35fe82653204ebac7e8ac5b9116bffb06f84fceca47090b527f6e48ef917b7",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-close-linux-gcc-og-scheduler.log",
+      "published_file": "logs/review-listener-close-linux-gcc-og-scheduler.log",
+      "original_sha256": "ed1ce093bd241a8126f53f683d2e2c498490da2671ffba24941667408366fd68",
+      "published_sha256": "ed1ce093bd241a8126f53f683d2e2c498490da2671ffba24941667408366fd68",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-close-linux-llvm-scheduler.log",
+      "published_file": "logs/review-listener-close-linux-llvm-scheduler.log",
+      "original_sha256": "0f784e256247870a8e0ebe463075f16fabf45ad490da8d4262dd1e3261699865",
+      "published_sha256": "0f784e256247870a8e0ebe463075f16fabf45ad490da8d4262dd1e3261699865",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-close-linux-gcc-og-ctest.log",
+      "published_file": "logs/review-listener-close-linux-gcc-og-ctest.log",
+      "original_sha256": "39039747311fc3f4b15c7c7352276aaa0a9c46ec0ef9a121b63c4089d3bf80ae",
+      "published_sha256": "cb98cf7a7b881c5242cff6bba7cb2906b40fb53b29fbeb4b70f8a3f418154348",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-close-linux-gcc-o1-ctest.log",
+      "published_file": "logs/review-listener-close-linux-gcc-o1-ctest.log",
+      "original_sha256": "d82e7537b617949e405ad21e22d31b056385ff319cc95c30b100ed683c0b812b",
+      "published_sha256": "49739b8698e3243a55950dec5d6d9bc74df4474c78ebb66f9b5d6302753477c7",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-close-linux-llvm-ctest.log",
+      "published_file": "logs/review-listener-close-linux-llvm-ctest.log",
+      "original_sha256": "880face65dc6cf08637ae7719edf521f4e41403e06a8edfa006147f0333a44ff",
+      "published_sha256": "f0238c2ef4be6e98c736785aa0f6fc37b98f0012ae1753d2543949cb415b2349",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-close-mac-default-ctest.log",
+      "published_file": "logs/review-listener-close-mac-default-ctest.log",
+      "original_sha256": "240517e148311bebf97ec6a8675daab2dfaa3fc1789d2da09d8c02c9d1988e2a",
+      "published_sha256": "e98daac3f40354f3a6da7ec9143f959684c10774eff768fb54577c3700d95b9c",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-close-mac-release-ctest.log",
+      "published_file": "logs/review-listener-close-mac-release-ctest.log",
+      "original_sha256": "62105fc663ea404fd249aaf67d515e5ec494cb4409f7b03f33e6ecfc6f31a3b7",
+      "published_sha256": "cecce240e9d306de2f257fe6f76e10df6499dd5d6baca8f7a5a45bd33208bf71",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-close-mac-asan-ctest.log",
+      "published_file": "logs/review-listener-close-mac-asan-ctest.log",
+      "original_sha256": "dbfe00f7740c42691fa2ecd936b705eb16137d397d1f6465e87e8fd879a7d3fd",
+      "published_sha256": "4ef73aee245b57bc95db0b6fda74d9c29af9ffeeed449961afc0a90c22b9d520",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-close-linux-release-ctest.log",
+      "published_file": "logs/review-listener-close-linux-release-ctest.log",
+      "original_sha256": "f231cd55fd31b53828d79b44b1e3f8c80f4fb92e5749b0706a83c27346fb5a6a",
+      "published_sha256": "36aeef738c68ea38dfa5890b8a6ff988a8a205731e85523dd11afa268dcd08fb",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-close-linux-gcc-o1-data-ctest.log",
+      "published_file": "logs/review-listener-close-linux-gcc-o1-data.log",
+      "original_sha256": "5b07d196e2e858eba76602620ddbd052113c180aa3aa91e0751a754956b6f03e",
+      "published_sha256": "74071e714de2e13a5313e66192c2c0a8eed9312a83ae639edd417bd185a5b198",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "pr387-close-linux-gcc-og-data-ctest.log",
+      "published_file": "logs/review-listener-close-linux-gcc-og-data.log",
+      "original_sha256": "c49684ab3151954b7ca4b72d781ac5d0c4b1e873fdd9cb3a98fd697d824b7c8b",
+      "published_sha256": "c2d9a2de930fcb89251e7d2fc03f609a5695381754ea8065dfe986f316a8c5a3",
+      "redacted_or_trimmed": true
+    }
+  ],
+  "gcc_km_diagnosis_files": [
+    {
+      "source_artifact": "pr387-km-mac-release-probe-final.log",
+      "published_file": "logs/review-gcc-km-probe-mac-release.log",
+      "original_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+      "published_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-linux-release-probe-final.log",
+      "published_file": "logs/review-gcc-km-probe-linux-release.log",
+      "original_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+      "published_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-linux-gcc-o1-probe-final.log",
+      "published_file": "logs/review-gcc-km-probe-linux-gcc-o1.log",
+      "original_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+      "published_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-linux-gcc-og-probe-final.log",
+      "published_file": "logs/review-gcc-km-probe-linux-gcc-og.log",
+      "original_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+      "published_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-linux-llvm-probe-final.log",
+      "published_file": "logs/review-gcc-km-probe-linux-llvm.log",
+      "original_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+      "published_sha256": "ae55006a161854a908b4827ad082e2b541481babdd28347ab264b7541a4c5f49",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-trace-hybrid_soak_network_upper_profile_ctr.log",
+      "published_file": "failures/review-gcc-km-v1-soak-ctr.log",
+      "original_sha256": "2e86f793d25fd736bf38745d405c507ca3fc201a55a1c6796f39c360b67c2ca7",
+      "published_sha256": "2e86f793d25fd736bf38745d405c507ca3fc201a55a1c6796f39c360b67c2ca7",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-trace-hybrid_soak_network_upper_profile_gcm.log",
+      "published_file": "failures/review-gcc-km-v1-soak-gcm.log",
+      "original_sha256": "f8a9acc67487c5e470e620480414ebc59a7fd1ea6a229f23f1ee55857b171362",
+      "published_sha256": "f8a9acc67487c5e470e620480414ebc59a7fd1ea6a229f23f1ee55857b171362",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-trace-v2-crypto_session_.log",
+      "published_file": "logs/review-gcc-km-v2-crypto.log",
+      "original_sha256": "5bfd1c0399ae71b1d3c94651368aca05c3706af97f62ae4635cd71d6dc5b0911",
+      "published_sha256": "5bfd1c0399ae71b1d3c94651368aca05c3706af97f62ae4635cd71d6dc5b0911",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-trace-v2-compat_group_encoder.log",
+      "published_file": "logs/review-gcc-km-v2-encoder.log",
+      "original_sha256": "347a45a5754aba592656c86dbb692bfde815cda11d393935f4d910c34bb7cfae",
+      "published_sha256": "347a45a5754aba592656c86dbb692bfde815cda11d393935f4d910c34bb7cfae",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-trace-v2-hybrid_soak_network_upper_profile_ctr.log",
+      "published_file": "failures/review-gcc-km-v2-soak-ctr.log",
+      "original_sha256": "f9c7886ad43b29d592c0bd18d96540fde2f6ce836527130cb2857c7b159da5c2",
+      "published_sha256": "f9c7886ad43b29d592c0bd18d96540fde2f6ce836527130cb2857c7b159da5c2",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-trace-v2-hybrid_soak_network_upper_profile_gcm.log",
+      "published_file": "failures/review-gcc-km-v2-soak-gcm.log",
+      "original_sha256": "88f4e1a089e8e7925e7820bec07d5791ebb111d5f89c11db443d7c9b6cba0a11",
+      "published_sha256": "88f4e1a089e8e7925e7820bec07d5791ebb111d5f89c11db443d7c9b6cba0a11",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-trace-v2-hybrid_load_network_bounded_packet_rate_latency_and_recovery_ctr.log",
+      "published_file": "failures/review-gcc-km-v2-load-ctr.log",
+      "original_sha256": "11583f2f834fdc5abd6a964ac83f4442c60797a11178e3171773ae418b7afb3e",
+      "published_sha256": "11583f2f834fdc5abd6a964ac83f4442c60797a11178e3171773ae418b7afb3e",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "pr387-km-trace-v2-hybrid_load_network_bounded_packet_rate_latency_and_recovery_gcm.log",
+      "published_file": "failures/review-gcc-km-v2-load-gcm.log",
+      "original_sha256": "a3dfd7d5f95ec442037a435ddb15797ceea4bd4c49a6b261d7967b378a3e2663",
+      "published_sha256": "a3dfd7d5f95ec442037a435ddb15797ceea4bd4c49a6b261d7967b378a3e2663",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "overlay-v1.patch",
+      "published_file": "records/review-gcc-km-overlay-v1.patch",
+      "original_sha256": "fb79961565f92386aad2ab944804b70b2269032f702c7284d80db7d7e04f4e0e",
+      "published_sha256": "d0e722e19fa2872b438411a9b5befe4ec3ab58843c5ea863c2b107de62981040",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "diagnostic_trace-v1.hpp",
+      "published_file": "records/review-gcc-km-overlay-v1.hpp.txt",
+      "original_sha256": "4c4f8ff3c661168c93ead8829040985e462c977b51fde5f7c920722dfd98c514",
+      "published_sha256": "4c4f8ff3c661168c93ead8829040985e462c977b51fde5f7c920722dfd98c514",
+      "redacted_or_trimmed": false
+    },
+    {
+      "source_artifact": "overlay.patch",
+      "published_file": "records/review-gcc-km-overlay-v2.patch",
+      "original_sha256": "3b88d126b862400f261e0e984d6435f1d41d5a5a24043787abf3c7d213f5c8af",
+      "published_sha256": "a94a3fca4d68568672c95eaa341d3fa8df0702374550f5865c3f23597c74205d",
+      "redacted_or_trimmed": true
+    },
+    {
+      "source_artifact": "diagnostic_trace.hpp",
+      "published_file": "records/review-gcc-km-overlay-v2.hpp",
+      "original_sha256": "9a07180f488fd9d79f09f59f94ce7614fe5f1b75acd2762f0aff7d9ce7126383",
+      "published_sha256": "9a07180f488fd9d79f09f59f94ce7614fe5f1b75acd2762f0aff7d9ce7126383",
+      "redacted_or_trimmed": false
+    }
+  ]
+}

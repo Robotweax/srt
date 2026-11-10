@@ -1,0 +1,6 @@
+2026-11-08T13:34:27.3844894Z <source>\src\compat\group_send_coordinator.cpp(98,72): error C2220: the following warning is treated as an error [<source>\build\robotweax_srt.vcxproj]
+2026-11-08T13:34:27.3863121Z <source>\src\compat\group_send_coordinator.cpp(98,72): warning C4244: '=': conversion from 'const _Ty' to 'size_t', possible loss of data [<source>\build\robotweax_srt.vcxproj]
+2026-11-08T13:34:27.3866337Z <source>\src\compat\group_send_coordinator.cpp(98,72): warning C4244:         with [<source>\build\robotweax_srt.vcxproj]
+2026-11-08T13:34:27.3867488Z <source>\src\compat\group_send_coordinator.cpp(98,72): warning C4244:         [ [<source>\build\robotweax_srt.vcxproj]
+2026-11-08T13:34:27.3868297Z <source>\src\compat\group_send_coordinator.cpp(98,72): warning C4244:             _Ty=uint64_t [<source>\build\robotweax_srt.vcxproj]
+2026-11-08T13:34:27.3869088Z <source>\src\compat\group_send_coordinator.cpp(98,72): warning C4244:         ] [<source>\build\robotweax_srt.vcxproj]

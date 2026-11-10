@@ -1,0 +1,20 @@
+Test project <source>/build-hybrid-control-sanitized
+    Start 20: robotweax_srt_hybrid_key_timing_tests
+1/4 Test #20: robotweax_srt_hybrid_key_timing_tests ...........   Passed    6.34 sec
+    Start 21: robotweax_srt_hybrid_key_response_tests
+2/4 Test #21: robotweax_srt_hybrid_key_response_tests .........   Passed    4.38 sec
+    Start 22: robotweax_srt_hybrid_key_multi_receiver_tests
+3/4 Test #22: robotweax_srt_hybrid_key_multi_receiver_tests ...   Passed    5.28 sec
+    Start 23: robotweax_srt_hybrid_key_admission_tests
+4/4 Test #23: robotweax_srt_hybrid_key_admission_tests ........   Passed    5.38 sec
+
+100% tests passed out of 4
+
+Label Time Summary:
+fault-injection    =  21.39 sec*proc (4 tests)
+hybrid             =  21.39 sec*proc (4 tests)
+integration        =  21.39 sec*proc (4 tests)
+key-management     =  21.39 sec*proc (4 tests)
+network            =  21.39 sec*proc (4 tests)
+
+Total Test time (real) =  21.39 sec

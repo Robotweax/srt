@@ -567,11 +567,12 @@ Sender (Listener):
   domain; returning without the key rejects the join;
 - `srt_accept` returns the dispatch group once, with the first admitted
   receiver. Later receivers join it and surface as `SRT_EPOLL_UPDATE`.
-- `srt_send*` on the group encodes each message once per member buffer so
+- By default, `srt_send*` on the group encodes each message once per member buffer so
   ACK, NAK and unicast retransmission keep their per-receiver meaning, but
   only the first live member transmits the original, to the multicast group
   with the dispatch group handle as destination socket ID, from the
-  Listener's own socket. The others record the packet as sent. A send with
+  Listener's control socket in the legacy profile, or the dedicated socket
+  in the independent-source profile. The others record the packet as sent. A send with
   no receivers advances the stream and succeeds; `srt_recv*` is `SRT_EINVOP`.
 - The dispatch group stays `SRTS_CONNECTED` with zero members while the
   listener is open; this is the defining difference from bonding, where an
@@ -589,9 +590,14 @@ Receiver (Caller):
   extension (type `0x7f14`, magic-guarded) with the group address, the
   destination socket ID to filter on, the live sequence to start at and the
   hop limit. The receiver joins the group on a dedicated socket and routes
-  datagrams that carry that ID and the Listener's source address into its
-  one member session; everything else on that socket is dropped before
-  decoding. `srt_recv*` reads that member; `srt_send*` is `SRT_EINVOP`;
+  DATA packets that carry that ID and match the expected complete source
+  endpoint (address and UDP port) into its one member session: the control
+  endpoint in the legacy profile, or the negotiated independent source.
+  Control packets
+  on this multicast route are rejected before session processing, including
+  liveness, key handling and reliability statistics. The unicast control link
+  continues to accept control and repair DATA into the same session.
+  `srt_recv*` reads that member; `srt_send*` is `SRT_EINVOP`;
 - closing the group leaves the multicast group before the control link ends.
 
 Encryption: set `SRTO_PASSPHRASE` (and optionally `SRTO_CRYPTOMODE`,
@@ -618,10 +624,10 @@ Repeats, pacing and readiness:
   multicast repair failure falls back to the member's unicast retry path.
   After a multicast attempt, window expiry restores unicast until the bounded
   tally entry is evicted; failed repairs do not restart a multicast retry loop;
-- `SRTO_MAXBW` set on the sender group reaches every member, so it caps the
+- By default, `SRTO_MAXBW` set on the sender group reaches every member, so it caps the
   transmitting member's pacer and with it the multicast path, as well as each
   member's unicast repeats. There is no separate aggregate cap;
-- `SRT_EPOLL_OUT` on the sender group follows the elected transmitting
+- By default, `SRT_EPOLL_OUT` on the sender group follows the elected transmitting
   member's readiness. That member must accept the payload before suppressed
   members can accept it. A full transmitter buffer blocks a synchronous send
   or returns `SRT_EASYNCSND` for a nonblocking send without advancing the
@@ -630,16 +636,221 @@ Repeats, pacing and readiness:
 - `SRTO_ROBOTWEAX_MCAST_STATS` (read-only, `ROBOTWEAX_SRT_MCAST_STATS_V1`)
   reports on the sender the packets and bytes sent on the multicast path, the
   repeats among them, the unicast repeats skipped and the live receiver
-  count; on a receiver the datagrams its multicast socket received and those
-  dropped before decoding because they did not carry the dispatch ID from the
-  announced sender. The libsrt-shaped group row (`srt_bstats`) keeps its
-  documented meaning and counts each message once.
+  count; on a receiver, `mcast_pkt_received` counts every datagram observed
+  on the multicast channel, and `mcast_pkt_filtered` those among them that
+  were discarded before decoding: unmatched destinations, member source
+  rejections, stale or replaced route identities, non-DATA kinds, oversize
+  payloads and arrivals after the member closed. The member's source
+  rejections also include datagrams on its unicast socket that did not come
+  from its peer, so `mcast_pkt_filtered` can exceed `mcast_pkt_received`.
+  Without such foreign unicast datagrams the difference is what reached the
+  member's DATA processing. Routing observations are not proof
+  of validated multicast DATA progress or recovery. The libsrt-shaped group
+  row (`srt_bstats`) keeps its documented meaning and counts each message
+  once.
 
 Not supported in this release, and refused at admission rather than
 half-working: packet-filter FEC on the dispatch listener, Rendezvous,
 File/Stream mode, FileCC, several endpoints on a receiver, and
 interoperability with Haivision libsrt, which has no implementation of this
 type.
+
+### Independent IPv4 source (opt-in)
+
+Set `SRTO_ROBOTWEAX_MCAST_INDEPENDENT=true` on the Listener and each multicast
+receiver group before binding or connecting. On the Listener also set
+`SRTO_ROBOTWEAX_MCAST_SOURCE` to a concrete local IPv4 address and source UDP
+port, alongside the existing multicast group, interface and hop-limit options.
+A zero source port requests an ephemeral port. Bind the unicast control socket
+with the ordinary `srt_bind` API. The multicast source must be a UDP endpoint
+of its own: a different port than the control socket, or the same port on a
+different specific address. The control socket's own address and port, or its
+port next to a wildcard control bind, is rejected at `srt_listen` with
+`SRT_EINVPARAM`, because the kernel would hand control datagrams to the
+send-only source socket. The source port stays bound while a dispatch group
+retains the transmit channel; listening again on the same fixed port before
+that release fails with `SRT_ESOCKFAIL`, so use port zero or wait for the group
+to close. Both peers must opt in; one-sided selection is rejected with the
+group reason rather than silently downgrading.
+
+The dedicated source socket is bound at `srt_listen`, before admission. Source
+readback on the Listener then returns the actual bound port; the sender group
+also reports that endpoint. A failed source bind leaves the Listener OPENED
+and permits retrying `srt_listen`. The socket has no receive routes, scheduler
+watch or permanent thread. Dispatch groups retain its ownership independently
+of the elected member. Multicast originals and shared multicast repairs use
+this socket; control, key exchange and unicast repairs use the established
+unicast channel. Transient multicast repair send failure retains the existing
+unicast retry behavior.
+
+Configure the multicast network options before binding when this profile is
+selected. Each receiver chooses its own multicast interface or the OS default;
+the sender's interface hint is not used. The initial C API profile supports
+IPv4 control and multicast paths, one Listener and one endpoint per receiver.
+IPv6, mixed-family paths, multi-Listener accept bonds and source address/port
+rewriting are unsupported. Existing multicast mode, crypto and FEC limits
+apply. By default, send/readiness follow the elected member's pacing and capacity.
+This profile provides fixed source addressing and no automatic path switching.
+
+### Coordinated IPv4 sender (opt-in)
+
+Set `SRTO_ROBOTWEAX_MCAST_COORDINATED=true` on the Listener before binding,
+alongside the independent-source configuration above. Set `SRTO_MAXBW` to a
+positive `int64_t` byte rate before listening. In this profile that rate includes
+the DATA header, ciphertext/tag and IP/UDP overhead of each multicast original.
+The option is sender-local: receivers use the existing independent-source
+configuration and wire format. Receiver groups and ordinary Callers cannot
+select coordinated sending.
+
+The group owns encoding, pacing and a 64-frame queue. One send accepts one Live
+message fitting the configured maximum payload into bounded group work; success
+means queue acceptance. Actual UDP submission and remote delivery occur later.
+Member flow credit does not pace multicast originals. `SRT_EPOLL_OUT` reflects
+source/fanout capacity and queued-key limits. Control, KM and ordinary repairs
+remain on each established unicast session. Shared multicast repair aggregation
+is disabled: `SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD` reads 0 on the sender
+group, setting it to 0 succeeds, and any other value is rejected with
+`SRT_EINVOP`. Packet filters,
+session-authentication profiles and fragmented application messages are refused.
+At most 64 receiver members, including detached members, can occupy the group.
+
+All canonical unicast DATA repairs share an aggregate wire budget in addition to
+each member's own pacing and flow limits. The aggregate rate is four times
+`SRTO_MAXBW` (saturated at the largest unsigned 64-bit rate), with at most one
+configured IP MTU of burst credit across the group. It includes DATA headers,
+encryption tags and IP/UDP overhead. Failed UDP attempts do not spend credit;
+partial datagram success is a fatal transport error charged conservatively as
+the full datagram. Control and KM traffic continue while DATA waits for credit.
+The aggregate limit bounds egress; it does not guarantee repair deadlines or a
+fair bandwidth share for each receiver.
+
+A member whose repair history is full is detached from future group admission.
+Runtime/KM busy gets a 50 ms retry grace and at least eight admission attempts
+before detachment, so a sender whose retries are slow, for example at the
+default Windows timer period, does not detach a member after two or three of
+them. Completion fanout
+retries a busy member for the same 50 ms and at least eight attempts before
+detaching it, so a burst of sends while a member is inside one poll does not
+count against it. While a member admission is busy, the group refuses sends
+for 100 µs and a blocking sender sleeps for that time rather than polling. `srt_group_data` and the `srt_sendmsg2` group-data
+array show `SRT_GST_BROKEN` with `result=SRT_ECONNLOST` for a detached send path.
+A detached member gets no further key announcements or repairs, so the sender
+closes its unicast connection when it publishes the detachment: with the next
+group send that is accepted or fails with `SRT_ECONNLOST`, or with
+`srt_group_data` or a group epoll wait. The member socket becomes
+`SRTS_BROKEN` and its row stays in the group data until the application closes
+that socket. The peer is told once with SHUTDOWN, without retry. The receiver
+then sees the connection lost: its socket leaves `SRTS_CONNECTED` and, once
+buffered messages are read, receiving fails with `SRT_ECONNLOST`. Group
+`SRT_EPOLL_UPDATE` on the sender reports the membership-status change. Close
+and reconnect that receiver to enroll it again; later ACKs do not restore its
+skipped history. A receiver that missed the SHUTDOWN is not told again; it may
+still observe multicast DATA, with no repair or key announcement. A member
+whose original was not submitted because of a hard source error is the
+exception described below: its session is not closed.
+
+With no eligible members, sends succeed and advance the stream without emitting
+DATA. Members that have closed or left count as absent even when the sender
+first notices during a send. A send that instead detaches its last members
+while their unicast sessions are still established, for example because the
+last member's repair history is full, fails with `SRT_ECONNLOST`. It emits
+nothing and consumes no sequence number; the group stays connected, the group
+data shows the detached members with their connections closed, and the next
+send finds no eligible members.
+Pause production until the receiver's join has completed and, for encrypted
+streams, wait for that member's `SRTO_SNDKMSTATE` to become `SRT_KM_S_SECURED`
+before resuming. An admission
+whose advertised ISN became stale is rejected instead of silently rebasing the
+receiver. CTR/GCM retain the same canonical protected identity on multicast and
+unicast repairs. Local key-queue limits prevent announcing a selector replacement
+while an older original still needs it; they do not prove remote receipt or
+qualify delayed/reordered KM and multicast blackouts.
+
+A hard source error makes the group `SRTS_BROKEN`, raises `SRT_EPOLL_ERR`, and
+subsequent sends return `SRT_ESOCKFAIL`. Queued packets that expired, failed or
+were cancelled never authorize receiver ACK progress. Established unicast
+sessions remain available for inspection and explicit close. Automatic fallback
+and source recovery are unavailable. An expired finite message TTL returns
+`SRT_ETIMEOUT`; ordinary send timeout and asynchronous `SRT_EASYNCSND` apply to
+admission backpressure.
+
+Transport configuration, including `SRTO_MAXBW`, is frozen on the listening
+socket, sender group and enrolled members. Group/member application I/O flags
+(`SRTO_SNDSYN`, `SRTO_RCVSYN`, `SRTO_SNDTIMEO`, `SRTO_RCVTIMEO`) remain mutable.
+Close fences source admission and cancels queued work before retiring members.
+Each sender group reserves two scheduler service slots; exhaustion fails group
+admission. See [scheduler resources](scheduler-shards.md#process-configuration).
+
+### Protocol engine fixed-source negotiation
+
+The C++ `HandshakeMachine` supports a default-off, required fixed-source
+profile for multicast transport embedders. Both endpoints set
+`Configuration::require_multicast_source`; the Listener also supplies
+`Configuration::multicast_source`, a concrete source address and nonzero UDP
+port. It requires Live multicast membership, dispatch admission policy and no
+packet filter. The C API selects this profile only through the explicit opt-in
+above; default multicast sessions retain the existing announcement and source rules.
+Native C++ consumers must rebuild after these handshake structure additions;
+the public C ABI is unchanged.
+
+The provisional Robotweax CONFIG record `multicast_source` (`0x7f15`) is
+separate from the strict 60-byte `multicast_dispatch` record (`0x7f14`). Its
+32-byte content uses network byte order:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | Magic/version `0x52575301` |
+| 4 | 1 | Kind: 1 Caller offer, 2 Listener announcement |
+| 5 | 1 | Source family: 0 for offer, 4 for IPv4, 6 for IPv6 |
+| 6 | 2 | Source UDP port |
+| 8 | 4 | Dispatch group ID |
+| 12 | 16 | Source address, IPv4 zero padded |
+| 28 | 4 | Reserved, zero |
+
+An offer has zero port, group ID and address. An announcement names the same
+group ID as the Listener's membership and legacy dispatch announcement, with
+a source of the multicast destination's family. Wildcard, multicast,
+IPv4-mapped IPv6 and scoped source representations are rejected. IPv6 scope
+selectors are local interface configuration and never copied from this record.
+The record appears only in HSv5 CONCLUSION alongside HSREQ or HSRSP and
+multicast membership; the announcement additionally requires the legacy
+dispatch record. Duplicates, unknown versions, nonzero reserved/padding bytes,
+invalid contexts and records exceeding the handshake MTU are rejected.
+
+One-sided selection fails with the group rejection reason. A Caller requiring
+the profile rejects a legacy response without source metadata. Retries retain
+the selected source and dispatch snapshot; changed membership or source offers
+cannot renegotiate an established session. After successful admission the
+Caller reads `has_peer_multicast_source()` and `peer_multicast_source()`.
+
+The ordinary session-authentication proof (versions 2 to 6) covers the key
+material, not the `0x7f14` dispatch or `0x7f15` source records, and the Caller
+filters multicast DATA on the announced source before any experimental hybrid
+exchange runs. A tampered announcement therefore steers the Caller's join and
+source filter first. The hybrid exchange binds the announced source into its
+key derivation, so such a session fails closed at that exchange, after the
+join. No profile in this release authenticates the announcement itself at
+admission.
+
+This is source metadata negotiation. The embedding transport owns the
+transmitting socket and generation-checked multicast ingress binding. The
+transport adapter binds negotiated multicast DATA to that source address and
+port while keeping the established peer check on unicast control and repair.
+Each multicast route installation has a distinct member-local generation;
+removal, replacement, channel destruction and runtime close invalidate captured
+route identities before they can alter reliability, timing or liveness state.
+Failed registration leaves the previously active binding intact. Binding
+identity and packet admission are checked together under the runtime lock.
+IPv6 link-local sources require an explicit receiver-local interface index;
+the independently sourced profile does not use the sender's interface hint.
+
+IPv6 source/scope metadata is supported by the protocol engine; the initial
+C API independent-source profile remains IPv4-only. The
+record does not implement source switching, progress reports or unicast
+fallback. It adds no authentication or replay cryptography; the existing
+session authentication proof does not bind this source record. Source filtering
+and the shared traffic key do not uniquely authenticate a sender against other
+group-key holders. Retain the trusted-member deployment boundary.
 
 ## Compatibility limits
 

@@ -1,4 +1,5 @@
 #include "robotweax/srt/session.hpp"
+#include "robotweax/srt/connection_group.hpp"
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
 #include "compiled_congestion.hpp"
 #include <new>
@@ -269,6 +270,48 @@ Error ReliabilitySession::queue_group_message(
     return error;
 }
 
+Error ReliabilitySession::preflight_group_original(const DataHeader& header,
+    std::size_t plaintext_size, CryptoMode mode) const noexcept
+{
+    if (file_rate_controller_ || !live_rate_controller_ || !message_api_
+        || packet_filter_policy_.enabled()
+        || header.boundary != MessageBoundary::solo || header.retransmitted
+        || header.message_number == 0U || header.message_number > 0x03ff'ffffU
+        || (header.destination_socket_id & group_handle_mask) == 0U
+        || (mode == CryptoMode::automatic
+                ? header.encryption_key != EncryptionKey::none
+                : (header.encryption_key != EncryptionKey::even
+                      && header.encryption_key != EncryptionKey::odd))
+        || (send_buffer_.sequence_span() != 0U
+            && header.message_number != next_message_number_))
+        return Error::invalid_state;
+    return send_buffer_.preflight_group_original(
+        header.sequence, plaintext_size, mode);
+}
+
+Error ReliabilitySession::import_group_original(const DataHeader& header,
+    std::span<const std::byte> wire_payload, std::size_t plaintext_size,
+    CryptoMode mode, std::uint64_t enqueue_microseconds,
+    std::uint64_t expiration_microseconds,
+    GroupOriginalDelivery delivery) noexcept
+{
+    const auto checked = preflight_group_original(header, plaintext_size, mode);
+    if (checked != Error::none)
+        return checked;
+    const auto imported =
+        send_buffer_.import_group_original(header, wire_payload, plaintext_size,
+            mode, enqueue_microseconds, expiration_microseconds, delivery);
+    if (imported == Error::none) {
+        if (live_rate_controller_)
+            live_rate_controller_->observe_input(
+                plaintext_size, enqueue_microseconds);
+        next_message_number_ = (header.message_number + 1U) & 0x03ff'ffffU;
+        if (next_message_number_ == 0U)
+            next_message_number_ = 1U;
+    }
+    return imported;
+}
+
 Error ReliabilitySession::skip_group_sequences(
     SequenceNumber next_sequence) noexcept
 {
@@ -375,9 +418,8 @@ std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
     }
     const bool retransmission =
         allow_retransmission && send_buffer_.has_pending_retransmission();
-    const std::size_t flow_count = retransmission
-        ? 0U
-        : send_buffer_.packets_in_flight();
+    const std::size_t flow_count =
+        retransmission ? 0U : send_buffer_.new_packet_flow_count();
     if (!pacer.query(now_microseconds, flow_count).ready) {
         return std::nullopt;
     }
@@ -385,10 +427,14 @@ std::optional<OutboundPacket> ReliabilitySession::next_paced_data_packet(
         defer_pacing_commit, allow_retransmission, now_microseconds);
     if (packet.has_value()) {
         if (live_rate_controller_.has_value()) {
-            live_rate_controller_->observe_payload(packet->payload.size());
+            live_rate_controller_->observe_payload(packet->canonical_group
+                    ? packet->plaintext_size
+                    : packet->payload.size());
         }
         const std::size_t wire_overhead =
-            retransmission ? 0U : new_packet_wire_overhead;
+            retransmission || packet->canonical_group
+            ? 0U
+            : new_packet_wire_overhead;
         if (!defer_pacing_commit) {
             if (packet->header.retransmitted) {
                 note_retransmission_sent(
@@ -1141,22 +1187,28 @@ ReliabilityProcessResult ReliabilitySession::receive(
             : 0U;
 #endif
         const auto in_flight_before = send_buffer_.packets_in_flight();
-        const auto acknowledgement_progress =
-            decoded.acknowledgement.next_sequence.distance_from(
-                send_buffer_.first_sequence());
-        const bool acknowledgement_is_current = acknowledgement_progress >= 0;
         const auto error = send_buffer_.acknowledge_submitted_before(
             decoded.acknowledgement.next_sequence);
         if (error != Error::none) {
             return {.error = error};
         }
-        if (decoded.acknowledgement.next_sequence.distance_from(
-                peer_acknowledged_sequence_)
-            > 0) {
-            peer_acknowledged_sequence_ = decoded.acknowledgement.next_sequence;
+        // The peer's number, except when the ACK ran ahead of a canonical
+        // group original whose submission is still unreported: then it is
+        // the prefix that was retired, and everything below treats the ACK
+        // as covering exactly that.
+        const SequenceNumber acknowledged =
+            decoded.acknowledgement.next_sequence.distance_from(first_before)
+                < 0
+            ? decoded.acknowledgement.next_sequence
+            : send_buffer_.first_sequence();
+        const auto acknowledgement_progress =
+            acknowledged.distance_from(first_before);
+        const bool acknowledgement_is_current = acknowledgement_progress >= 0;
+        if (acknowledged.distance_from(peer_acknowledged_sequence_) > 0) {
+            peer_acknowledged_sequence_ = acknowledged;
         }
         if (sensor_retired_prefix_.has_value()) {
-            const auto boundary = decoded.acknowledgement.next_sequence;
+            const auto boundary = acknowledged;
             if (boundary.distance_from(sensor_retired_prefix_->last) > 0) {
                 sensor_retired_prefix_.reset();
                 sensor_prefix_repeat_remaining_ = 0U;
@@ -1172,8 +1224,7 @@ ReliabilityProcessResult ReliabilitySession::receive(
             && !sensor_retired_prefix_.has_value()) {
             next_sensor_retirement_repeat_microseconds_ = 0U;
         }
-        diagnostics::trace_ack(now_microseconds,
-            decoded.acknowledgement.next_sequence.value(),
+        diagnostics::trace_ack(now_microseconds, acknowledged.value(),
             acknowledgement_progress, first_before.value(),
             send_buffer_.first_sequence().value(), buffered_before,
             send_buffer_.size(), in_flight_before,
@@ -1200,15 +1251,11 @@ ReliabilityProcessResult ReliabilitySession::receive(
                 decoded.acknowledgement.round_trip_time_variance_microseconds,
                 has_received_data_, now_microseconds);
             if (file_rate_controller_.has_value()) {
-                file_rate_controller_->on_ack(
-                    decoded.acknowledgement.next_sequence,
-                    now_microseconds,
-                    decoded.acknowledgement
-                        .receive_rate_packets_per_second,
+                file_rate_controller_->on_ack(acknowledged, now_microseconds,
+                    decoded.acknowledgement.receive_rate_packets_per_second,
                     decoded.acknowledgement
                         .estimated_link_capacity_packets_per_second,
-                    decoded.acknowledgement
-                        .round_trip_time_microseconds);
+                    decoded.acknowledgement.round_trip_time_microseconds);
             }
             // The Internet Draft reserves ACKACK for Full ACKs and requires
             // Small ACKs to carry a zero type-specific field. Haivision's
@@ -1262,6 +1309,13 @@ ReliabilityProcessResult ReliabilitySession::receive(
             current_ranges {};
         std::size_t current_range_count = 0;
 
+        // A canonical group original can be lost on the wire, and reported,
+        // before the group tells this member that it was submitted. Honor the
+        // report below the oldest such original and leave the rest to the
+        // receiver's next report, instead of failing the whole packet. An
+        // unsubmitted original is never repaired.
+        const auto unsubmitted =
+            send_buffer_.first_unsubmitted_group_original();
         // Validate and classify the complete report first. No retransmission
         // or DROPREQ state changes until every range is known to be safe.
         auto validation_payload = payload;
@@ -1270,9 +1324,17 @@ ReliabilityProcessResult ReliabilitySession::receive(
             if (!loss) {
                 return {.error = loss.error};
             }
-            const auto slices = split_nak_range(send_buffer_, loss.range);
+            auto slices = split_nak_range(send_buffer_, loss.range);
             if (!slices) {
                 return {.error = slices.error};
+            }
+            if (slices.current.has_value() && unsubmitted.has_value()
+                && slices.current->first.distance_from(*unsubmitted) >= 0) {
+                slices.current.reset();
+            } else if (slices.current.has_value() && unsubmitted.has_value()
+                && slices.current->last.distance_from(*unsubmitted) >= 0) {
+                slices.current->last =
+                    unsubmitted->advanced(SequenceNumber::mask);
             }
             if (slices.current.has_value()) {
                 if (current_range_count == current_ranges.size()) {

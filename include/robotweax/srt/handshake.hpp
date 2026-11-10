@@ -136,6 +136,8 @@ struct HandshakeAction {
     // Listener -> Caller announcement of a multicast dispatch group.
     bool has_multicast_dispatch = false;
     MulticastDispatch multicast_dispatch {};
+    bool has_multicast_source = false;
+    MulticastSource multicast_source {};
     bool has_standby_rtt = false;
     StandbyRttIdentity standby_rtt {};
     ImplementationIdentity implementation_identity {};
@@ -185,6 +187,8 @@ struct HandshakeMessage {
     PathIdentifier path_identifier {};
     bool has_multicast_dispatch = false;
     MulticastDispatch multicast_dispatch {};
+    bool has_multicast_source = false;
+    MulticastSource multicast_source {};
     bool has_standby_rtt = false;
     StandbyRttIdentity standby_rtt {};
     ImplementationIdentity implementation_identity {};
@@ -249,6 +253,10 @@ public:
         bool require_standby_rtt = false;
         StandbyRttNonce standby_rtt_nonce {};
         ImplementationIdentity implementation_identity {};
+        // Protocol-engine opt-in; transport owners must provide the socket and
+        // generation-checked ingress binding before selecting this profile.
+        bool require_multicast_source = false;
+        IpEndpoint multicast_source {};
     };
 
     explicit HandshakeMachine(Configuration configuration) noexcept;
@@ -322,6 +330,14 @@ public:
     {
         return peer_multicast_dispatch_;
     }
+    [[nodiscard]] bool has_peer_multicast_source() const noexcept
+    {
+        return has_peer_multicast_source_;
+    }
+    [[nodiscard]] const MulticastSource& peer_multicast_source() const noexcept
+    {
+        return peer_multicast_source_;
+    }
     [[nodiscard]] Error set_session_authentication(
         SessionAuthenticationParameters parameters) noexcept;
     [[nodiscard]] const HandshakeAction& session_confirmation() const noexcept
@@ -350,6 +366,9 @@ private:
         int rejection_reason) noexcept;
 
     [[nodiscard]] bool valid_standby_rtt_configuration() const noexcept;
+    [[nodiscard]] bool valid_multicast_source_configuration() const noexcept;
+    [[nodiscard]] bool accepts_multicast_source_offer(
+        const HandshakeMessage&) const noexcept;
     Configuration configuration_;
     StandbyRttIdentity standby_rtt_identity_ {};
     HandshakeAction session_challenge_ {}, session_confirmation_ {};
@@ -376,6 +395,8 @@ private:
     bool has_local_multicast_dispatch_ = false;
     MulticastDispatch peer_multicast_dispatch_ {};
     bool has_peer_multicast_dispatch_ = false;
+    MulticastSource local_multicast_source_ {}, peer_multicast_source_ {};
+    bool has_peer_multicast_source_ = false;
     int rejection_reason_ = 0;
 };
 

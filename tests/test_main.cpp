@@ -1,11 +1,16 @@
 #include "test.hpp"
 
+#include <chrono>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <string_view>
 
 int main(int argc, char** argv)
 {
+    const char* timing_setting = std::getenv("ROBOTWEAX_TEST_TIMING");
+    const bool timing =
+        timing_setting && std::string_view {timing_setting} == "1";
     const bool include = argc > 1 && std::string_view {argv[1]} == "--include";
     const int first_argument = include ? 3 : 1;
     const bool exclude = argc > first_argument
@@ -45,6 +50,7 @@ int main(int argc, char** argv)
         }
         ++selected;
         std::cerr << "[RUN] " << test.name << '\n' << std::flush;
+        const auto started = std::chrono::steady_clock::now();
         try {
             test.function();
             std::cout << "[PASS] " << test.name << '\n';
@@ -58,6 +64,13 @@ int main(int argc, char** argv)
         } catch (...) {
             ++failures;
             std::cerr << "[FAIL] " << test.name << ": unknown exception\n";
+        }
+        if (timing) {
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - started)
+                    .count();
+            std::cerr << "[TIME] " << test.name << ' ' << elapsed << " us\n";
         }
     }
     std::cout << selected - failures - skipped << '/' << selected

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Run required IPv4 multicast dispatch cases; missing cases and skips fail."""
+"""Run IPv4 multicast dispatch cases; missing or failed cases fail, and only a
+recorded host-environment skip of a non-required case is tolerated."""
 from __future__ import annotations
 
 import argparse
@@ -36,6 +37,14 @@ REQUIRED = {
     "multicast_dispatch_listener_rejects_joins_without_key_or_as_bonding",
     "multicast_dispatch_group_joins_with_a_full_accept_backlog",
 }
+# Cases whose precondition is a host property that hosted runners may lack.
+# A skip is accepted only for these names with exactly this reason, is never
+# accepted for a REQUIRED case, and is recorded in the evidence, not hidden.
+ENVIRONMENT_SKIPS = {
+    "multicast_dispatch_independent_source_ip_distributes_and_rejoins":
+        "no second assigned IPv4 address available",
+}
+SKIP_LINE = re.compile(r"^\[SKIP\] (\w+): (.*)$", re.MULTILINE)
 KEY_REQUIRED = {
     "crypto_shared_schedule_maps_group_sequence_to_generation_and_selector",
     "crypto_shared_schedule_keeps_one_key_per_sequence_across_wraparound",
@@ -44,17 +53,33 @@ KEY_REQUIRED = {
 }
 
 
-def validate_native(output: str, required=REQUIRED) -> list[str]:
-    if re.search(r"\[(?:SKIP|FAIL)\]", output):
-        raise ValueError("required multicast case skipped or failed")
+def environment_skips(output: str, tolerated=None) -> dict[str, str]:
+    """Return tolerated host-environment skips; any other skip is an error."""
+    tolerated = tolerated or {}
+    skips = dict(SKIP_LINE.findall(output))
+    if len(re.findall(r"^\[SKIP\]", output, re.MULTILINE)) != len(skips):
+        raise ValueError("malformed multicast skip report")
+    for name, reason in skips.items():
+        if tolerated.get(name) != reason:
+            raise ValueError(f"multicast case skipped without a recorded host limitation: {name}: {reason}")
+    return skips
+
+
+def validate_native(output: str, required=REQUIRED, tolerated=None) -> list[str]:
+    if re.search(r"\[FAIL\]", output):
+        raise ValueError("multicast case failed")
+    skipped = environment_skips(output, tolerated)
+    if required & set(skipped):
+        raise ValueError("required multicast case skipped: " + ", ".join(sorted(required & set(skipped))))
     passed = re.findall(r"^\[PASS\] (\w+)$", output, re.MULTILINE)
     started = re.findall(r"^\[RUN\] (\w+)$", output, re.MULTILINE)
-    summaries = re.findall(r"^(\d+)/(\d+) tests passed([^\n]*)$", output, re.MULTILINE)
+    summaries = re.findall(r"^(\d+)/(\d+) tests passed(?: \((\d+) skipped\))?$", output, re.MULTILINE)
     if len(summaries) != 1:
         raise ValueError("missing or ambiguous native summary")
-    good, selected, extra = summaries[0]
-    if (extra.strip() or int(good) != int(selected) or int(good) != len(passed)
-            or len(set(passed)) != len(passed) or sorted(started) != sorted(passed)):
+    good, selected, skip_count = summaries[0]
+    if (int(skip_count or 0) != len(skipped) or int(good) + len(skipped) != int(selected)
+            or int(good) != len(passed) or len(set(passed)) != len(passed)
+            or sorted(started) != sorted(passed + list(skipped))):
         raise ValueError("incomplete or skipped native execution")
     if not required.issubset(passed):
         raise ValueError("missing required native cases: " + ", ".join(sorted(required - set(passed))))
@@ -89,7 +114,8 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     record = dict(status="failed", backend=args.backend, platform=platform.platform(),
                   python=platform.python_version(), configuration=args.config,
-                  scope="IPv4 loopback dispatch and public MPEG-TS sample; no IPv6 dispatch or physical-network claim",
+                  scope="IPv4 loopback dispatch and public MPEG-TS sample; no IPv6 dispatch or physical-network claim; "
+                        "environment_skips lists host-limited non-required cases that did not run",
                   commit=os.environ.get("GITHUB_SHA") or subprocess.check_output(
                       ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip())
     try:
@@ -101,7 +127,8 @@ def main() -> None:
         native = binary(args.build, "", "robotweax_srt_tests", args.config)
         sample = binary(args.build, "examples/applications", "robotweax_srt_multicast", args.config)
         output = execute([str(native), "--include", "multicast_dispatch"], args.output / "native.log", 120)
-        record["native_cases"] = validate_native(output)
+        record["native_cases"] = validate_native(output, tolerated=ENVIRONMENT_SKIPS)
+        record["environment_skips"] = environment_skips(output, ENVIRONMENT_SKIPS)
         output = execute([str(native), "--include", "crypto_shared_schedule"],
                          args.output / "key-schedule.log", 30)
         record["key_cases"] = validate_native(output, KEY_REQUIRED)
