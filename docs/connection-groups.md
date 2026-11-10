@@ -640,8 +640,11 @@ Repeats, pacing and readiness:
   on the multicast channel, and `mcast_pkt_filtered` those among them that
   were discarded before decoding: unmatched destinations, member source
   rejections, stale or replaced route identities, non-DATA kinds, oversize
-  payloads and arrivals after the member closed. The difference is what
-  reached the member's DATA processing. Routing observations are not proof
+  payloads and arrivals after the member closed. The member's source
+  rejections also include datagrams on its unicast socket that did not come
+  from its peer, so `mcast_pkt_filtered` can exceed `mcast_pkt_received`.
+  Without such foreign unicast datagrams the difference is what reached the
+  member's DATA processing. Routing observations are not proof
   of validated multicast DATA progress or recovery. The libsrt-shaped group
   row (`srt_bstats`) keeps its documented meaning and counts each message
   once.
