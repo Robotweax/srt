@@ -35,6 +35,7 @@
 #include <cstring>
 #include <cstdio>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -173,6 +174,81 @@ TEST(multicast_dispatch_repair_threshold_counts_distinct_receivers_in_window)
         }
     }
 }
+
+TEST(multicast_dispatch_repair_limit_is_four_times_a_positive_group_maxbw)
+{
+    robotweax::srt::compat::DispatchTransmitState state;
+    // No group SRTO_MAXBW: nothing is limited and nothing is charged.
+    REQUIRE(!state.unicast_repeat_limited());
+    REQUIRE(state.take_unicast_repeat(1'500, 0));
+    for (const std::int64_t unlimited : {-1, 0}) {
+        state.configure_unicast_repeat_limit(unlimited, 1'000'000);
+        REQUIRE(!state.unicast_repeat_limited());
+        REQUIRE(state.unicast_repeat_ready(1'500, 1'000'000));
+        REQUIRE_EQ(*state.unicast_repeat_delay(1'500, 1'000'000), 0U);
+    }
+    REQUIRE_EQ(state.unicast_repeat_bytes(), 0U);
+
+    // 1000 B/s on the group allows 4000 B/s of unicast repeats. Credit starts
+    // empty, so 100 bytes take 25 ms.
+    state.configure_unicast_repeat_limit(1'000, 1'000'000);
+    REQUIRE(state.unicast_repeat_limited());
+    REQUIRE(!state.unicast_repeat_ready(100, 1'000'000));
+    REQUIRE_EQ(*state.unicast_repeat_delay(100, 1'000'000), 25'000U);
+    REQUIRE(!state.take_unicast_repeat(100, 1'000'000));
+    REQUIRE(state.unicast_repeat_ready(100, 1'025'000));
+    REQUIRE(state.take_unicast_repeat(100, 1'025'000));
+    // The credit one member spent is not available to another.
+    REQUIRE(!state.take_unicast_repeat(1, 1'025'000));
+    REQUIRE_EQ(state.unicast_repeat_bytes(), 100U);
+    REQUIRE_EQ(state.unicast_repeat_waits(), 2U);
+
+    // The same group value keeps accumulated credit.
+    state.configure_unicast_repeat_limit(1'000, 1'050'000);
+    REQUIRE(state.unicast_repeat_ready(100, 1'050'000));
+    // Burst credit stops at 1500 bytes for low rates.
+    REQUIRE(state.unicast_repeat_ready(1'500, 11'050'000));
+    REQUIRE(!state.unicast_repeat_ready(1'501, 11'050'000));
+    REQUIRE(!state.unicast_repeat_delay(1'501, 11'050'000).has_value());
+    // A changed group value discards it.
+    state.configure_unicast_repeat_limit(2'000, 11'050'000);
+    REQUIRE(!state.unicast_repeat_ready(1, 11'050'000));
+    REQUIRE_EQ(*state.unicast_repeat_delay(80, 11'050'000), 10'000U);
+
+    // Four times the largest rates saturates instead of wrapping.
+    for (const std::int64_t huge :
+        {std::numeric_limits<std::int64_t>::max(),
+            std::numeric_limits<std::int64_t>::max() / 4 + 1}) {
+        state.configure_unicast_repeat_limit(1'000, 20'000'000);
+        state.configure_unicast_repeat_limit(huge, 20'000'000);
+        REQUIRE(state.unicast_repeat_limited());
+        REQUIRE(state.take_unicast_repeat(1'500, 20'000'001));
+    }
+}
+
+TEST(multicast_dispatch_repair_limit_charges_concurrent_members_once)
+{
+    robotweax::srt::compat::DispatchTransmitState state;
+    state.configure_unicast_repeat_limit(1'000, 1'000'000);
+    // Ten seconds fill the 1500-byte burst; the clock then stands still.
+    constexpr std::uint64_t now = 11'000'000;
+    std::atomic<int> taken {0};
+    std::vector<std::thread> members;
+    for (int member = 0; member < 8; ++member) {
+        members.emplace_back([&] {
+            for (int attempt = 0; attempt < 100; ++attempt) {
+                if (state.take_unicast_repeat(100, now))
+                    ++taken;
+            }
+        });
+    }
+    for (auto& member : members)
+        member.join();
+    REQUIRE_EQ(taken.load(), 15);
+    REQUIRE_EQ(state.unicast_repeat_bytes(), 1'500U);
+    REQUIRE_EQ(state.unicast_repeat_waits(), 785U);
+}
+
 
 namespace {
 
@@ -1361,6 +1437,107 @@ void run_dispatch_shared_loss(bool lose_multicast_repair,
         0);
     REQUIRE_EQ(srt_recvmsg(receiver_a, none.data(), none.size()), SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ETIMEOUT);
+}
+
+// A positive SRTO_MAXBW on a default dispatch sender limits the unicast
+// repeats of all members together. Recovery still completes under the limit,
+// the repeats are charged to it, and the group option moves it.
+TEST(multicast_dispatch_group_charges_unicast_repeats_to_the_shared_limit)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    Peers peers;
+    AdmissionLog admissions;
+    const SRTSOCKET listener = peers.keep(srt_create_socket());
+    const sockaddr_in group_address =
+        ipv4_sockaddr({239, 255, 133, 47}, multicast_port);
+    const sockaddr_in interface = ipv4_sockaddr({127, 0, 0, 1}, 0);
+    const std::int32_t hops = 0;
+    const std::int64_t rate = 500'000;
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_MAXBW, &rate, sizeof(rate)), 0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP,
+                   &group_address, sizeof(group_address)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE, &interface,
+                   sizeof(interface)),
+        0);
+    REQUIRE_EQ(srt_setsockflag(
+                   listener, SRTO_ROBOTWEAX_MCAST_TTL, &hops, sizeof(hops)),
+        0);
+    REQUIRE_EQ(srt_listen_callback(listener, admit_dispatch, &admissions), 0);
+    sockaddr_in bound = ipv4_sockaddr({127, 0, 0, 1}, 0);
+    REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&bound),
+                   sizeof(bound)),
+        0);
+    REQUIRE_EQ(srt_listen(listener, 8), 0);
+    int bound_size = sizeof(bound);
+    REQUIRE_EQ(srt_getsockname(
+                   listener, reinterpret_cast<sockaddr*>(&bound), &bound_size),
+        0);
+    DropOneOriginal hook;
+    {
+        const auto record = SocketRegistry::instance().find(listener);
+        REQUIRE(record != nullptr);
+        std::lock_guard lock(record->mutex);
+        hook.channel = record->channel;
+    }
+    REQUIRE(hook.channel != nullptr);
+    hook.multicast = {.address = {239, 255, 133, 47}, .port = multicast_port};
+    hook.channel->set_send_hook_for_testing(drop_one_original, &hook);
+    struct UnhookOnExit {
+        DropOneOriginal& hook;
+        ~UnhookOnExit()
+        {
+            hook.channel->set_send_hook_for_testing(nullptr, nullptr);
+        }
+    } unhook {hook};
+
+    const SRTSOCKET receiver_a = make_receiver(peers, bound, false, false, 120);
+    const SRTSOCKET sender = peers.keep(srt_accept(listener, nullptr, nullptr));
+    REQUIRE(sender != SRT_INVALID_SOCK);
+    const SRTSOCKET receiver_b = make_receiver(peers, bound, false, false, 120);
+    REQUIRE(wait_for_members(sender, 2));
+    for (const SRTSOCKET receiver : {receiver_a, receiver_b}) {
+        REQUIRE(wait_for_members(receiver, 1));
+    }
+    std::shared_ptr<robotweax::srt::compat::DispatchTransmitState> transmit;
+    {
+        const auto record = GroupRegistry::instance().find(sender);
+        std::lock_guard lock(record->mutex);
+        transmit = record->dispatch->transmit;
+        hook.drop_sequence = static_cast<std::int32_t>(
+            SequenceNumber {record->next_send_sequence}.advanced(4U).value());
+    }
+    REQUIRE(transmit != nullptr);
+    REQUIRE(transmit->unicast_repeat_limited());
+    REQUIRE_EQ(transmit->unicast_repeat_bytes(), 0U);
+
+    // Every receiver loses the fifth original and recovers it over unicast.
+    constexpr int count = 12;
+    for (int index = 0; index < count; ++index) {
+        const std::string payload = message(index);
+        REQUIRE_EQ(srt_sendmsg(sender, payload.data(),
+                       static_cast<int>(payload.size()), -1, 1),
+            static_cast<int>(payload.size()));
+        std::this_thread::sleep_for(std::chrono::milliseconds {2});
+    }
+    for (const SRTSOCKET receiver : {receiver_a, receiver_b}) {
+        expect_messages(receiver, 0, count);
+    }
+    REQUIRE_EQ(hook.dropped.load(), 1);
+    REQUIRE_EQ(transmit->multicast_repeats(), 0U);
+    // At least one 16-byte header plus payload per receiver.
+    REQUIRE(transmit->unicast_repeat_bytes()
+        >= 2U * (16U + message(4).size()));
+
+    // The group option moves the limit: only a positive rate limits.
+    for (const std::int64_t changed : {std::int64_t {-1}, std::int64_t {0}}) {
+        REQUIRE_EQ(
+            srt_setsockflag(sender, SRTO_MAXBW, &changed, sizeof(changed)), 0);
+        REQUIRE(!transmit->unicast_repeat_limited());
+    }
+    REQUIRE_EQ(srt_setsockflag(sender, SRTO_MAXBW, &rate, sizeof(rate)), 0);
+    REQUIRE(transmit->unicast_repeat_limited());
 }
 
 TEST(multicast_dispatch_group_repeats_a_shared_loss_once_over_multicast)

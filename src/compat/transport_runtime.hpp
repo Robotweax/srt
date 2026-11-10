@@ -1004,6 +1004,13 @@ private:
 
 #endif
     [[nodiscard]] bool retransmission_ready(std::uint64_t now) noexcept;
+    // Non-null for a default dispatch member whose group limits the unicast
+    // repeats of all members together.
+    [[nodiscard]] DispatchTransmitState*
+    unicast_repeat_limiter() const noexcept;
+    // False after restoring the loss work because the shared credit is gone.
+    [[nodiscard]] bool take_unicast_repeat(
+        const OutboundPacket& packet, std::size_t datagram_size) noexcept;
     // Protected by mutex_; accepted payload DATA, independent of app reads
     // and of statistics interval resets. Control/undecryptable traffic cannot
     // turn an otherwise unused receive path into a running group member.

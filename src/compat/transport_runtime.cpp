@@ -2698,8 +2698,49 @@ ConnectionRuntime::next_receive_wakeup_locked(
               deadline_after_relative_microseconds(now, *delivery)};
 }
 
+DispatchTransmitState*
+ConnectionRuntime::unicast_repeat_limiter() const noexcept
+{
+    // Default dispatch members only. A coordinated member's repairs are
+    // canonical group datagrams under the coordinator's own aggregate budget.
+    return (group_data_egress_.mode == GroupDataEgress::Mode::suppress
+               || group_data_egress_.mode == GroupDataEgress::Mode::redirect)
+            && group_data_egress_.transmit != nullptr
+            && group_data_egress_.transmit->unicast_repeat_limited()
+        ? group_data_egress_.transmit.get()
+        : nullptr;
+}
+
+bool ConnectionRuntime::take_unicast_repeat(
+    const OutboundPacket& packet, std::size_t datagram_size) noexcept
+{
+    auto* const limiter =
+        packet.header.retransmitted ? unicast_repeat_limiter() : nullptr;
+    if (limiter == nullptr
+        || limiter->take_unicast_repeat(
+            datagram_size, DispatchTransmitState::unicast_repeat_clock())) {
+        return true;
+    }
+    // Another member spent the credit after this one was scheduled. Restore
+    // the loss work; the scheduler waits for the shared budget.
+    session_.requeue_prepared_retransmission(packet.header.sequence);
+    return false;
+}
+
 bool ConnectionRuntime::retransmission_ready(std::uint64_t now) noexcept
 {
+    if (auto* const limiter = unicast_repeat_limiter()) {
+        // Reserve room for a GCM tag so that a ready candidate can always be
+        // charged at its exact wire size unless another member raced it.
+        const auto packet = session_.peek_retransmission_packet();
+        if (!packet.has_value()
+            || !limiter->unicast_repeat_ready(
+                packet_header_size + packet->payload.size()
+                    + srt_gcm_authentication_tag_size,
+                DispatchTransmitState::unicast_repeat_clock())) {
+            return false;
+        }
+    }
 #ifdef ENABLE_MAXREXMITBW
     const auto packet = session_.peek_retransmission_packet();
     return packet.has_value()
@@ -3517,6 +3558,9 @@ bool ConnectionRuntime::send_data(
         if (repeat_decision.multicast) {
             // A local multicast failure did not repair this receiver. Use
             // its ordinary bounded unicast retry path with the same packet.
+            if (!take_unicast_repeat(packet, bytes.size())) {
+                return true;
+            }
             return submit_datagram(bytes, completion, now);
         }
         // A transient multicast send failure drops this copy for every
@@ -3525,6 +3569,9 @@ bool ConnectionRuntime::send_data(
         if (packet.header.retransmitted) {
             session_.note_retransmission_sent(packet.header.sequence, now);
         }
+        return true;
+    }
+    if (!take_unicast_repeat(packet, datagram_size)) {
         return true;
     }
     return submit_datagram(
@@ -5382,15 +5429,29 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         retirement_delay =
             std::chrono::microseconds {*retirement_deadline - current};
     }
-#ifdef ENABLE_MAXREXMITBW
     if (!filter_pending && !retransmission
         && session_.has_pending_retransmission()
         && (!session_.send_buffer().peek_new_packet().has_value()
             || flow_blocked || crypto_blocked)) {
         const auto candidate = session_.peek_retransmission_packet();
         if (candidate.has_value()) {
-            const auto wait = retransmission_budget_.delay(
+            std::optional<std::uint64_t> wait = 0;
+#ifdef ENABLE_MAXREXMITBW
+            wait = retransmission_budget_.delay(
                 packet_header_size + candidate->payload.size(), current);
+#endif
+            if (auto* const limiter = unicast_repeat_limiter();
+                limiter != nullptr && wait.has_value()) {
+                const auto shared = limiter->unicast_repeat_delay(
+                    packet_header_size + candidate->payload.size()
+                        + srt_gcm_authentication_tag_size,
+                    DispatchTransmitState::unicast_repeat_clock());
+                // Another member may take the credit first; this member then
+                // computes a new wait instead of polling.
+                wait = shared.has_value()
+                    ? std::optional<std::uint64_t> {std::max(*wait, *shared)}
+                    : std::nullopt;
+            }
             if (wait.has_value() && *wait != 0) {
                 return {.next_work_delay = std::chrono::microseconds {*wait},
                     .next_work_deadline = now_function_ == nullptr
@@ -5403,7 +5464,6 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
                 return {};
         }
     }
-#endif
     if (!paced_work) {
         // Buffered DATA, receive delivery/drop work and pending key exchanges
         // retain the short polling path. Sensor retirement still bounds it.

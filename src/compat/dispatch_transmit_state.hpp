@@ -1,12 +1,16 @@
 #pragma once
 
+#include "compat/retransmission_budget.hpp"
 #include "robotweax/srt/sequence.hpp"
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <mutex>
+#include <optional>
 
 namespace robotweax::srt::compat {
 
@@ -107,6 +111,87 @@ public:
         // Subsequent requests use unicast after failure or window expiry.
     }
 
+    // Aggregate limit for the unicast repeats of every member of a default
+    // (not coordinated) dispatch sender: four times a positive group
+    // SRTO_MAXBW, counted like SRTO_MAXREXMITBW as the SRT header plus the
+    // protected payload without IP/UDP headers. Any other SRTO_MAXBW value
+    // leaves the repeats unlimited. Members run on different channel threads
+    // with different time origins, so the bucket keeps its own clock.
+    static constexpr std::int64_t unicast_repeat_rate_factor = 4;
+    [[nodiscard]] static std::uint64_t unicast_repeat_clock() noexcept
+    {
+        const auto count =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        return count > 0 ? static_cast<std::uint64_t>(count) : 0U;
+    }
+    void configure_unicast_repeat_limit(
+        std::int64_t group_maximum_bandwidth, std::uint64_t now) noexcept
+    {
+        constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
+        const std::int64_t limit = group_maximum_bandwidth <= 0
+            ? -1
+            : group_maximum_bandwidth > maximum / unicast_repeat_rate_factor
+            ? maximum
+            : group_maximum_bandwidth * unicast_repeat_rate_factor;
+        std::lock_guard lock(unicast_repeat_mutex_);
+        unicast_repeat_budget_.configure(limit, now);
+        unicast_repeat_limited_.store(limit > 0, std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool unicast_repeat_limited() const noexcept
+    {
+        return unicast_repeat_limited_.load(std::memory_order_relaxed);
+    }
+    // A hint for scheduling only; another member may take the credit first.
+    [[nodiscard]] bool unicast_repeat_ready(
+        std::uint64_t bytes, std::uint64_t now) noexcept
+    {
+        if (!unicast_repeat_limited()) {
+            return true;
+        }
+        std::lock_guard lock(unicast_repeat_mutex_);
+        return unicast_repeat_budget_.ready(bytes, now);
+    }
+    // Checks and debits in one step, so concurrent members cannot spend the
+    // same credit. The debit precedes UDP submission and is not returned if
+    // the datagram is later retired from a transient-error retry queue; that
+    // rare case undercounts the available credit and never exceeds the limit.
+    [[nodiscard]] bool take_unicast_repeat(
+        std::uint64_t bytes, std::uint64_t now) noexcept
+    {
+        if (!unicast_repeat_limited()) {
+            return true;
+        }
+        std::lock_guard lock(unicast_repeat_mutex_);
+        if (!unicast_repeat_budget_.ready(bytes, now)) {
+            unicast_repeat_waits_.fetch_add(1U, std::memory_order_relaxed);
+            return false;
+        }
+        unicast_repeat_budget_.consume(bytes, now);
+        unicast_repeat_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+        return true;
+    }
+    // Microseconds until `bytes` of credit exist; 0 when ready or unlimited.
+    [[nodiscard]] std::optional<std::uint64_t> unicast_repeat_delay(
+        std::uint64_t bytes, std::uint64_t now) noexcept
+    {
+        if (!unicast_repeat_limited()) {
+            return 0;
+        }
+        std::lock_guard lock(unicast_repeat_mutex_);
+        return unicast_repeat_budget_.delay(bytes, now);
+    }
+    // Bytes charged to the limit, and charges refused after scheduling.
+    [[nodiscard]] std::uint64_t unicast_repeat_bytes() const noexcept
+    {
+        return unicast_repeat_bytes_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint64_t unicast_repeat_waits() const noexcept
+    {
+        return unicast_repeat_waits_.load(std::memory_order_relaxed);
+    }
+
     void note_multicast_sent(std::size_t bytes, bool repeat) noexcept
     {
         multicast_packets_.fetch_add(1U, std::memory_order_relaxed);
@@ -155,6 +240,11 @@ private:
     std::atomic<std::uint64_t> multicast_bytes_ {0};
     std::atomic<std::uint64_t> multicast_repeats_ {0};
     std::atomic<std::uint64_t> skipped_repeats_ {0};
+    std::mutex unicast_repeat_mutex_;
+    RetransmissionBudget unicast_repeat_budget_;
+    std::atomic<bool> unicast_repeat_limited_ {false};
+    std::atomic<std::uint64_t> unicast_repeat_bytes_ {0};
+    std::atomic<std::uint64_t> unicast_repeat_waits_ {0};
 };
 
 } // namespace robotweax::srt::compat
