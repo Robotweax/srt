@@ -38,6 +38,16 @@ void require_ack_retires_nothing(SendBuffer& history, SequenceNumber next)
     REQUIRE_EQ(history.first_sequence(), first);
     REQUIRE_EQ(history.size(), size);
 }
+// The counterpart: once the submission is reported, the same ACK retires the
+// history up to it. Success alone does not show that, an early ACK succeeds
+// too.
+void require_ack_retires_through(SendBuffer& history, SequenceNumber next)
+{
+    const auto size = history.size();
+    REQUIRE_EQ(history.acknowledge_submitted_before(next), Error::none);
+    REQUIRE_EQ(history.first_sequence(), next);
+    REQUIRE(history.size() < size);
+}
 DataHeader header(std::uint32_t sequence)
 {
     return {.sequence = SequenceNumber {sequence},
@@ -673,9 +683,7 @@ TEST(
         REQUIRE_EQ(apply(misrouted, generation), 0U);
         require_ack_retires_nothing(histories[0]->buffer, SequenceNumber {2});
         REQUIRE_EQ(apply(outcome[0], generation), 1U);
-        REQUIRE_EQ(histories[0]->buffer.acknowledge_submitted_before(
-                       SequenceNumber {2}),
-            Error::none);
+        require_ack_retires_through(histories[0]->buffer, SequenceNumber {2});
         if (!destroyed)
             require_ack_retires_nothing(
                 histories[1]->buffer, SequenceNumber {2});

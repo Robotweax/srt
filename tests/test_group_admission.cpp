@@ -56,6 +56,16 @@ void require_ack_retires_nothing(SendBuffer& history, SequenceNumber next)
     REQUIRE_EQ(history.first_sequence(), first);
     REQUIRE_EQ(history.size(), size);
 }
+// The counterpart: once the submission is reported, the same ACK retires the
+// history up to it. Success alone does not show that, an early ACK succeeds
+// too.
+void require_ack_retires_through(SendBuffer& history, SequenceNumber next)
+{
+    const auto size = history.size();
+    REQUIRE_EQ(history.acknowledge_submitted_before(next), Error::none);
+    REQUIRE_EQ(history.first_sequence(), next);
+    REQUIRE(history.size() < size);
+}
 void submitted(SendBuffer& history, SequenceNumber sequence, std::uint64_t now)
 {
     if (const auto token = history.group_original_submission(sequence))
@@ -664,8 +674,7 @@ TEST(
     REQUIRE_EQ(history.request_retransmission({initial, initial}),
         Error::invalid_control_payload);
     history.note_group_original_submitted(*fresh, 300);
-    REQUIRE_EQ(
-        history.acknowledge_submitted_before(initial.next()), Error::none);
+    require_ack_retires_through(history, initial.next());
 }
 
 TEST(compat_group_admission_history_enforces_complete_protected_wire_ceiling)

@@ -23,6 +23,16 @@ void require_ack_retires_nothing(SendBuffer& history, SequenceNumber next)
     REQUIRE_EQ(history.first_sequence(), first);
     REQUIRE_EQ(history.size(), size);
 }
+// The counterpart: once the submission is reported, the same ACK retires the
+// history up to it. Success alone does not show that, an early ACK succeeds
+// too.
+void require_ack_retires_through(SendBuffer& history, SequenceNumber next)
+{
+    const auto size = history.size();
+    REQUIRE_EQ(history.acknowledge_submitted_before(next), Error::none);
+    REQUIRE_EQ(history.first_sequence(), next);
+    REQUIRE(history.size() < size);
+}
 } // namespace
 
 TEST(send_buffer_metadata_copy_preserves_live_clocks_and_partial_tombstones)
@@ -1445,7 +1455,7 @@ TEST(send_buffer_canonical_unicast_requires_its_own_complete_submission)
     REQUIRE(repair->header.retransmitted);
     REQUIRE(std::equal(body.begin(), body.end(), repair->payload.begin(),
         repair->payload.end()));
-    REQUIRE_EQ(history.acknowledge_submitted_before(first.next()), Error::none);
+    require_ack_retires_through(history, first.next());
 }
 
 TEST(
@@ -1478,7 +1488,7 @@ TEST(
     REQUIRE_EQ(history.pending_group_unicast(), 0U);
     REQUIRE_EQ(copy.pending_group_unicast(), 1U);
     REQUIRE(copy.note_group_unicast_submitted(*token, 40));
-    REQUIRE_EQ(copy.acknowledge_submitted_before(first.next()), Error::none);
+    require_ack_retires_through(copy, first.next());
     REQUIRE_EQ(copy.pending_group_unicast(), 0U);
 }
 
@@ -1554,8 +1564,7 @@ TEST(send_buffer_canonical_queue_counters_survive_copy_ttl_and_mixed_preflight)
         history.group_recovery(first.advanced(2)).error, Error::invalid_state);
     REQUIRE_EQ(moved.pending_group_unicast(), 1U);
     history.note_packet_submitted(first);
-    REQUIRE_EQ(
-        history.acknowledge_submitted_before(first.advanced(2)), Error::none);
+    require_ack_retires_through(history, first.advanced(2));
     REQUIRE_EQ(history.preflight_group_original(
                    first.advanced(2), body.size(), CryptoMode::automatic),
         Error::none);
