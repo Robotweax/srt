@@ -156,14 +156,21 @@ jobs:
           retention-days: 7
 
   sanitizers:
-    name: Hybrid control sanitizers (ubuntu-latest)
+    name: Hybrid control sanitizers (ubuntu-latest${{ matrix.compiler == 'gcc' && ', GCC' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Clang at -O1 is the sanitized Linux configuration the review
+        # qualified. GCC runs the same selectors and soak: the first review
+        # found DATA, freshness and key-material failures in sanitized GCC
+        # builds that no hosted job covered.
+        compiler: [clang, gcc]
     env:
-      # Clang at -O1 is the sanitized Linux configuration the review qualified.
       # The flags match the main sanitizer job: undefined behavior is fatal.
-      CC: clang
-      CXX: clang++
+      CC: ${{ matrix.compiler }}
+      CXX: ${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
       CFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
       CXXFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
       LDFLAGS: -fsanitize=address,undefined
@@ -247,7 +254,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: hybrid-control-sanitizers-ubuntu-latest
+          name: hybrid-control-sanitizers-ubuntu-latest${{ matrix.compiler == 'gcc' && '-gcc' || '' }}
           path: |
             build-hybrid-san/evidence/
             build-hybrid-san/CMakeCache.txt
