@@ -782,12 +782,16 @@ bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
         // channel that published it. Retire it now, after this channel's
         // routing lock is released, so two channels are never locked
         // together. The runtime's current identity is already the new one,
-        // so the former channel's revocation leaves it alone.
+        // so the former channel's revocation leaves it alone. Only the route
+        // that still carries the superseded identity is retired: the former
+        // channel may have registered the runtime again since this channel's
+        // lock was released, and that route is not this registration's to
+        // remove.
         if (replaced) {
             if (const auto former = replaced->owner_.lock();
                 former && former.get() != this)
                 former->unregister_connection(
-                    protocol_socket_id, runtime.get());
+                    protocol_socket_id, runtime.get(), replaced.get());
         }
         return true;
     } catch (...) {
@@ -868,7 +872,8 @@ bool DatagramChannel::has_ingress_route(std::uint32_t id,
         && found->second.provenance == provenance;
 }
 void DatagramChannel::unregister_connection(std::uint32_t protocol_socket_id,
-    const ConnectionRuntime* expected) noexcept
+    const ConnectionRuntime* expected,
+    const MulticastIngressBinding* expected_binding) noexcept
 {
     std::lock_guard lock(routes_mutex_);
     const auto route = routes_.find(protocol_socket_id);
@@ -877,6 +882,8 @@ void DatagramChannel::unregister_connection(std::uint32_t protocol_socket_id,
     }
     auto& node = route->second;
     if (expected && node.runtime.get() != expected)
+        return;
+    if (expected_binding && node.multicast_binding.get() != expected_binding)
         return;
     if (node.multicast_binding != nullptr)
         node.runtime->revoke_multicast_ingress(node.multicast_binding);

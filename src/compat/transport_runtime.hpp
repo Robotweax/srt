@@ -295,8 +295,12 @@ public:
         std::shared_ptr<const void> membership = {}) noexcept;
     [[nodiscard]] bool has_ingress_route(std::uint32_t protocol_socket_id,
         const ConnectionRuntime*, PacketIngress) noexcept;
+    // With `expected`, only a route to that runtime is removed. With
+    // `expected_binding` as well, only the route that still carries that
+    // multicast identity: a route registered again since is left alone.
     void unregister_connection(std::uint32_t protocol_socket_id,
-        const ConnectionRuntime* expected = nullptr) noexcept;
+        const ConnectionRuntime* expected = nullptr,
+        const MulticastIngressBinding* expected_binding = nullptr) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;
     [[nodiscard]] bool register_setup_inbox(std::uint32_t protocol_socket_id,
