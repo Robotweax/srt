@@ -69,7 +69,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | H-6 | Fixed in source: the join worker starts before the receiver and membership locks are taken; see below | Hosted hybrid builds; no deterministic lock-scope regression, see below |
 | S-1 | Documented and pinned: the first decodable OFFER with matching IDs binds the single attempt; see below | Protocol retry change only after a separate review |
 | S-2 | Documented: the ordinary proof covers key material only, the announcement steers the join first, the hybrid exchange fails closed later; see below | Transcript change only after a separate compatibility review |
-| S-3 | Documented as an availability limit (unauthenticated inputs can occupy the 16 slots until the deadline); see below | Decision pending: reserved exchange slot or enqueue-time MAC check |
+| S-3 | Resolved by decision: the documented availability limit stands (unauthenticated inputs can occupy the 16 slots until the deadline); no reserved slot or enqueue-time MAC check; see below | None |
 | S-4 | Fixed: `Admission` storage bound asserted, version digit asserted, credential-strength note added; see below | None |
 
 ## Harness follow-up
@@ -755,7 +755,8 @@ S-3. Documentation states the availability limit precisely: inputs are
 authenticated when processed, so unauthenticated datagrams that pass the
 subtype filter can occupy the 16 input slots until the attempt's deadline;
 the attempt then fails explicitly. A reserved exchange slot or an enqueue-time
-MAC check would remove the limit; that is a design choice for the owner.
+MAC check would remove the limit; the owner decided to keep the documented
+limit for the experimental component.
 
 S-4. `static_assert(sizeof(Admission) < 8 * 1024)` pins the documented
 bound next to the existing exchange, service and bridge assertions; the
