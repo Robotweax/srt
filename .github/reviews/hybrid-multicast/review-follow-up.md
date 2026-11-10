@@ -617,6 +617,39 @@ in the history and in its copy) and
 (the multicast report after a completed unicast copy is applied, not a
 duplicate).
 
+## Intermittent hosted failures
+
+Four hosted failures passed on rerun during this review's follow-up; none
+reproduced locally. State of each:
+
+- Windows `srt-live-transmit -version` timeout: see BL-4 above (probe
+  instrumented).
+- Sanitized `hybrid_network_multi_receiver_control_loss_...`: the test's
+  ordering was corrected on 2026-11-09 (`isolate_first()` waits for the first
+  auxiliary drops before provoking freshness loss); no recurrence since.
+- macOS ACP1 group rendezvous (run 42646571776 on `main`, first attempt):
+  `interop/run_mbedtls_peers.py --acp1 --rendezvous --group backup` ended
+  with `rdv-backup-caller message 256: Connection setup failure` and both
+  peers exiting 1, after the twelve bidirectional scenarios had passed; the
+  peers use a 6-second connect timeout on two loopback rendezvous paths. One
+  occurrence, the second attempt passed, no local reproduction attempted (the
+  scenario needs the mbedtls peer build). Recorded as a timing failure on a
+  loaded runner until it recurs.
+- macOS `srt_compat_listener_handoff_survives_full_duplicate_inbox` (hybrid
+  control Release job, run 42696517020, first attempt): "expected one
+  listener callback; observed 2". Reading of the mechanism: the listener actor
+  holds its inbox while an admission is pending, the admission extracts every
+  queued envelope of the same peer and socket ID into the setup inbox after
+  the callback, and a conclusion admitted later is replayed by the established
+  runtime. A second callback therefore needs a duplicate that reached the
+  listener inbox after the extraction and was admitted before the runtime
+  could replay it, which happens either in the dispatch window between the
+  route lookup and the inbox push, or when the first setup failed under load
+  and the caller's retransmit was then admitted. Sixty runs under four busy
+  cores on a local Mac did not reproduce it. The test now records, for every
+  callback, the admitted handle and its time and reports their socket states
+  on a repeat, so the next occurrence tells the two cases apart.
+
 ## Windows version probe (BL-4)
 
 What the record shows: the external `srt-live-transmit` qualification on hosted
