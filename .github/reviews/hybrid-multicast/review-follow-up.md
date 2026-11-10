@@ -1054,8 +1054,59 @@ rule of no catch-up is therefore load-bearing for the balance between source
 and members, and the credit was dropped. The patch is kept outside the
 repository.
 
-Still open: the contract itself. A detached member stays connected without
-key announcements and without a signal.
+### Owner decisions of 2026-11-10 and what followed
+
+- Detachment contract changed. When the coordinator detaches a member whose
+  unicast session is established, the sender breaks that connection and sends
+  one SHUTDOWN (`ConnectionRuntime::disconnect_peer`); the receiver observes a
+  lost connection and reconnects to enroll again. The sender's row stays
+  `SRT_GST_BROKEN` with `SRT_ECONNLOST` until the application closes it.
+  Test: `multicast_dispatch_coordinated_detached_member_connection_is_closed_and_receiver_observes_loss`.
+  Four assertions that pinned "stays connected" now pin the new contract
+  (`..._slow_receiver_is_visible_and_healthy_stream_continues`,
+  `..._send_losing_its_only_receiver_reports_connection_lost`).
+  Limits: the connection is closed when the detachment is published (a group
+  send, `srt_group_data` or a group epoll wait), not at the instant of
+  detachment; SHUTDOWN is sent once without retry, and what a receiver that
+  misses it observes while multicast DATA still arrives is not verified.
+  Exemption, not yet confirmed by the owner: a member detached as
+  `source_not_submitted` under a source failure keeps its session, because the
+  documented source-error behaviour and `recover_source_to_unicast` rely on it.
+- L-3 scope. The pending loss stays across `expired` and `full` returns and is
+  dropped when the member that caused it is removed. Test:
+  `compat_group_coordinator_removing_the_detached_member_drops_its_pending_loss`.
+- H-2. The stricter mark spacing stays.
+- Windows timer period stays for 0.3.3, with the build option
+  `ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD` (default ON) to leave the period to the
+  application. The OFF configuration is not built by a hosted job.
+- T-7 fixed: the retirement of a superseded route also compares the binding.
+  No deterministic test; the window has no hook.
+- BL-6: `qualify_hybrid_soak.py` refuses uncommitted changes and builds the
+  test target before the run; the record carries `binary_bound_to_commit`.
+  Bounds on `pacer_resets` and `uc_capacity_retries` are deferred.
+- A GCC entry in the hosted sanitizer job is required before the merge
+  decision and is added as a matrix entry; its first result decides what
+  remains of the GCC failures.
+- The 60-second Windows version probe (`d3915e8`) is accepted as a temporary
+  relaxation: restore five seconds once a slow start is captured and explained
+  or after 50 hosted Windows runs without one.
+- The six harness logs rewritten by `4dcaf04` (a trailing blank line each, one
+  commit after they were added, hashes updated) are accepted as they are.
+- Accepted without a change: H-1 (`snapshot()` can show `expired` between
+  publication and the first pump), H-3 (the documented lifetime bound may be
+  too strong for round trips beyond about half a round; not verified), H-4
+  (one control-record arrival stamp bypasses the service clock, test-only
+  effect), T-8 (only the `OPENED` state was aligned).
+- Hosted macOS keeps the exclusion of the gates labelled `hybrid` and
+  `network`.
+- Windows pacing of the ordinary sender (timer and credit path, issue 353 is
+  the mobile counterpart) goes to a separate pull request after this one.
+
+Intermittent hosted failure, one occurrence, not rerun: on `d72d7bb`
+(workflow and notes change only, source identical to the green `c955a19`),
+`Reference interoperability (file-base)` failed
+`filecc-ipv6-rendezvous-nak-drop-robotweax-to-haivision` with "matching NAK
+was not observed before the retransmission" (job 129940409817).
 
 ## Remaining harness and evidence work
 

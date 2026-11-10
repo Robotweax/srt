@@ -187,6 +187,10 @@ class Smoke:
         # generous bound, repeats once when the cold start was slow, and
         # records the durations as evidence. A run that does not exit within
         # the bound still fails.
+        # Owner decision of 2026-11-10: the 60-second bound is a temporary
+        # relaxation of the original five seconds. Restore five seconds once
+        # a slow start has been captured and explained, or after 50 hosted
+        # Windows runs without one.
         bound = 60.0
         seconds = []
         output = ''
