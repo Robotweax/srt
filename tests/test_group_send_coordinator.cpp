@@ -1092,6 +1092,75 @@ TEST(compat_group_coordinator_send_losing_one_of_two_members_is_accepted)
     REQUIRE_EQ(f.output.size(), 2U);
 }
 
+// A connected member detached by a send that returns busy is still lost when
+// the retry settles the sequence. If the remaining member has left by then,
+// the retry reports the loss and consumes nothing, exactly as a single call
+// that loses its last connected member.
+TEST(
+    compat_group_coordinator_busy_retry_after_losing_a_connected_member_reports_the_loss)
+{
+    for (unsigned scenario = 0; scenario < 2; ++scenario) {
+        Fixture f;
+        auto admission_time = f.now;
+        f.actor->close();
+        f.config.admission_busy_grace = 10ms;
+        f.config.admission_clock = +[](void* p) noexcept {
+            return *static_cast<Clock::time_point*>(p);
+        };
+        f.config.admission_clock_context = &admission_time;
+        f.recreate();
+        Receiver slow(f, 1), other(f);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.pump();
+        REQUIRE_EQ(f.output.size(), 1U);
+        other.ack(initial.next());
+        f.now += 1ms;
+        slow.now += 1'000;
+        other.now += 1'000;
+        admission_time = f.now;
+        const auto message = f.actor->snapshot().next_message;
+
+        // The unacknowledged original fills the slow member's history while
+        // the other member's admission is held: detached and busy in one call.
+        auto held = other.hold(f);
+        REQUIRE_EQ(held.status(), Admission::Status::ready);
+        auto attempt = std::async(std::launch::async, [&] {
+            return f.send();
+        });
+        REQUIRE_EQ(attempt.wait_for(2s), std::future_status::ready);
+        REQUIRE_EQ(attempt.get(), Status::busy);
+        REQUIRE_EQ(reason(f, slow.id), Actor::Detachment::history_full);
+        REQUIRE_EQ(reason(f, other.id), Actor::Detachment::none);
+        REQUIRE_EQ(f.actor->snapshot().next_sequence, initial.next());
+        held.release();
+
+        // The remaining member leaves before the retry.
+        if (scenario == 0)
+            other.runtime->close();
+        else
+            f.actor->remove_member(other.id);
+        f.now += 11ms;
+        admission_time = f.now;
+        f.pump();
+        REQUIRE(f.actor->snapshot().writable);
+        REQUIRE_EQ(f.send(), Status::receivers_lost);
+        REQUIRE_EQ(f.actor->snapshot().next_sequence, initial.next());
+        REQUIRE_EQ(f.actor->snapshot().next_message, message);
+        REQUIRE_EQ(f.actor->snapshot().active_members, 0U);
+        REQUIRE(!f.actor->snapshot().failed);
+        f.pump();
+        REQUIRE_EQ(f.output.size(), 1U);
+
+        // The loss is reported once; the group is empty now, which is the
+        // documented unused advance.
+        REQUIRE_EQ(f.send(), Status::advanced_without_receivers);
+        REQUIRE_EQ(f.actor->snapshot().next_sequence, initial.advanced(2));
+        f.pump();
+        REQUIRE_EQ(f.output.size(), 1U);
+        f.actor->close();
+    }
+}
+
 TEST(compat_group_coordinator_retry_exhaustion_never_becomes_submission)
 {
     Fixture f;

@@ -59,7 +59,8 @@ public:
         // No member could take the message because none existed or all had
         // already left: the timeline advances and no datagram is emitted.
         advanced_without_receivers,
-        // No member remains, and at least one was detached during this call
+        // No member remains, and at least one was detached during this call,
+        // or during an earlier call that left the sequence unsettled,
         // although its session is still established. Nothing is consumed or
         // emitted; the message is not sent.
         receivers_lost,
@@ -314,5 +315,9 @@ private:
     bool manual_ = false;
     bool terminal_failure_ = false;
     std::optional<Clock::time_point> retry_at_;
+    // A member was detached during admission although its session is still
+    // established, and no send has settled the sequence since: the call
+    // returned busy, expired or full. Kept so that the retry reports the loss.
+    bool lost_connected_member_ = false;
 };
 } // namespace robotweax::srt::compat

@@ -4,6 +4,7 @@
 #include <cassert>
 #include <exception>
 #include <limits>
+#include <utility>
 
 namespace robotweax::srt::compat {
 using RuntimeAdmission = GroupRuntimeAdmission;
@@ -612,7 +613,9 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
     retry_at_.reset();
     // Empty groups advance the same source/key timeline without a datagram.
     if (state_.active_members == 0)
-        return advance_empty(deadline);
+        return std::exchange(lost_connected_member_, false)
+            ? Status::receivers_lost
+            : advance_empty(deadline);
     if (!crypto_writable()) {
         ++state_.full_sends;
         return Status::full;
@@ -652,8 +655,6 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
         Frame& frame = **available;
         Publication tx {*this, frame, {}, {}};
         bool retry = false;
-        // A member detached below although its session is still established.
-        bool lost_connected_member = false;
         frame.count = 0;
         const DataHeader header {.sequence = state_.next_sequence,
             .message_number = state_.next_message,
@@ -713,7 +714,7 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
             if (reason != Detachment::none) {
                 // A closed or replaced runtime has already left; it is the
                 // late discovery of a member that was gone before this call.
-                lost_connected_member = lost_connected_member
+                lost_connected_member_ = lost_connected_member_
                     || (reason != Detachment::closed
                         && reason != Detachment::stale);
                 detach(member.state.id, reason);
@@ -738,14 +739,16 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
         // left, the group was empty in effect and the timeline advances
         // unused, as for a group that is empty on entry; the enclosing scope
         // releases source/runtime guards before that advance. If a member
-        // whose session is still established was detached here, the message
+        // whose session is still established was detached here, or in an
+        // earlier call that did not settle this sequence, the message
         // reaches nobody and must not be accepted: report the loss and leave
         // the sequence, message number, source reservation and key position
         // untouched. Such a member may still listen to the multicast group
         // and expects this sequence from the next original.
         if (frame.count == 0)
-            return lost_connected_member ? Status::receivers_lost
-                                         : Status::advanced_without_receivers;
+            return std::exchange(lost_connected_member_, false)
+                ? Status::receivers_lost
+                : Status::advanced_without_receivers;
         if (!manual_
             && scheduler_->notify_service(service_)
                 != RuntimeScheduler::SubmitStatus::accepted) {
@@ -780,6 +783,7 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
         // No snapshot calls on emitter/runtime while their guards remain alive.
         for (std::size_t i = 0; i < frame.count; ++i)
             tx.guards[i]->release();
+        lost_connected_member_ = false;
         return Status::accepted;
     }();
     return admitted == Status::advanced_without_receivers
