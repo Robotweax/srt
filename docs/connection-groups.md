@@ -725,7 +725,10 @@ The aggregate limit bounds egress; it does not guarantee repair deadlines or a
 fair bandwidth share for each receiver.
 
 A member whose repair history is full is detached from future group admission.
-Runtime/KM busy gets a 50 ms retry grace before detachment. Completion fanout
+Runtime/KM busy gets a 50 ms retry grace and at least eight admission attempts
+before detachment, so a sender whose retries are slow, for example at the
+default Windows timer period, does not detach a member after two or three of
+them. Completion fanout
 retries a busy member for the same 50 ms and at least eight attempts before
 detaching it, so a burst of sends while a member is inside one poll does not
 count against it. While a member admission is busy, the group refuses sends

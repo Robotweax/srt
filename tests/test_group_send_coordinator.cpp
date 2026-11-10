@@ -715,6 +715,45 @@ TEST(compat_group_coordinator_busy_admission_gate_lasts_the_retry_interval)
     REQUIRE_EQ(f.actor->snapshot().busy_sends, 1U);
     REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
 }
+// The busy grace is a time, and the time between two admission attempts is
+// whatever the platform's timer makes of the retry interval: about 14 ms for
+// a 100 us sleep at the default Windows timer period. A member must not be
+// detached because the caller's own retries were slow. It is detached only
+// once it has also been found busy maximum_busy_attempts times.
+TEST(
+    compat_group_coordinator_busy_admission_needs_the_attempts_as_well_as_the_grace)
+{
+    Fixture f;
+    auto admission_time = f.now;
+    f.actor->close();
+    f.config.admission_busy_grace = 10ms;
+    f.config.admission_retry_interval = 100us;
+    f.config.maximum_busy_attempts = 8;
+    f.config.admission_clock = +[](void* p) noexcept {
+        return *static_cast<Clock::time_point*>(p);
+    };
+    f.config.admission_clock_context = &admission_time;
+    f.recreate();
+    Receiver a(f);
+    auto held = a.hold(f);
+    REQUIRE_EQ(held.status(), Admission::Status::ready);
+    const auto send = [&] {
+        auto attempt = std::async(std::launch::async, [&] {
+            return f.send();
+        });
+        REQUIRE_EQ(attempt.wait_for(2s), std::future_status::ready);
+        return attempt.get();
+    };
+    // Every retry arrives later than the whole grace.
+    for (unsigned attempt = 1; attempt < 8; ++attempt) {
+        REQUIRE_EQ(send(), Status::busy);
+        REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+        admission_time += 20ms;
+    }
+    REQUIRE_EQ(f.actor->snapshot().busy_sends, 7U);
+    REQUIRE_EQ(send(), Status::receivers_lost);
+    REQUIRE_EQ(reason(f, a.id), Actor::Detachment::admission_busy);
+}
 // A message whose own deadline has passed when a member admits it is an
 // expired message, not an unavailable member. The send fails as it does when
 // the emitter sees the expiry; nobody is detached and nothing is consumed.

@@ -24,10 +24,13 @@ public:
         std::uint32_t initial_message = 1;
         std::size_t member_capacity = 16;
         std::size_t fanout_batch = 64;
-        // Minimum busy completion attempts before a member is detached,
-        // bounded independently of source slots. Attempts follow the send
-        // rate, so with a busy grace the member must also have stayed busy
-        // for that long.
+        // Minimum busy attempts, for completion and with a busy grace also
+        // for admission, before a member is detached, bounded independently
+        // of source slots. Completion attempts follow the send rate, so with
+        // a busy grace the member must also have stayed busy for that long.
+        // Admission attempts are at least admission_retry_interval apart but
+        // can be much further apart on a coarse platform timer, so the grace
+        // alone could pass within two or three of them.
         std::uint32_t maximum_busy_attempts = 8;
         Clock::duration poll_interval = std::chrono::milliseconds {1};
         // How long send() stays refused after a member admission was busy,
@@ -233,6 +236,9 @@ private:
         std::weak_ptr<ConnectionRuntime> runtime;
         GroupRuntimeAdmission::Binding binding;
         std::optional<Clock::time_point> busy_since;
+        // Consecutive busy admissions since busy_since, saturating at
+        // maximum_busy_attempts.
+        std::uint32_t busy_attempts = 0;
         bool unicast_lease = false;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
         std::uint64_t join_position = 0;

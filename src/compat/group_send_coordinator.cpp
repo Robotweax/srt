@@ -678,10 +678,20 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
                 if (configuration_.admission_busy_grace
                     > Clock::duration::zero()) {
                     const auto now = admission_now();
-                    if (!member.busy_since)
+                    if (!member.busy_since) {
                         member.busy_since = now;
-                    if (now < after(*member.busy_since,
-                            configuration_.admission_busy_grace)) {
+                        member.busy_attempts = 0;
+                    }
+                    if (member.busy_attempts
+                        < configuration_.maximum_busy_attempts)
+                        ++member.busy_attempts;
+                    // Both the grace and the attempts: the time between two
+                    // attempts is the caller's, and on a coarse platform
+                    // timer two of them can span the whole grace.
+                    if (member.busy_attempts
+                            < configuration_.maximum_busy_attempts
+                        || now < after(*member.busy_since,
+                               configuration_.admission_busy_grace)) {
                         retry = true;
                         continue;
                     }
