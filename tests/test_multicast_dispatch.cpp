@@ -529,6 +529,22 @@ void report_unexpected_message(SRTSOCKET receiver, int index, int first,
             static_cast<unsigned long long>(state.busy_sends),
             static_cast<unsigned long long>(state.gated_sends),
             static_cast<unsigned long long>(state.full_sends));
+        // Reason codes follow GroupSendCoordinator::Detachment: 1 is a busy
+        // admission, 9 a busy completion, 2 a full repair history.
+        std::array<robotweax::srt::compat::GroupSendCoordinator::Member,
+            robotweax::srt::compat::GroupSendCoordinator::maximum_members>
+            rows;
+        const auto row_count = coordinator->members(rows);
+        for (std::size_t row = 0; row < row_count; ++row)
+            if (rows[row].detachment
+                != robotweax::srt::compat::GroupSendCoordinator::Detachment::
+                    none)
+                std::fprintf(stderr,
+                    "[DISPATCH_UNEXPECTED_MESSAGE] sender=%d "
+                    "detached_member=%llu reason=%d\n",
+                    static_cast<int>(diagnostic_sender),
+                    static_cast<unsigned long long>(rows[row].id),
+                    static_cast<int>(rows[row].detachment));
     }
     std::fflush(stderr);
 }
