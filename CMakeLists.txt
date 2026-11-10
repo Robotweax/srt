@@ -639,7 +639,13 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover
             tsbpd_rtt multicast_dispatch hybrid_ hybrid_network_ hybrid_key_network_ hybrid_load_network_ hybrid_soak_network_ hybrid_harness_network_ compat_idle_readiness_ arq_transport_
-            compat_group_)
+            compat_group_ platform_timing_report)
+    # Reports sleep and timed-wait granularity of the host. Its own gate so a
+    # workflow can print it with `ctest -V -R` without repeating other cases.
+    add_test(NAME robotweax_srt_platform_timing_report
+        COMMAND robotweax_srt_tests --include platform_timing_report)
+    set_tests_properties(robotweax_srt_platform_timing_report
+        PROPERTIES LABELS "unit;diagnostic")
     # The canonical group unit cases are a third of the aggregate's time; they
     # run in their own bounded process so neither sits near its budget on a
     # slow Debug or instrumented runner. Same ownership rules as above.
@@ -906,7 +912,8 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         robotweax_srt_rotation_blackout_tests robotweax_srt_key_length_tests
         robotweax_srt_delayed_key_response_tests
         robotweax_srt_group_retention_prefix_tests
-        robotweax_srt_group_retention_oversized_tests PROPERTIES TIMEOUT 30)
+        robotweax_srt_group_retention_oversized_tests
+        robotweax_srt_platform_timing_report PROPERTIES TIMEOUT 30)
     set_tests_properties(robotweax_srt_delayed_key_response_tests PROPERTIES LABELS "encryption")
     set_tests_properties(robotweax_srt_rotation_ctr_tests
         robotweax_srt_rotation_gcm_tests robotweax_srt_rotation_transition_tests

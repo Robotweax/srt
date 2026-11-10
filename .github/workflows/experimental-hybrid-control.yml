@@ -91,6 +91,16 @@ jobs:
           cmake --build build-hybrid
           --config Release
           --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
+      # Measurement, not a timing requirement: the hosted Windows sender fell
+      # behind its packet rate and the cause is not established. This prints
+      # what short sleeps and timed waits take on each runner.
+      - name: Report sleep and timed-wait granularity of the runner
+        run: >-
+          ctest --test-dir build-hybrid
+          -C Release
+          --no-tests=error
+          -V
+          -R "^robotweax_srt_platform_timing_report$"
       # Every gate, with the 30-second budgets the test registration declares.
       - name: Test all gates of the hybrid control build
         if: runner.os == 'Linux'

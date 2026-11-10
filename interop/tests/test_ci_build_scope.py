@@ -196,6 +196,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_hybrid_key_multi_receiver_tests",
             "robotweax_srt_hybrid_key_admission_tests",
             "robotweax_srt_tests", "robotweax_srt_group_unit_tests",
+            "robotweax_srt_platform_timing_report",
             "robotweax_srt_tsbpd_rtt_tests", "robotweax_srt_socket_api_tests",
             "robotweax_srt_multicast_dispatch_tests", "robotweax_srt_idle_readiness_tests",
             "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests", "robotweax_srt_hybrid_soak_tests", "robotweax_srt_hybrid_harness_tests",
@@ -255,7 +256,10 @@ class CiTestRegistrationTests(unittest.TestCase):
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
             "stale_drop_coverage", "stale_nak", "standby_rtt_native_runtime_", "compat_group_connect_joins_with_unread_messages_across_rollover",
             "tsbpd_rtt", "multicast_dispatch", "hybrid_", "hybrid_network_", "hybrid_key_network_", "hybrid_load_network_", "hybrid_soak_network_", "hybrid_harness_network_", "compat_idle_readiness_", "arq_transport_",
-            "compat_group_",
+            "compat_group_", "platform_timing_report",
+        ])
+        self.assertEqual(commands["robotweax_srt_platform_timing_report"], [
+            "--include", "platform_timing_report",
         ])
         self.assertEqual(commands["robotweax_srt_group_unit_tests"], [
             "--include", "compat_group_", "--exclude", "srt_compat_", "tsbpd_rtt",
