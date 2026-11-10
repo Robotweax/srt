@@ -178,19 +178,41 @@ class Smoke:
             results.append({'name': f'input-{value}', 'rejected': True})
         return results
 
+    def version(self) -> dict:
+        # The version run covers process start (loading the fresh executable
+        # and its libraries), srt_startup, the print and srt_cleanup. On hosted
+        # Windows runners it has exceeded a five-second budget now and then
+        # (review finding BL-4), and a bare timeout cannot tell a slow cold
+        # start from a hang. The probe therefore times each run against a
+        # generous bound, repeats once when the cold start was slow, and
+        # records the durations as evidence. A run that does not exit within
+        # the bound still fails.
+        bound = 60.0
+        seconds = []
+        output = ''
+        for _ in range(2):
+            started = time.monotonic()
+            version = subprocess.run([str(self.binary), '-version'], capture_output=True,
+                                     text=True, timeout=bound)
+            seconds.append(round(time.monotonic() - started, 3))
+            output = version.stdout + version.stderr
+            assert version.returncode == 0 and 'Transport provider: Robotweax SRT' in output, output
+            if seconds[-1] <= 5.0:
+                break
+        (self.artifacts / 'version.log').write_text(
+            output + f'\nversion run seconds: {seconds} (bound {bound:g})\n')
+        return {'seconds': seconds, 'bound': bound, 'slow_cold_start': seconds[0] > 5.0}
+
     def run(self) -> None:
-        version = subprocess.run([str(self.binary), '-version'], capture_output=True,
-                                 text=True, timeout=5)
-        output = version.stdout + version.stderr
-        assert version.returncode == 0 and 'Transport provider: Robotweax SRT' in output
-        (self.artifacts / 'version.log').write_text(output)
+        version = self.version()
         self.case('always-control', enabled=False)
         self.case('arqfirst-clear-loss', drop=16)
         self.case('arqfirst-ctr-loss', encrypted=True, drop=16)
         self.case('arqfirst-listener-loss', listener_sender=True, drop=16)
         negative = self.negative()
         (self.artifacts / 'results.json').write_text(json.dumps(
-            {'positive': self.results, 'negative': negative, 'passed': True}, indent=2) + '\n')
+            {'version': version, 'positive': self.results, 'negative': negative, 'passed': True},
+            indent=2) + '\n')
         print(f'PASS: {len(self.results)} payload cases; {len(negative)} invalid configurations rejected')
 
 

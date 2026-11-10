@@ -42,7 +42,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | BL-1 | Fixed in source; local true-default build and 84 gates pass | Inspect fresh hosted default-build jobs |
 | BL-2 | Fixed; hosted Win32/x64 builds and selected provider tests pass at 18b4595 | Broader Windows hybrid failures remain BL-3/BL-4/BL-5; no local Windows claim |
 | BL-3 | Partitioning implemented at 2f31b96; the aggregate unit gate is split once more, see below; hosted budgets inspected on 9 November | Keep all cases/deadlines; watch the remaining GCC CPU-oracle/rotation costs |
-| BL-4 | Open: Windows `srt-live-transmit -version` hang | Native debugger/thread evidence and same-base comparison |
+| BL-4 | Instrumented: the version probe times each run against a 60 s bound, repeats a slow cold start once and records the durations; see below | Collect `results.json` from hosted Windows runs; a run that does not exit within the bound is a hang and fails |
 | BL-5 | Native wire bound retained; forced waits checked with injected clock and zero-wait counterexample | Native Windows after-fix CI pending; source fix does not qualify Windows hybrid transport |
 | BL-6 | Partial: scope/labels corrected; matching-cache failure flags recovered | Enforce build/source identity, reject stale binary, test CLI record production; obtain missing platform evidence |
 | L-1 | Fixed in source: an ACK or NAK ahead of the fanout is honored for the submitted part; see below | Hosted builds; no network-level throughput evidence above the existing soak rate |
@@ -616,6 +616,33 @@ in the history and in its copy) and
 `compat_group_policy_modes_persist_and_preserve_canonical_wire_identity`
 (the multicast report after a completed unicast copy is applied, not a
 duplicate).
+
+## Windows version probe (BL-4)
+
+What the record shows: the external `srt-live-transmit` qualification on hosted
+Windows failed on 2026-11-09 on pull request 390 (`main` plus a Linux-only
+change, run 42640904512, first attempt) with
+`subprocess.TimeoutExpired` for `srt-live-transmit-robotweax.exe -version`
+after five seconds; the job itself took 2 min 41 s, and the second attempt
+passed. The same failure had been seen on this branch. It is therefore not a
+hybrid multicast defect. The upstream application calls `srt_startup()` before
+parsing options and `srt_cleanup()` from a local destructor on every return,
+so the probe covers process start (loading the freshly built executable and
+the SDK and OpenSSL libraries), `WSAStartup`, construction of the dormant
+runtime services (no worker thread exists before the first socket), the print,
+`runtime_cleanup` and `WSACleanup`. A five-second cutoff cannot tell a slow
+cold start on a busy runner from a hang in that path, and the killed process
+left no evidence.
+
+Change: the harness times each version run against a 60-second bound, repeats
+once when the cold start exceeded five seconds, and records the durations and
+a `slow_cold_start` flag in `version.log` and `results.json`, which the
+workflow already uploads. A run that does not exit within the bound still
+fails the job, now as a hang with the preceding durations as evidence. No
+library change; the lifecycle probes (`process_exit`, `late_cleanup`,
+`global_lifecycle`) already cover startup and cleanup without sockets on the
+Windows matrix. The next hosted failure, or the next slow cold start, yields
+the numbers the native diagnosis needs.
 
 ## Multicast dispatch contracts: T-5, T-6, T-7, T-8
 
