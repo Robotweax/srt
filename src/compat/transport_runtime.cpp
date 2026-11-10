@@ -2698,47 +2698,18 @@ ConnectionRuntime::next_receive_wakeup_locked(
               deadline_after_relative_microseconds(now, *delivery)};
 }
 
-DispatchTransmitState*
-ConnectionRuntime::unicast_repeat_limiter() const noexcept
-{
-    // Default dispatch members only. A coordinated member's repairs are
-    // canonical group datagrams under the coordinator's own aggregate budget.
-    return (group_data_egress_.mode == GroupDataEgress::Mode::suppress
-               || group_data_egress_.mode == GroupDataEgress::Mode::redirect)
-            && group_data_egress_.transmit != nullptr
-            && group_data_egress_.transmit->unicast_repeat_limited()
-        ? group_data_egress_.transmit.get()
-        : nullptr;
-}
-
-bool ConnectionRuntime::take_unicast_repeat(
-    const OutboundPacket& packet, std::size_t datagram_size) noexcept
-{
-    auto* const limiter =
-        packet.header.retransmitted ? unicast_repeat_limiter() : nullptr;
-    if (limiter == nullptr
-        || limiter->take_unicast_repeat(
-            datagram_size, DispatchTransmitState::unicast_repeat_clock())) {
-        return true;
-    }
-    // Another member spent the credit after this one was scheduled. Restore
-    // the loss work; the scheduler waits for the shared budget.
-    session_.requeue_prepared_retransmission(packet.header.sequence);
-    return false;
-}
-
 bool ConnectionRuntime::retransmission_ready(std::uint64_t now) noexcept
 {
-    if (auto* const limiter = unicast_repeat_limiter()) {
-        // Reserve room for a GCM tag so that a ready candidate can always be
-        // charged at its exact wire size unless another member raced it.
+    // Only a repair already selected for unicast may wait here. Unclassified
+    // repairs must reach send_data so multicast and skipped repairs are free.
+    if (unicast_repeat_wait_) {
         const auto packet = session_.peek_retransmission_packet();
-        if (!packet.has_value()
-            || !limiter->unicast_repeat_ready(packet_header_size
-                    + packet->payload.size() + srt_gcm_authentication_tag_size,
-                DispatchTransmitState::unicast_repeat_clock())) {
+        if (packet && packet->header.sequence == unicast_repeat_wait_->first
+            && group_data_egress_.transmit
+            && !group_data_egress_.transmit->unicast_repeat_ready(
+                unicast_repeat_wait_->second,
+                DispatchTransmitState::unicast_repeat_clock()))
             return false;
-        }
     }
 #ifdef ENABLE_MAXREXMITBW
     const auto packet = session_.peek_retransmission_packet();
@@ -2768,6 +2739,15 @@ UdpIoResult ConnectionRuntime::send_budgeted_datagram(DatagramChannel& channel,
     std::span<const std::byte> bytes, const DatagramCompletion& completion,
     bool& budget_wait) noexcept
 {
+    if (completion.unicast_repeat_state) {
+        UdpIoResult sent {.error = Error::would_block};
+        budget_wait = !completion.unicast_repeat_state->submit_unicast_repeat(
+            bytes.size(), DispatchTransmitState::unicast_repeat_clock(), [&] {
+                sent = channel.send_datagram(bytes, peer_);
+                return sent && sent.bytes_transferred == bytes.size();
+            });
+        return sent;
+    }
     if (!completion.group_binding || !completion.group_binding->unicast_budget_)
         return channel.send_datagram(bytes, peer_);
     auto permit =
@@ -2932,8 +2912,15 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
         bool budget_wait = false;
         const auto sent =
             send_budgeted_datagram(*channel, bytes, completion, budget_wait);
-        if (budget_wait)
+        if (budget_wait) {
+            if (completion.unicast_repeat_state) {
+                unicast_repeat_wait_ = {completion.data.sequence, bytes.size()};
+                session_.requeue_prepared_retransmission(
+                    completion.data.sequence);
+                return true;
+            }
             return hold_group_budget_datagram(bytes, completion);
+        }
         if (poll_send_budget_ != nullptr)
             --*poll_send_budget_;
         if (sent) {
@@ -3219,6 +3206,19 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
             bool budget_wait = false;
             const auto sent = send_budgeted_datagram(
                 *channel, bytes, pending.completion, budget_wait);
+            if (budget_wait && pending.completion.unicast_repeat_state) {
+                unicast_repeat_wait_ = {
+                    pending.completion.data.sequence, pending.size};
+                session_.requeue_prepared_retransmission(
+                    pending.completion.data.sequence);
+                auto retired = std::move(pending_datagram_head_);
+                pending_datagram_head_ = std::move(retired->next);
+                if (!pending_datagram_head_)
+                    pending_datagram_tail_ = nullptr;
+                --pending_datagram_size_;
+                next_datagram_retry_microseconds_ = 0;
+                continue;
+            }
             if (budget_wait) {
                 if (group_budget_pending_) {
                     break_locked(0);
@@ -3491,13 +3491,17 @@ bool ConnectionRuntime::send_data(
             && packet.payload.size() >= srt_gcm_authentication_tag_size
         ? packet.payload.size() - srt_gcm_authentication_tag_size
         : packet.payload.size();
-    const DatagramCompletion completion {.kind = DatagramKind::data,
+    DatagramCompletion completion {.kind = DatagramKind::data,
         .data = view.data,
         .payload_size = application_payload_size};
     bool multicast_path = !packet.header.retransmitted
         && group_data_egress_.mode == GroupDataEgress::Mode::redirect;
     DispatchTransmitState::RepeatDecision repeat_decision;
-    if (packet.header.retransmitted
+    const bool selected_unicast = unicast_repeat_wait_
+        && unicast_repeat_wait_->first == packet.header.sequence;
+    if (selected_unicast)
+        unicast_repeat_wait_.reset();
+    if (!selected_unicast && packet.header.retransmitted
         && group_data_egress_.mode != GroupDataEgress::Mode::normal
         && group_data_egress_.transmit != nullptr
         && group_data_egress_.repeat_threshold != 0U) {
@@ -3557,9 +3561,7 @@ bool ConnectionRuntime::send_data(
         if (repeat_decision.multicast) {
             // A local multicast failure did not repair this receiver. Use
             // its ordinary bounded unicast retry path with the same packet.
-            if (!take_unicast_repeat(packet, bytes.size())) {
-                return true;
-            }
+            completion.unicast_repeat_state = group_data_egress_.transmit;
             return submit_datagram(bytes, completion, now);
         }
         // A transient multicast send failure drops this copy for every
@@ -3570,8 +3572,10 @@ bool ConnectionRuntime::send_data(
         }
         return true;
     }
-    if (!take_unicast_repeat(packet, datagram_size)) {
-        return true;
+    if (packet.header.retransmitted
+        && (group_data_egress_.mode == GroupDataEgress::Mode::suppress
+            || group_data_egress_.mode == GroupDataEgress::Mode::redirect)) {
+        completion.unicast_repeat_state = group_data_egress_.transmit;
     }
     return submit_datagram(
         std::span {datagram}.first(datagram_size), completion, now);
@@ -5439,15 +5443,14 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             wait = retransmission_budget_.delay(
                 packet_header_size + candidate->payload.size(), current);
 #endif
-            if (auto* const limiter = unicast_repeat_limiter();
-                limiter != nullptr && wait.has_value()) {
-                const auto shared = limiter->unicast_repeat_delay(
-                    packet_header_size + candidate->payload.size()
-                        + srt_gcm_authentication_tag_size,
-                    DispatchTransmitState::unicast_repeat_clock());
-                // Another member may take the credit first; this member then
-                // computes a new wait instead of polling.
-                wait = shared.has_value()
+            if (unicast_repeat_wait_
+                && candidate->header.sequence == unicast_repeat_wait_->first
+                && group_data_egress_.transmit && wait) {
+                const auto shared =
+                    group_data_egress_.transmit->unicast_repeat_delay(
+                        unicast_repeat_wait_->second,
+                        DispatchTransmitState::unicast_repeat_clock());
+                wait = shared
                     ? std::optional<std::uint64_t> {std::max(*wait, *shared)}
                     : std::nullopt;
             }

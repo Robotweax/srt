@@ -833,6 +833,8 @@ private:
         std::size_t payload_size = 0;
         std::shared_ptr<const GroupSendBinding> group_binding {};
         std::uint64_t group_position = 0;
+        // Only unicast repairs carry this state, including native retries.
+        std::shared_ptr<DispatchTransmitState> unicast_repeat_state {};
     };
 
     struct PendingDatagram {
@@ -1003,14 +1005,10 @@ private:
     RetransmissionBudget retransmission_budget_;
 
 #endif
+    // Preserve the unicast selection and exact wire size across credit waits;
+    // do not tally a repeated scheduling attempt as a fresh receiver NAK.
+    std::optional<std::pair<SequenceNumber, std::size_t>> unicast_repeat_wait_;
     [[nodiscard]] bool retransmission_ready(std::uint64_t now) noexcept;
-    // Non-null for a default dispatch member whose group limits the unicast
-    // repeats of all members together.
-    [[nodiscard]] DispatchTransmitState*
-    unicast_repeat_limiter() const noexcept;
-    // False after restoring the loss work because the shared credit is gone.
-    [[nodiscard]] bool take_unicast_repeat(
-        const OutboundPacket& packet, std::size_t datagram_size) noexcept;
     // Protected by mutex_; accepted payload DATA, independent of app reads
     // and of statistics interval resets. Control/undecryptable traffic cannot
     // turn an otherwise unused receive path into a running group member.

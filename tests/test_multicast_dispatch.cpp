@@ -8337,3 +8337,31 @@ TEST(hybrid_soak_network_upper_profile_gcm)
 }
 #endif
 #endif
+
+TEST(multicast_dispatch_repair_limit_charges_only_accepted_udp_sends)
+{
+    robotweax::srt::compat::DispatchTransmitState state;
+    state.configure_unicast_repeat_limit(1'000, 0);
+    // Repeated failed submissions over time cannot bank future sends.
+    for (std::uint64_t now = 1'000'000; now <= 10'000'000; now += 1'000'000) {
+        for (int member = 0; member < 8; ++member)
+            REQUIRE(state.submit_unicast_repeat(100, now, [] {
+                return false;
+            }));
+    }
+    REQUIRE_EQ(state.unicast_repeat_bytes(), 0U);
+    std::uint64_t accepted = 0;
+    const auto send = [&] {
+        accepted += 100;
+        return true;
+    };
+    for (int member = 0; member < 80; ++member)
+        (void)state.submit_unicast_repeat(100, 10'000'000, send);
+    REQUIRE_EQ(accepted, 1'500U);
+    for (int member = 0; member < 80; ++member)
+        (void)state.submit_unicast_repeat(100, 10'100'000, send);
+    REQUIRE_EQ(accepted, 1'900U); // burst + 100ms at 4000 bytes/s
+    state.configure_unicast_repeat_limit(1, 10'100'000);
+    REQUIRE(!state.submit_unicast_repeat(100, 10'100'000, send));
+    REQUIRE_EQ(state.unicast_repeat_bytes(), accepted);
+}

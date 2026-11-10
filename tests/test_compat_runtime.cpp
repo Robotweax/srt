@@ -14387,3 +14387,133 @@ TEST(compat_multicast_binding_expected_runtime_fences_ingress_retirement)
         id, next.get(), PacketIngress::unicast_session));
     channel.unregister_connection(id, next.get());
 }
+
+namespace {
+void dispatch_repair_nak(BackpressureFixture& f)
+{
+    std::array<std::byte, 8> loss_bytes {};
+    const std::array losses {
+        SequenceRange {SequenceNumber {700}, SequenceNumber {700}}};
+    const auto encoded = encode_loss_ranges(losses, loss_bytes);
+    REQUIRE(encoded);
+    f.runtime->process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::negative_acknowledgement},
+            .payload = std::span {loss_bytes}.first(encoded.bytes_written)},
+        f.peer);
+}
+void dispatch_repair_egress(BackpressureFixture& f,
+    const std::shared_ptr<DispatchTransmitState>& state, unsigned threshold)
+{
+    f.runtime->set_group_data_egress(
+        {.mode = ConnectionRuntime::GroupDataEgress::Mode::redirect,
+            .destination = IpEndpoint {Ipv4Endpoint {
+                .address = {239, 255, 1, 1}, .port = 25999}},
+            .destination_socket_id = 0x40000001,
+            .transmit = state,
+            .repeat_threshold = threshold,
+            .member_id = 1});
+}
+}
+TEST(multicast_dispatch_repair_multicast_repair_does_not_need_unicast_credit)
+{
+    for (bool limited : {false, true}) {
+        BackpressureFixture f;
+        f.output.blocked = false;
+        auto state = std::make_shared<DispatchTransmitState>();
+        dispatch_repair_egress(f, state, 1);
+        f.enqueue();
+        (void)f.runtime->poll();
+        REQUIRE_EQ(state->multicast_packets(), 1U);
+        if (limited)
+            state->configure_unicast_repeat_limit(
+                1, DispatchTransmitState::unicast_repeat_clock());
+        dispatch_repair_nak(f);
+        f.now += 1000;
+        (void)f.runtime->poll();
+        REQUIRE_EQ(state->multicast_repeats(), 1U);
+    }
+}
+TEST(multicast_dispatch_repair_pending_repair_rechecks_changed_group_limit)
+{
+    BackpressureFixture f;
+    f.output.blocked = false;
+    auto state = std::make_shared<DispatchTransmitState>();
+    dispatch_repair_egress(f, state, 0);
+    f.enqueue();
+    (void)f.runtime->poll();
+    state->configure_unicast_repeat_limit(
+        1000, DispatchTransmitState::unicast_repeat_clock() - 1000000);
+    dispatch_repair_nak(f);
+    f.output.blocked = true;
+    f.now += 1000;
+    (void)f.runtime->poll();
+    REQUIRE_EQ(state->unicast_repeat_bytes(), 0U);
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        0U);
+    state->configure_unicast_repeat_limit(
+        1, DispatchTransmitState::unicast_repeat_clock());
+    REQUIRE(!state->unicast_repeat_ready(
+        17, DispatchTransmitState::unicast_repeat_clock()));
+    f.output.blocked = false;
+    f.now += 1000;
+    (void)f.runtime->poll();
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        0U);
+    // Originals must still run while the repair lacks credit.
+    f.enqueue();
+    f.now += 10'000;
+    (void)f.runtime->poll();
+    REQUIRE_EQ(state->multicast_packets(), 2U);
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        0U);
+    REQUIRE(!f.runtime->broken());
+    state->configure_unicast_repeat_limit(
+        -1, DispatchTransmitState::unicast_repeat_clock());
+    f.now += 1000;
+    (void)f.runtime->poll();
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        1U);
+}
+
+TEST(multicast_dispatch_repair_backpressure_recovery_obeys_shared_burst)
+{
+    auto state = std::make_shared<DispatchTransmitState>();
+    state->configure_unicast_repeat_limit(
+        1, DispatchTransmitState::unicast_repeat_clock() - 400'000'000);
+    std::array<BackpressureFixture, 3> members;
+    const std::array<std::byte, 984> payload {};
+    for (auto& member : members) {
+        dispatch_repair_egress(member, state, 0);
+        member.output.blocked = false;
+        REQUIRE_EQ(
+            member.runtime->queue_message(payload, 0, true, false, -1, -1)
+                .status,
+            MessageIoStatus::success);
+        (void)member.runtime->poll();
+        dispatch_repair_nak(member);
+        member.output.blocked = true;
+        member.now += 20'000;
+        (void)member.runtime->poll();
+        REQUIRE_EQ(member.runtime->statistics(false, true)
+                       .total.sent_retransmitted.packets,
+            0U);
+    }
+    REQUIRE_EQ(state->unicast_repeat_bytes(), 0U);
+    std::uint64_t sent = 0;
+    for (auto& member : members) {
+        member.output.blocked = false;
+        member.now += 20'000;
+        (void)member.runtime->poll();
+        sent += member.runtime->statistics(false, true)
+                    .total.sent_retransmitted.packets;
+    }
+    // Three members waited through backpressure, but they share one 1500B
+    // burst. Previously all three could prepay and burst on recovery.
+    REQUIRE_EQ(sent, 1U);
+    REQUIRE_EQ(state->unicast_repeat_bytes(), 1'000U);
+}

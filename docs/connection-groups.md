@@ -635,8 +635,9 @@ Repeats, pacing and readiness:
   credit stays pending and is sent when credit returns; the receiver's
   ordinary too-late drop still applies, so the limit bounds egress and does
   not guarantee repair deadlines or a fair share for each receiver. Changing
-  the group value moves the limit and discards accumulated credit. With
-  `SRTO_MAXBW` unset (`-1`) or `0` there is no aggregate limit, and a value
+  the group value moves the limit and discards accumulated credit. Failed UDP
+  attempts spend no credit; each retry checks the current limit at submission.
+  With `SRTO_MAXBW` unset (`-1`) or `0` there is no aggregate limit, and a value
   set on a single member socket does not change it. Originals, control
   traffic and repeats sent once on the multicast path are not charged;
 - By default, `SRT_EPOLL_OUT` on the sender group follows the elected transmitting

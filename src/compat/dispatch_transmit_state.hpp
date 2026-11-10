@@ -152,24 +152,31 @@ public:
         std::lock_guard lock(unicast_repeat_mutex_);
         return unicast_repeat_budget_.ready(bytes, now);
     }
-    // Checks and debits in one step, so concurrent members cannot spend the
-    // same credit. The debit precedes UDP submission and is not returned if
-    // the datagram is later retired from a transient-error retry queue; that
-    // rare case undercounts the available credit and never exceeds the limit.
-    [[nodiscard]] bool take_unicast_repeat(
-        std::uint64_t bytes, std::uint64_t now) noexcept
+    // Serialize the nonblocking UDP attempt with credit consumption and rate
+    // changes. Failed sends spend nothing, and queued retries never retain
+    // credit from an earlier configuration. The callback must not reenter
+    // this state and returns true only when UDP accepts the whole datagram.
+    template <typename Submit>
+    [[nodiscard]] bool submit_unicast_repeat(
+        std::uint64_t bytes, std::uint64_t now, Submit&& submit) noexcept
     {
-        if (!unicast_repeat_limited()) {
-            return true;
-        }
         std::lock_guard lock(unicast_repeat_mutex_);
         if (!unicast_repeat_budget_.ready(bytes, now)) {
             unicast_repeat_waits_.fetch_add(1U, std::memory_order_relaxed);
             return false;
         }
-        unicast_repeat_budget_.consume(bytes, now);
-        unicast_repeat_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+        if (submit() && unicast_repeat_limited()) {
+            unicast_repeat_budget_.consume(bytes, now);
+            unicast_repeat_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+        }
         return true;
+    }
+    [[nodiscard]] bool take_unicast_repeat(
+        std::uint64_t bytes, std::uint64_t now) noexcept
+    {
+        return submit_unicast_repeat(bytes, now, [] {
+            return true;
+        });
     }
     // Microseconds until `bytes` of credit exist; 0 when ready or unlimited.
     [[nodiscard]] std::optional<std::uint64_t> unicast_repeat_delay(
