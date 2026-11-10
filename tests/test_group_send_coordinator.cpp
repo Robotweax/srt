@@ -429,6 +429,58 @@ TEST(
     REQUIRE_EQ(repair(1), third);
 }
 
+// One reported range can start at submitted originals and end at one whose
+// submission the coordinator has not reported yet. The range is shortened to
+// its submitted part instead of being rejected or dropped as a whole; the
+// unsubmitted end is repaired only after its submission, on a later report.
+TEST(
+    compat_group_coordinator_nak_range_crossing_into_unsubmitted_originals_is_shortened)
+{
+    Fixture f(CryptoMode::automatic, 8);
+    Receiver a(f, 8);
+    for (unsigned i = 0; i < 2; ++i) {
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.pump();
+        f.now += 1ms;
+        a.now += 1'000;
+    }
+    REQUIRE_EQ(f.send(), Status::accepted); // Accepted, submission unapplied.
+    const auto third = initial.advanced(2);
+    const auto repair = [&](std::size_t index) {
+        const auto decoded = decode_packet(a.data_attempts[index]);
+        REQUIRE(decoded);
+        REQUIRE(decoded.packet.data.retransmitted);
+        return decoded.packet.data.sequence;
+    };
+
+    a.nak({{initial, third}});
+    for (unsigned i = 0; i < 2; ++i) { // One repair leaves per poll.
+        f.now += 1ms;
+        a.now += 1'000;
+        a.exchange_keys(true);
+    }
+    REQUIRE_EQ(a.data_attempts.size(), 2U);
+    REQUIRE_EQ(repair(0), initial);
+    REQUIRE_EQ(repair(1), initial.next());
+    REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+    REQUIRE_EQ(a.buffered(), 3U);
+
+    // Nothing of the shortened report stays pending for the third original.
+    f.pump();
+    REQUIRE_EQ(f.output.size(), 3U);
+    f.now += 1ms;
+    a.now += 1'000;
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 2U);
+
+    a.nak({{third, third}});
+    f.now += 1ms;
+    a.now += 1'000;
+    a.exchange_keys(true);
+    REQUIRE_EQ(a.data_attempts.size(), 3U);
+    REQUIRE_EQ(repair(2), third);
+}
+
 // The consequence of rejecting such ACKs outright: when every ACK reaches the
 // sender before the fanout of the newest original, nothing is ever retired
 // and a healthy member is detached once its history is full.
