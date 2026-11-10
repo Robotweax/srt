@@ -2734,9 +2734,8 @@ bool ConnectionRuntime::retransmission_ready(std::uint64_t now) noexcept
         // charged at its exact wire size unless another member raced it.
         const auto packet = session_.peek_retransmission_packet();
         if (!packet.has_value()
-            || !limiter->unicast_repeat_ready(
-                packet_header_size + packet->payload.size()
-                    + srt_gcm_authentication_tag_size,
+            || !limiter->unicast_repeat_ready(packet_header_size
+                    + packet->payload.size() + srt_gcm_authentication_tag_size,
                 DispatchTransmitState::unicast_repeat_clock())) {
             return false;
         }

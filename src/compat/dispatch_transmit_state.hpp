@@ -130,8 +130,7 @@ public:
         std::int64_t group_maximum_bandwidth, std::uint64_t now) noexcept
     {
         constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
-        const std::int64_t limit = group_maximum_bandwidth <= 0
-            ? -1
+        const std::int64_t limit = group_maximum_bandwidth <= 0 ? -1
             : group_maximum_bandwidth > maximum / unicast_repeat_rate_factor
             ? maximum
             : group_maximum_bandwidth * unicast_repeat_rate_factor;

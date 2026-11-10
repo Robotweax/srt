@@ -216,9 +216,8 @@ TEST(multicast_dispatch_repair_limit_is_four_times_a_positive_group_maxbw)
     REQUIRE_EQ(*state.unicast_repeat_delay(80, 11'050'000), 10'000U);
 
     // Four times the largest rates saturates instead of wrapping.
-    for (const std::int64_t huge :
-        {std::numeric_limits<std::int64_t>::max(),
-            std::numeric_limits<std::int64_t>::max() / 4 + 1}) {
+    for (const std::int64_t huge : {std::numeric_limits<std::int64_t>::max(),
+             std::numeric_limits<std::int64_t>::max() / 4 + 1}) {
         state.configure_unicast_repeat_limit(1'000, 20'000'000);
         state.configure_unicast_repeat_limit(huge, 20'000'000);
         REQUIRE(state.unicast_repeat_limited());
@@ -248,7 +247,6 @@ TEST(multicast_dispatch_repair_limit_charges_concurrent_members_once)
     REQUIRE_EQ(state.unicast_repeat_bytes(), 1'500U);
     REQUIRE_EQ(state.unicast_repeat_waits(), 785U);
 }
-
 
 namespace {
 
@@ -1527,8 +1525,7 @@ TEST(multicast_dispatch_group_charges_unicast_repeats_to_the_shared_limit)
     REQUIRE_EQ(hook.dropped.load(), 1);
     REQUIRE_EQ(transmit->multicast_repeats(), 0U);
     // At least one 16-byte header plus payload per receiver.
-    REQUIRE(transmit->unicast_repeat_bytes()
-        >= 2U * (16U + message(4).size()));
+    REQUIRE(transmit->unicast_repeat_bytes() >= 2U * (16U + message(4).size()));
 
     // The group option moves the limit: only a positive rate limits.
     for (const std::int64_t changed : {std::int64_t {-1}, std::int64_t {0}}) {
