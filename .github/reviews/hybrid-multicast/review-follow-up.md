@@ -896,6 +896,85 @@ Both passed 15 and 10 consecutive local runs on a Mac at the same source. One
 occurrence each, no cause established; they join the intermittent hosted
 failures above.
 
+## Takeover review, 2026-11-10
+
+A second review of `4af9c86..6c7b934` found defects in two fixes and gaps in
+tests. Changes since `6c7b934`:
+
+- H-2. The detector dropped the oldest of its sixteen report marks on every
+  new report. With reports arriving faster than one sixteenth of
+  `maximum_transit_us` no mark ever settled, `settled_multicast_next` stayed
+  zero and return was impossible without any lag. Marks are now at least one
+  fifteenth of the transit bound apart; a report inside that spacing raises
+  the newest mark and keeps its earlier receipt time, so the comparison asks
+  for the DATA up to one fifteenth of the bound sooner, never later. Cadences
+  that fitted the history are unchanged. Test:
+  `hybrid_detector_return_survives_a_transit_bound_longer_than_the_report_history`.
+- H-2. The report that carried a new policy, or ended a sampling gap, lost its
+  mark to the evidence reset. The mark is recorded after the resets. Test:
+  `hybrid_detector_report_that_carries_a_new_policy_keeps_its_mark`.
+- T-4. The listen commit re-checked only the socket state and `SRTO_MAXBW`.
+  Message API, TSBPD, congestion control, packet filter and session
+  authentication stay settable on a bound socket until it listens, so a
+  racing setter produced a listening sender outside its profile. The profile
+  rules now run again on the live options at the commit. The statement above
+  that the snapshot cannot go stale holds for the source, independent and
+  coordinated options only. Test:
+  `multicast_dispatch_independent_listen_commit_rejects_a_profile_change_during_setup`,
+  a race over 200 listens that failed in three of three runs before the fix.
+- L-3. The lost-member fact was local to one send. A send that detached a
+  connected member and returned busy forgot it, and the retry advanced the
+  sequence unused. The coordinator keeps the fact until a send settles the
+  sequence. Test:
+  `compat_group_coordinator_busy_retry_after_losing_a_connected_member_reports_the_loss`.
+  Open for the owner: the fact also survives an `expired` or `full` return;
+  a group that empties without a retry reports one `SRT_ECONNLOST` on its
+  next send; members detached on the completion path still lead to the
+  silent empty advance.
+- L-1. Five checks that only required success from the ACK after a
+  submission proved nothing once an early ACK succeeds too. They now require
+  that the history was retired.
+- T-6. `mcast_pkt_filtered` also counts foreign datagrams on the member's
+  unicast socket and can exceed `mcast_pkt_received`. Documentation corrected,
+  no code change.
+- New tests without a source change: a loss range that crosses into
+  unsubmitted group originals is shortened; a coordinator detachment raises
+  `SRT_EPOLL_UPDATE` on the group exactly once.
+- L-5 was checked and is not a defect: `srt_group_data` and group epoll
+  refresh coordinator detachments on every call.
+
+Not changed, still open from that review: T-7 (the former route is retired
+by socket ID without comparing the binding), H-3 (the documented lifetime
+bound may be too strong for long round trips, not verified), H-4 (one
+control-record arrival stamp bypasses the service clock, test-only effect),
+H-1 (`snapshot()` can show `expired` before the first pump), T-8 (only the
+`OPENED` state was aligned), and the owner questions on the 60-second version
+probe (`d3915e8`) and the six logs rewritten by `4dcaf04`.
+
+### Windows Debug: coordinated CTR rotation test
+
+`multicast_dispatch_coordinated_ctr_public_rotations_and_empty_rejoin` failed
+on `windows-latest Debug` on two consecutive heads and passed 100 local macOS
+runs, 60 of them under full CPU load.
+
+- `6c7b934`, run 42784963117, job 129723886822: a message of the expected
+  length with the wrong content.
+- `b5ddd1c`, run 42810868063, job 129811738331, with the first diagnostic:
+  reading message 64 of 80 timed out (`SRT_ETIMEOUT`) after 64 deliveries.
+  64 is the second key switch at refresh rate 32.
+
+Cause not established. Reading of the code, not measured: an undecryptable
+DATA packet is counted on the member and returns before the session sees it,
+so it creates no loss and no NAK; the key switch is position-based and not
+gated on the receiver's key response; a member that stays busy for 50 ms is
+detached by the coordinator and gets no further key announcements. Either a
+late key announcement or a detachment before position 56 fits the second
+failure. The test now prints, on a mismatch, each receiving member's unique
+and undecryptable counts and the sender coordinator's active and detached
+members; the next hosted failure decides between the two. The group row of
+`srt_bstats` carries deliveries only, so its loss and undecrypted fields are
+zero on a group handle.
+
 ## Remaining harness and evidence work
 
 - Use normal failure reports and membership/control diagnostics to investigate
