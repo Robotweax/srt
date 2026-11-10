@@ -998,6 +998,38 @@ the hybrid control workflow now print sleep and timed-wait granularity on
 every runner. Local Mac: a 1 ms sleep takes about 1.3 ms, a 100 µs sleep
 about 130 µs.
 
+Hosted medians from run 42826401578 on `01fe7c5`, sleep and timed-out
+condition wait alike:
+
+| Requested | ubuntu-latest | macos-latest | windows-latest |
+|---|---|---|---|
+| 100 µs | 157 µs | 770 µs | 13.8 ms |
+| 1 ms | 1.06 ms | 5.1 ms | 15.5 ms |
+| 2 ms | 2.06 ms | 10.1 ms | 11.8 ms |
+| 10 ms | 10.1 ms | 36 ms | 15.7 ms |
+
+Windows: the maximum for requests up to 2 ms is 16.3 ms, the default timer
+period. That accounts for the hosted sender rate of 79 to 96 packets per
+second and makes the 50 ms busy grace three or four admission attempts.
+macOS: the hosted runner oversleeps by a factor of 3 to 5 with a wide spread
+(10 ms took up to 55 ms), which is not a timer period.
+
+Two changes follow, both owner-approved in direction on 2026-11-10:
+
+- A busy admission detaches a member only after the grace and
+  `maximum_busy_attempts` (eight) consecutive busy attempts, as the
+  completion path already did. Test:
+  `compat_group_coordinator_busy_admission_needs_the_attempts_as_well_as_the_grace`.
+- The runtime scheduler holds `timeBeginPeriod(1)` for its lifetime
+  (`PlatformTimerResolution`); the library links `winmm`. Not run on Windows
+  locally. The timing report prints a `default` and a `held` phase; the hosted
+  Windows job is the evidence for the effect.
+
+Still open: the contract itself. A detached member stays connected without
+key announcements and without a signal. And the 17 gates labelled `hybrid`
+and `network` are still excluded on hosted Windows and macOS; whether Windows
+can run them with the finer period is not yet tried.
+
 ## Remaining harness and evidence work
 
 - Use normal failure reports and membership/control diagnostics to investigate
