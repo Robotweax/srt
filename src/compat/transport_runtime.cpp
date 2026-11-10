@@ -2700,16 +2700,21 @@ ConnectionRuntime::next_receive_wakeup_locked(
 
 bool ConnectionRuntime::retransmission_ready(std::uint64_t now) noexcept
 {
-    // Only a repair already selected for unicast may wait here. Unclassified
-    // repairs must reach send_data so multicast and skipped repairs are free.
+    // A member waits only after one of its repairs was selected for unicast
+    // and refused for credit. Until that credit exists every repair of this
+    // member waits: the refused one is requeued behind the others, so letting
+    // them through would offer each to the budget in turn without sleeping.
+    // Members that were not refused still classify repairs in send_data, so
+    // multicast and skipped repairs stay free for them.
     if (unicast_repeat_wait_) {
-        const auto packet = session_.peek_retransmission_packet();
-        if (packet && packet->header.sequence == unicast_repeat_wait_->first
-            && group_data_egress_.transmit
+        if (group_data_egress_.transmit
             && !group_data_egress_.transmit->unicast_repeat_ready(
                 unicast_repeat_wait_->second,
                 DispatchTransmitState::unicast_repeat_clock()))
             return false;
+        const auto packet = session_.peek_retransmission_packet();
+        if (!packet || packet->header.sequence != unicast_repeat_wait_->first)
+            unicast_repeat_wait_.reset();
     }
 #ifdef ENABLE_MAXREXMITBW
     const auto packet = session_.peek_retransmission_packet();
@@ -5443,9 +5448,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             wait = retransmission_budget_.delay(
                 packet_header_size + candidate->payload.size(), current);
 #endif
-            if (unicast_repeat_wait_
-                && candidate->header.sequence == unicast_repeat_wait_->first
-                && group_data_egress_.transmit && wait) {
+            if (unicast_repeat_wait_ && group_data_egress_.transmit && wait) {
                 const auto shared =
                     group_data_egress_.transmit->unicast_repeat_delay(
                         unicast_repeat_wait_->second,

@@ -14483,8 +14483,13 @@ TEST(multicast_dispatch_repair_pending_repair_rechecks_changed_group_limit)
 TEST(multicast_dispatch_repair_backpressure_recovery_obeys_shared_burst)
 {
     auto state = std::make_shared<DispatchTransmitState>();
-    state->configure_unicast_repeat_limit(
-        1, DispatchTransmitState::unicast_repeat_clock() - 400'000'000);
+    // 100 B/s fills the 1500-byte burst in 15 s and needs 5 s for the second
+    // 1000-byte repair. The steady clock counts from boot on CI hosts, so the
+    // backdated start must stay well below the host's uptime; a larger value
+    // wraps and leaves the bucket empty.
+    const auto clock = DispatchTransmitState::unicast_repeat_clock();
+    REQUIRE(clock > 20'000'000U);
+    state->configure_unicast_repeat_limit(25, clock - 20'000'000U);
     std::array<BackpressureFixture, 3> members;
     const std::array<std::byte, 984> payload {};
     for (auto& member : members) {
@@ -14516,4 +14521,56 @@ TEST(multicast_dispatch_repair_backpressure_recovery_obeys_shared_burst)
     // burst. Previously all three could prepay and burst on recovery.
     REQUIRE_EQ(sent, 1U);
     REQUIRE_EQ(state->unicast_repeat_bytes(), 1'000U);
+}
+
+TEST(multicast_dispatch_repair_several_repairs_without_credit_do_not_spin)
+{
+    BackpressureFixture f;
+    f.output.blocked = false;
+    auto state = std::make_shared<DispatchTransmitState>();
+    dispatch_repair_egress(f, state, 0);
+    f.enqueue();
+    f.enqueue();
+    (void)f.runtime->poll();
+    f.now += 10'000;
+    (void)f.runtime->poll();
+    REQUIRE_EQ(state->multicast_packets(), 2U);
+    // One byte per second: neither repair gets credit during this test.
+    state->configure_unicast_repeat_limit(
+        1, DispatchTransmitState::unicast_repeat_clock());
+    std::array<std::byte, 8> loss_bytes {};
+    const std::array losses {
+        SequenceRange {SequenceNumber {700}, SequenceNumber {701}}};
+    const auto encoded = encode_loss_ranges(losses, loss_bytes);
+    REQUIRE(encoded);
+    f.runtime->process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::negative_acknowledgement},
+            .payload = std::span {loss_bytes}.first(encoded.bytes_written)},
+        f.peer);
+    for (int round = 0; round < 3; ++round) {
+        f.now += 1'000;
+        const auto result = f.runtime->poll();
+        // The member sleeps until credit exists instead of offering each
+        // waiting repair to the budget again.
+        REQUIRE(!result.immediate_work);
+        REQUIRE(result.next_work_delay.has_value());
+        REQUIRE(result.next_work_delay->count() > 0);
+    }
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        0U);
+    // Only the first repair was offered to the budget and refused.
+    REQUIRE_EQ(state->unicast_repeat_waits(), 1U);
+    // With credit, both repairs leave.
+    state->configure_unicast_repeat_limit(
+        -1, DispatchTransmitState::unicast_repeat_clock());
+    for (int round = 0; round < 2; ++round) {
+        f.now += 10'000;
+        (void)f.runtime->poll();
+    }
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        2U);
+    REQUIRE(!f.runtime->broken());
 }
