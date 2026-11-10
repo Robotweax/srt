@@ -65,7 +65,8 @@ std::uint64_t PathDetector::settled_multicast_next(
 {
     // Marks are appended in receipt order; the newest one that is at least
     // maximum_transit_us old wins. With fewer than sixteen marks the oldest
-    // slots are unused; with more, the oldest were dropped.
+    // slots are unused; with more, the oldest were dropped, which the mark
+    // spacing only allows once a newer one has settled.
     std::uint64_t settled = 0;
     for (std::size_t i = 0; i < report_mark_count_; ++i) {
         const auto& mark = report_marks_[i];
@@ -163,14 +164,28 @@ void PathDetector::observe(const Input& input) noexcept
     const bool mc_received = data_ && d.multicast.next > data_->multicast.next;
     const bool all_received = data_ && d.all.next > data_->all.next;
     if (!report_ || m.serial != report_->serial) {
-        if (report_mark_count_ == report_marks_.size()) {
-            std::copy(report_marks_.begin() + 1, report_marks_.end(),
-                report_marks_.begin());
-            --report_mark_count_;
+        // Marks are kept at least one fifteenth of the transit bound apart,
+        // so sixteen of them always span it: when the oldest is dropped, the
+        // next one has already settled. A report inside that spacing raises
+        // the newest mark instead and keeps its earlier receipt time, which
+        // asks for the DATA slightly sooner than the bound and never later.
+        const auto spacing = c.maximum_transit_us / 15U + 1U;
+        if (report_mark_count_
+            && r.first_received_us
+                    - report_marks_[report_mark_count_ - 1].received_us
+                < spacing) {
+            report_marks_[report_mark_count_ - 1].multicast_next =
+                m.multicast_next;
+        } else {
+            if (report_mark_count_ == report_marks_.size()) {
+                std::copy(report_marks_.begin() + 1, report_marks_.end(),
+                    report_marks_.begin());
+                --report_mark_count_;
+            }
+            report_marks_[report_mark_count_++] = {
+                .received_us = r.first_received_us,
+                .multicast_next = m.multicast_next};
         }
-        report_marks_[report_mark_count_++] = {
-            .received_us = r.first_received_us,
-            .multicast_next = m.multicast_next};
     }
     report_ = m;
     last_report_received_ = r.first_received_us;

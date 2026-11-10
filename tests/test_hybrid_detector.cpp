@@ -2,6 +2,8 @@
 #include "test.hpp"
 #include "compat/hybrid/hybrid_detector.hpp"
 #include <algorithm>
+#include <utility>
+#include <vector>
 using namespace robotweax::srt;
 namespace hd = robotweax::srt::compat::hybrid;
 namespace {
@@ -394,6 +396,40 @@ TEST(
     auto a = f.advance(250, 4);
     REQUIRE_EQ(a.recovery_data_advances, 3U);
     REQUIRE(a.return_candidate);
+}
+TEST(
+    hybrid_detector_return_survives_a_transit_bound_longer_than_the_report_history)
+{
+    // Twenty report intervals fit into the transit bound, more than the
+    // detector keeps marks for. Return must still become possible, and the
+    // settled high-water must never fall behind the newest report that has
+    // had its transit bound.
+    auto c = configuration();
+    c.report_age_us = 100000;
+    c.maximum_transit_us = 400;
+    c.stall_us = 500;
+    c.emission_lifetime_us = 2000;
+    REQUIRE(hd::valid(c));
+    Fixture f;
+    f.detector = hd::PathDetector {c, f.c, 7};
+    f.mode(hd::Mode::unicast);
+    f.observe();
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> reports {{100, 1000}};
+    bool returned = false;
+    for (std::uint64_t step = 1; step <= 60; ++step) {
+        const auto now = 100 + 20 * step;
+        const auto a = f.advance(now, step);
+        reports.emplace_back(now, 1000 + step);
+        std::uint64_t settled = 0;
+        for (const auto& [received, next] : reports)
+            if (received + c.maximum_transit_us <= now)
+                settled = next;
+        REQUIRE(a.settled_multicast_next >= settled);
+        REQUIRE(a.settled_multicast_next <= 1000 + step);
+        returned = returned || a.return_candidate;
+    }
+    REQUIRE(returned);
+    REQUIRE(f.observe().return_candidate);
 }
 TEST(hybrid_detector_policy_revision_change_discards_old_recovery_evidence)
 {
