@@ -3,7 +3,9 @@ name: Experimental hybrid control
 # The hybrid multicast control code exists only when both experimental options
 # below are ON. No other workflow enables them, so without this one that code
 # and the tests registered for it are never compiled or run on hosted runners.
-# This workflow is not part of the required CI gate.
+# This workflow is not part of the required CI gate. Linux runs every gate
+# and the soak; Windows runs every gate with MSVC and the runner's OpenSSL;
+# macOS runs every gate that does not depend on hosted timing.
 
 on:
   push:
@@ -44,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -54,7 +56,10 @@ jobs:
       - name: Prepare multicast test interface
         if: runner.os == 'Linux'
         uses: ./.github/actions/multicast-interface
+      # Windows uses the OpenSSL the hosted image ships, found by CMake as in
+      # the main CI's Windows Release job.
       - name: Install OpenSSL
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -86,8 +91,11 @@ jobs:
           --config Release
           --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
       # Every gate, with the 30-second budgets the test registration declares.
+      # Windows runs them all as well: the main CI's Windows Release job runs
+      # every multicast dispatch case on the hosted image, and the review's
+      # Win32/x64 builds compiled this configuration.
       - name: Test all gates of the hybrid control build
-        if: runner.os == 'Linux'
+        if: runner.os != 'macOS'
         run: >-
           ctest --test-dir build-hybrid
           -C Release
