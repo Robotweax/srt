@@ -626,7 +626,23 @@ Repeats, pacing and readiness:
   tally entry is evicted; failed repairs do not restart a multicast retry loop;
 - By default, `SRTO_MAXBW` set on the sender group reaches every member, so it caps the
   transmitting member's pacer and with it the multicast path, as well as each
-  member's unicast repeats. There is no separate aggregate cap;
+  member's unicast repeats. A positive group value also limits the unicast
+  repeats of all members together to four times that rate, so that a loss
+  shared by many receivers cannot multiply repair traffic without bound. The
+  limit counts the SRT header and protected payload of each repeat, without
+  IP/UDP headers, as `SRTO_MAXREXMITBW` does. Burst credit is the greater of
+  1500 bytes and 100 ms of the limit and starts empty. A repeat without
+  credit stays pending and is sent when credit returns. A bounded scan lets
+  multicast and suppressed repairs proceed behind a credit-blocked unicast
+  repair, then sleeps rather than cycling through the same queued repairs.
+  The receiver's ordinary too-late drop still applies, so the limit bounds
+  egress and does not guarantee repair deadlines or a fair share for each
+  receiver. Changing the group value moves the limit and discards accumulated
+  credit. Failed UDP
+  attempts spend no credit; each retry checks the current limit at submission.
+  With `SRTO_MAXBW` unset (`-1`) or `0` there is no aggregate limit, and a value
+  set on a single member socket does not change it. Originals, control
+  traffic and repeats sent once on the multicast path are not charged;
 - By default, `SRT_EPOLL_OUT` on the sender group follows the elected transmitting
   member's readiness. That member must accept the payload before suppressed
   members can accept it. A full transmitter buffer blocks a synchronous send

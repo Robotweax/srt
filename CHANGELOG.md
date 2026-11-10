@@ -6,6 +6,13 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- A default (not coordinated) multicast dispatch sender with a positive group
+  `SRTO_MAXBW` now limits the unicast repeats of all its members together to
+  four times that rate. Previously only each member's own pacer applied, so a
+  loss shared by N receivers could draw N times the repair traffic. Groups
+  without a positive `SRTO_MAXBW` behave as before; the coordinated profile
+  keeps its own aggregate budget. No wire-format or public ABI change. See
+  [Connection groups](docs/connection-groups.md#multicast-dispatch-groups).
 - Route delayed DATA that arrives after the KMREQ replacing its key selector by
   accepted sequence position instead of the receive frontier alone. A burst
   loss or delay longer than the pre-announcement window no longer decrypts

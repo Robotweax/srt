@@ -2700,6 +2700,32 @@ ConnectionRuntime::next_receive_wakeup_locked(
 
 bool ConnectionRuntime::retransmission_ready(std::uint64_t now) noexcept
 {
+    // Examine each queued repair once, across as many bounded polls as
+    // needed. A refused unicast repair rotates to the tail; it must not
+    // prevent later multicast/skip decisions, nor start another busy pass.
+    if (group_data_egress_.transmit
+        && group_data_egress_.transmit->unicast_repeat_limited()) {
+        const auto& buffer = session_.send_buffer();
+        const bool credit_ready = unicast_repeat_wait_
+            && group_data_egress_.transmit->unicast_repeat_ready(
+                unicast_repeat_wait_->second,
+                DispatchTransmitState::unicast_repeat_clock());
+        if (credit_ready)
+            unicast_repeat_wait_.reset();
+        if (!unicast_repeat_scan_revision_
+            || *unicast_repeat_scan_revision_
+                != buffer.retransmission_revision()
+            || credit_ready) {
+            unicast_repeat_scan_revision_ = buffer.retransmission_revision();
+            unicast_repeat_scan_remaining_ =
+                buffer.pending_retransmission_count();
+        }
+        if (unicast_repeat_wait_ && unicast_repeat_scan_remaining_ == 0U)
+            return false;
+    } else {
+        unicast_repeat_wait_.reset();
+        unicast_repeat_scan_revision_.reset();
+    }
 #ifdef ENABLE_MAXREXMITBW
     const auto packet = session_.peek_retransmission_packet();
     return packet.has_value()
@@ -2728,6 +2754,15 @@ UdpIoResult ConnectionRuntime::send_budgeted_datagram(DatagramChannel& channel,
     std::span<const std::byte> bytes, const DatagramCompletion& completion,
     bool& budget_wait) noexcept
 {
+    if (completion.unicast_repeat_state) {
+        UdpIoResult sent {.error = Error::would_block};
+        budget_wait = !completion.unicast_repeat_state->submit_unicast_repeat(
+            bytes.size(), DispatchTransmitState::unicast_repeat_clock(), [&] {
+                sent = channel.send_datagram(bytes, peer_);
+                return sent && sent.bytes_transferred == bytes.size();
+            });
+        return sent;
+    }
     if (!completion.group_binding || !completion.group_binding->unicast_budget_)
         return channel.send_datagram(bytes, peer_);
     auto permit =
@@ -2892,8 +2927,18 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
         bool budget_wait = false;
         const auto sent =
             send_budgeted_datagram(*channel, bytes, completion, budget_wait);
-        if (budget_wait)
+        if (budget_wait) {
+            if (completion.unicast_repeat_state) {
+                if (!unicast_repeat_wait_
+                    || bytes.size() < unicast_repeat_wait_->second)
+                    unicast_repeat_wait_ = {
+                        completion.data.sequence, bytes.size()};
+                session_.requeue_prepared_retransmission(
+                    completion.data.sequence);
+                return true;
+            }
             return hold_group_budget_datagram(bytes, completion);
+        }
         if (poll_send_budget_ != nullptr)
             --*poll_send_budget_;
         if (sent) {
@@ -3179,6 +3224,21 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
             bool budget_wait = false;
             const auto sent = send_budgeted_datagram(
                 *channel, bytes, pending.completion, budget_wait);
+            if (budget_wait && pending.completion.unicast_repeat_state) {
+                if (!unicast_repeat_wait_
+                    || pending.size < unicast_repeat_wait_->second)
+                    unicast_repeat_wait_ = {
+                        pending.completion.data.sequence, pending.size};
+                session_.requeue_prepared_retransmission(
+                    pending.completion.data.sequence);
+                auto retired = std::move(pending_datagram_head_);
+                pending_datagram_head_ = std::move(retired->next);
+                if (!pending_datagram_head_)
+                    pending_datagram_tail_ = nullptr;
+                --pending_datagram_size_;
+                next_datagram_retry_microseconds_ = 0;
+                continue;
+            }
             if (budget_wait) {
                 if (group_budget_pending_) {
                     break_locked(0);
@@ -3451,13 +3511,15 @@ bool ConnectionRuntime::send_data(
             && packet.payload.size() >= srt_gcm_authentication_tag_size
         ? packet.payload.size() - srt_gcm_authentication_tag_size
         : packet.payload.size();
-    const DatagramCompletion completion {.kind = DatagramKind::data,
+    DatagramCompletion completion {.kind = DatagramKind::data,
         .data = view.data,
         .payload_size = application_payload_size};
     bool multicast_path = !packet.header.retransmitted
         && group_data_egress_.mode == GroupDataEgress::Mode::redirect;
     DispatchTransmitState::RepeatDecision repeat_decision;
-    if (packet.header.retransmitted
+    const bool selected_unicast = unicast_repeat_wait_
+        && unicast_repeat_wait_->first == packet.header.sequence;
+    if (!selected_unicast && packet.header.retransmitted
         && group_data_egress_.mode != GroupDataEgress::Mode::normal
         && group_data_egress_.transmit != nullptr
         && group_data_egress_.repeat_threshold != 0U) {
@@ -3517,6 +3579,7 @@ bool ConnectionRuntime::send_data(
         if (repeat_decision.multicast) {
             // A local multicast failure did not repair this receiver. Use
             // its ordinary bounded unicast retry path with the same packet.
+            completion.unicast_repeat_state = group_data_egress_.transmit;
             return submit_datagram(bytes, completion, now);
         }
         // A transient multicast send failure drops this copy for every
@@ -3526,6 +3589,11 @@ bool ConnectionRuntime::send_data(
             session_.note_retransmission_sent(packet.header.sequence, now);
         }
         return true;
+    }
+    if (packet.header.retransmitted
+        && (group_data_egress_.mode == GroupDataEgress::Mode::suppress
+            || group_data_egress_.mode == GroupDataEgress::Mode::redirect)) {
+        completion.unicast_repeat_state = group_data_egress_.transmit;
     }
     return submit_datagram(
         std::span {datagram}.first(datagram_size), completion, now);
@@ -5314,6 +5382,9 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         if (!packet.has_value()) {
             break;
         }
+        if (packet->header.retransmitted
+            && unicast_repeat_scan_remaining_ != 0U)
+            --unicast_repeat_scan_remaining_;
         if (!send_data(*packet, packet_time)) {
             return {};
         }
@@ -5382,15 +5453,26 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         retirement_delay =
             std::chrono::microseconds {*retirement_deadline - current};
     }
-#ifdef ENABLE_MAXREXMITBW
     if (!filter_pending && !retransmission
         && session_.has_pending_retransmission()
         && (!session_.send_buffer().peek_new_packet().has_value()
             || flow_blocked || crypto_blocked)) {
         const auto candidate = session_.peek_retransmission_packet();
         if (candidate.has_value()) {
-            const auto wait = retransmission_budget_.delay(
+            std::optional<std::uint64_t> wait = 0;
+#ifdef ENABLE_MAXREXMITBW
+            wait = retransmission_budget_.delay(
                 packet_header_size + candidate->payload.size(), current);
+#endif
+            if (unicast_repeat_wait_ && group_data_egress_.transmit && wait) {
+                const auto shared =
+                    group_data_egress_.transmit->unicast_repeat_delay(
+                        unicast_repeat_wait_->second,
+                        DispatchTransmitState::unicast_repeat_clock());
+                wait = shared
+                    ? std::optional<std::uint64_t> {std::max(*wait, *shared)}
+                    : std::nullopt;
+            }
             if (wait.has_value() && *wait != 0) {
                 return {.next_work_delay = std::chrono::microseconds {*wait},
                     .next_work_deadline = now_function_ == nullptr
@@ -5403,7 +5485,6 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
                 return {};
         }
     }
-#endif
     if (!paced_work) {
         // Buffered DATA, receive delivery/drop work and pending key exchanges
         // retain the short polling path. Sensor retirement still bounds it.

@@ -455,7 +455,8 @@ void SendBuffer::compact_retransmission_queue() noexcept
     retransmission_size_ = kept;
 }
 
-bool SendBuffer::queue_retransmission(SequenceNumber sequence) noexcept
+bool SendBuffer::queue_retransmission(
+    SequenceNumber sequence, bool new_work) noexcept
 {
     const std::int32_t signed_offset =
         sequence.distance_from(first_sequence_);
@@ -488,6 +489,8 @@ bool SendBuffer::queue_retransmission(SequenceNumber sequence) noexcept
         (retransmission_head_ + retransmission_size_) % capacity();
     retransmission_queue_[tail] = sequence;
     ++retransmission_size_;
+    if (new_work)
+        ++retransmission_revision_;
     slot->retransmission_queued = true;
     return true;
 }
@@ -584,7 +587,7 @@ void SendBuffer::requeue_prepared_retransmission(
 {
     if (auto* slot = find(sequence); slot != nullptr) {
         slot->retransmission_queued = false;
-        (void)queue_retransmission(sequence);
+        (void)queue_retransmission(sequence, false);
     }
 }
 

@@ -985,6 +985,7 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
             return SRT_ERROR;
         }
     }
+    bool repeat_limit_configured = false;
     {
         std::lock_guard lock(record->mutex);
         if (record->closed) {
@@ -994,6 +995,16 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         record->member_public_options = configured.public_options;
         record->member_native_options = configured.native_options;
         const auto& options = record->member_public_options;
+        if (record->dispatch != nullptr && record->dispatch->sender
+            && record->dispatch->transmit != nullptr
+            && !record->dispatch->coordinator) {
+            // A changed group SRTO_MAXBW moves the aggregate unicast repeat
+            // limit with it; an identical value keeps the accumulated credit.
+            record->dispatch->transmit->configure_unicast_repeat_limit(
+                options.maximum_bandwidth_bytes_per_second,
+                DispatchTransmitState::unicast_repeat_clock());
+            repeat_limit_configured = true;
+        }
         record->send_synchronous = options.send_synchronous;
         record->receive_synchronous = options.receive_synchronous;
         record->send_timeout_milliseconds = options.send_timeout_milliseconds;
@@ -1009,6 +1020,20 @@ int GroupRegistry::set_io_option(SRTSOCKET group, SRT_SOCKOPT option,
         record->ip_type_of_service = options.ip_type_of_service;
         record->ip_type_of_service_explicit =
             options.ip_type_of_service_explicit;
+    }
+    if (repeat_limit_configured) {
+        // A member waiting on the previous limit must compute a new wait.
+        for (const auto& [handle, member] : members) {
+            if (member == nullptr)
+                continue;
+            std::shared_ptr<DatagramChannel> channel;
+            {
+                std::lock_guard member_lock(member->mutex);
+                channel = member->channel;
+            }
+            if (channel != nullptr)
+                channel->notify_send_work();
+        }
     }
     ReadinessSignal::notify(*record->readiness_source);
     return 0;
@@ -1411,6 +1436,12 @@ bool GroupRegistry::prepare_dispatch(SRTSOCKET listener,
         prepared->dispatch->transmit_channel = transmit_channel;
         prepared->dispatch->transmit =
             std::make_shared<DispatchTransmitState>();
+        if (!listener_public_options.multicast_coordinated) {
+            // The coordinated profile has its own aggregate DATA budget.
+            prepared->dispatch->transmit->configure_unicast_repeat_limit(
+                listener_public_options.maximum_bandwidth_bytes_per_second,
+                DispatchTransmitState::unicast_repeat_clock());
+        }
         prepared->dispatch->admission_key = std::string(admission_key);
         prepared->dispatch->multicast_group =
             listener_public_options.multicast_group;

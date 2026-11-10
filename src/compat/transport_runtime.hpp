@@ -833,6 +833,8 @@ private:
         std::size_t payload_size = 0;
         std::shared_ptr<const GroupSendBinding> group_binding {};
         std::uint64_t group_position = 0;
+        // Only unicast repairs carry this state, including native retries.
+        std::shared_ptr<DispatchTransmitState> unicast_repeat_state {};
     };
 
     struct PendingDatagram {
@@ -1003,6 +1005,12 @@ private:
     RetransmissionBudget retransmission_budget_;
 
 #endif
+    // Remember the smallest refused repair for the next credit wakeup.
+    // A queue revision bounds scanning across polls without making rotations
+    // look like new NAKs or blocking unclassified multicast/skip repairs.
+    std::optional<std::pair<SequenceNumber, std::size_t>> unicast_repeat_wait_;
+    std::optional<std::uint64_t> unicast_repeat_scan_revision_;
+    std::size_t unicast_repeat_scan_remaining_ = 0;
     [[nodiscard]] bool retransmission_ready(std::uint64_t now) noexcept;
     // Protected by mutex_; accepted payload DATA, independent of app reads
     // and of statistics interval resets. Control/undecryptable traffic cannot
