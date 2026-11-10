@@ -153,6 +153,7 @@ add_library(robotweax_srt
     src/compat/logging.cpp
     src/compat/message_io.cpp
     src/compat/platform_networking.cpp
+    src/compat/platform_timer.cpp
     src/compat/process_state.cpp
     src/compat/readiness.cpp
     src/compat/socket_readiness.cpp
@@ -285,7 +286,7 @@ endif()
 if(WIN32)
     target_compile_definitions(robotweax_srt
         PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_link_libraries(robotweax_srt PRIVATE ws2_32)
+    target_link_libraries(robotweax_srt PRIVATE ws2_32 winmm)
 endif()
 target_link_libraries(
     robotweax_srt PRIVATE ${ROBOTWEAX_SRT_CRYPTO_LIBRARY} Threads::Threads)
@@ -2420,7 +2421,7 @@ if(ENABLE_MAXREXMITBW)
 endif()
 string(STRIP "${ROBOTWEAX_SRT_PC_CFLAGS}" ROBOTWEAX_SRT_PC_CFLAGS)
 if(WIN32)
-    string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lws2_32")
+    string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lws2_32 -lwinmm")
 endif()
 string(STRIP
     "${ROBOTWEAX_SRT_PC_PRIVATE_LIBS}"

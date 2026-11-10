@@ -45,6 +45,16 @@ Linux, macOS, and Windows are covered by the project build matrix. Install the
 OpenSSL development package for your platform and ensure its architecture
 matches the compiler and generator.
 
+On Windows the library links `winmm` in addition to `ws2_32` and holds the
+timer period at one millisecond (`timeBeginPeriod(1)`) while its runtime
+scheduler exists, from the first socket to `srt_cleanup`. At the default
+period of 15.6 ms every sleep and timed wait is rounded up to it, which
+limits a paced sender to about 65 to 85 packets per second. Since Windows 10
+version 2004 the request affects only the calling process; earlier versions
+apply the finest period any process requested to the whole system, with
+higher power use. MSVC static builds record the `winmm` dependency in the
+library; other static consumers add `-lwinmm` (the pkg-config file lists it).
+
 ## Important CMake options
 
 For unqualified mobile cross-build experiments, see

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "compat/platform_timer.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -200,6 +202,9 @@ private:
 
     void run(std::size_t shard_index) noexcept;
 
+    // Worker deadlines and the waits of callers that this scheduler wakes
+    // are in the millisecond range and below.
+    PlatformTimerResolution timer_resolution_;
     Configuration configuration_;
     std::uint64_t service_scope_ = 0;
     std::vector<std::unique_ptr<Shard>> shards_;
