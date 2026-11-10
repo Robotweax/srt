@@ -1391,15 +1391,12 @@ void set_key_material_state_response(
     return listener.state == SRTS_LISTENING;
 }
 
-// Called without any lock, from a snapshot of the bound socket's options and
-// control endpoint: the native socket setup (socket, setsockopt, bind,
-// getsockname) must not run under the record mutex. No registry/group lock is
-// involved either. The result is send-only: no watch, route or scheduler task
-// is installed on it.
-[[nodiscard]] int prepare_multicast_transmitter(
-    const PublicSocketOptions& options, const SocketOptions& native,
-    const IpEndpoint& control, std::shared_ptr<DatagramChannel>& channel,
-    IpEndpoint& bound) noexcept
+// Option rules of the multicast transmitter profile. No syscall and no lock:
+// listen_socket applies them to the snapshot before the native setup and
+// again to the live options when it commits, because several of these
+// options stay settable on a bound socket until it listens.
+[[nodiscard]] int validate_multicast_transmit_profile(
+    const PublicSocketOptions& options, const SocketOptions& native) noexcept
 {
     if (options.multicast_coordinated
         && (!options.multicast_independent
@@ -1414,6 +1411,23 @@ void set_key_material_state_response(
         || native.congestion_controller() != CongestionController::live
         || native.packet_filter_configuration().enabled)
         return fail(SRT_EINVPARAM);
+    return 0;
+}
+
+// Called without any lock, from a snapshot of the bound socket's options and
+// control endpoint: the native socket setup (socket, setsockopt, bind,
+// getsockname) must not run under the record mutex. No registry/group lock is
+// involved either. The result is send-only: no watch, route or scheduler task
+// is installed on it.
+[[nodiscard]] int prepare_multicast_transmitter(
+    const PublicSocketOptions& options, const SocketOptions& native,
+    const IpEndpoint& control, std::shared_ptr<DatagramChannel>& channel,
+    IpEndpoint& bound) noexcept
+{
+    if (validate_multicast_transmit_profile(options, native) == SRT_ERROR)
+        return SRT_ERROR;
+    if (!options.multicast_independent)
+        return 0;
     // Independent IPv6/mixed-family paths retain a separate qualification gate.
     if (!options.multicast_source.is_ipv4()
         || !options.multicast_group.is_ipv4() || !control.is_ipv4())
@@ -1539,9 +1553,11 @@ int listen_socket(
         control_endpoint = socket->local_endpoint;
     }
     // Native socket setup from the snapshot, without the record mutex. The
-    // multicast and source options are frozen once the socket is bound; the
-    // one transmitter input that can still change is the post option
-    // SRTO_MAXBW, which the commit below checks again.
+    // source, independent and coordinated options are frozen once the socket
+    // is bound. The remaining profile inputs (message API, TSBPD, congestion
+    // control, packet filter, session authentication, SRTO_MAXBW) stay
+    // settable until the socket listens, so the commit below applies the
+    // profile rules again to the live options.
     if (prepare_multicast_transmitter(public_options, native_options,
             control_endpoint, multicast_transmitter, multicast_source)
         == SRT_ERROR)
@@ -1550,9 +1566,10 @@ int listen_socket(
         std::lock_guard lock(socket->mutex);
         if (validate_locked() == SRT_ERROR)
             return SRT_ERROR;
-        if (socket->public_options.multicast_coordinated
-            && socket->public_options.maximum_bandwidth_bytes_per_second <= 0)
-            return fail(SRT_EINVPARAM);
+        if (validate_multicast_transmit_profile(
+                socket->public_options, socket->native_options)
+            == SRT_ERROR)
+            return SRT_ERROR;
         if (!generate_listener_cookie_secret(socket->listener_cookie_secret)) {
             return fail(SRT_ESECFAIL);
         }

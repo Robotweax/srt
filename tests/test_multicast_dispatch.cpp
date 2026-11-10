@@ -4631,6 +4631,69 @@ TEST(
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVPARAM);
 }
 
+TEST(
+    multicast_dispatch_independent_listen_commit_rejects_a_profile_change_during_setup)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    // SRTO_MESSAGEAPI stays settable on a bound socket and is frozen once it
+    // listens. A setter that races the listen call must never leave a
+    // listening independent sender outside its profile.
+    const bool yes = true, no = false;
+    int listening = 0;
+    for (int iteration = 0; iteration < 200; ++iteration) {
+        Peers peers;
+        const auto listener = peers.keep(srt_create_socket());
+        auto local = ipv4_sockaddr({127, 0, 0, 1}, 0);
+        const auto group = ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_INDEPENDENT,
+                       &yes, sizeof(yes)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_SOURCE,
+                       &local, sizeof(local)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_GROUP, &group,
+                       sizeof(group)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_ROBOTWEAX_MCAST_IFACE, &local,
+                       sizeof(local)),
+            0);
+        REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&local),
+                       sizeof(local)),
+            0);
+        std::atomic<bool> started {false}, stop {false};
+        std::thread setter([&] {
+            while (!stop.load()) {
+                (void)srt_setsockflag(
+                    listener, SRTO_MESSAGEAPI, &no, sizeof(no));
+                started.store(true);
+                (void)srt_setsockflag(
+                    listener, SRTO_MESSAGEAPI, &yes, sizeof(yes));
+            }
+        });
+        while (!started.load())
+            std::this_thread::yield();
+        const int result = srt_listen(listener, 2);
+        const int error = result == 0 ? 0 : srt_getlasterror(nullptr);
+        stop.store(true);
+        setter.join();
+        if (result == 0) {
+            ++listening;
+            bool message_api = false;
+            int size = sizeof(message_api);
+            REQUIRE_EQ(
+                srt_getsockflag(listener, SRTO_MESSAGEAPI, &message_api, &size),
+                0);
+            REQUIRE(message_api);
+        } else {
+            REQUIRE_EQ(error, SRT_EINVPARAM);
+            REQUIRE_EQ(srt_getsockstate(listener), SRTS_OPENED);
+        }
+    }
+    // The race must leave both outcomes reachable, or it proves nothing.
+    REQUIRE(listening > 0);
+}
+
 TEST(multicast_dispatch_coordinated_final_cleanup_retires_live_source_services)
 {
     SKIP_UNLESS(
