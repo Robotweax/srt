@@ -4572,6 +4572,84 @@ TEST(
     REQUIRE_EQ(actor->snapshot().next_sequence, before.next());
 }
 
+// A member detached by the coordinator changes the group's membership status:
+// a poll that watches the group for SRT_EPOLL_UPDATE reports it once. Accepted
+// sends before the detachment raise no update.
+TEST(multicast_dispatch_coordinated_member_detachment_raises_group_update_event)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    CoordinatedNative f(1'000'000, false, false, 32);
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+    {
+        const auto record = GroupRegistry::instance().find(f.receiver);
+        std::lock_guard lock(record->mutex);
+        control = record->dispatch->control_channel.lock();
+    }
+    REQUIRE(control);
+    SendHookReset cleanup {control};
+    // The receiver stops acknowledging, so its repair history fills.
+    control->set_send_hook_for_testing(
+        +[](std::span<const std::byte> bytes, IpEndpoint peer,
+             void* p) noexcept {
+            const auto decoded = decode_packet(bytes);
+            if (decoded && decoded.packet.kind == PacketKind::control
+                && (decoded.packet.control.type == ControlType::acknowledgement
+                    || decoded.packet.control.type
+                        == ControlType::negative_acknowledgement))
+                return UdpIoResult {.bytes_transferred = bytes.size()};
+            return static_cast<robotweax::srt::compat::DatagramChannel*>(p)
+                ->socket.send_to(bytes, peer);
+        },
+        control.get());
+    const int poll = srt_epoll_create();
+    REQUIRE(poll >= 0);
+    struct PollRelease {
+        int poll;
+        ~PollRelease()
+        {
+            (void)srt_epoll_release(poll);
+        }
+    } release {poll};
+    const int watched = SRT_EPOLL_UPDATE;
+    REQUIRE_EQ(srt_epoll_add_usock(poll, f.sender, &watched), 0);
+    std::array<SRT_EPOLL_EVENT, 1> events {};
+    const auto actor = f.actor();
+    int accepted = 0;
+    bool detached = false;
+    for (int i = 0; i < 96 && !detached; ++i) {
+        const int result = f.send(i);
+        if (result == SRT_ERROR) {
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
+            detached = true;
+        } else {
+            REQUIRE_EQ(result, static_cast<int>(message(i).size()));
+            ++accepted;
+            REQUIRE_EQ(actor->snapshot().detached_members, 0U);
+            REQUIRE_EQ(srt_epoll_uwait(poll, events.data(),
+                           static_cast<int>(events.size()), 0),
+                0);
+            std::this_thread::sleep_for(std::chrono::milliseconds {5});
+        }
+    }
+    REQUIRE(detached);
+    REQUIRE(accepted > 0);
+    REQUIRE_EQ(actor->snapshot().detached_members, 1U);
+    REQUIRE_EQ(srt_epoll_uwait(
+                   poll, events.data(), static_cast<int>(events.size()), 0),
+        1);
+    REQUIRE_EQ(events[0].fd, f.sender);
+    REQUIRE_EQ(events[0].events, SRT_EPOLL_UPDATE);
+    REQUIRE_EQ(srt_epoll_uwait(
+                   poll, events.data(), static_cast<int>(events.size()), 0),
+        0);
+    SRT_SOCKGROUPDATA data[1] {};
+    std::size_t count = 1;
+    REQUIRE_EQ(srt_group_data(f.sender, data, &count), 1);
+    REQUIRE_EQ(data[0].memberstate, SRT_GST_BROKEN);
+    REQUIRE_EQ(srt_getsockstate(f.sender), SRTS_CONNECTED);
+}
+
 TEST(
     multicast_dispatch_coordinated_validation_requires_fixed_source_and_positive_wire_rate)
 {
