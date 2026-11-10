@@ -27,7 +27,13 @@ class GroupSendBinding {
 struct GroupRuntimeSendState {
     std::uint64_t generation = 0;
     // Highest parity generation prepared for this receiver, including a
-    // preannouncement made by a subsequently cancelled admission.
+    // preannouncement made by a subsequently cancelled admission. That is
+    // deliberate: try_reserve installs the generation and builds the key
+    // announcement before the guard commits, and the member's control path
+    // sends that announcement whether or not the frame commits, so a dropped
+    // guard advances the receiver's keys exactly like a committed one. Prefix
+    // recovery therefore judges history against this value; a lower value
+    // would re-send history the receiver can no longer decrypt.
     std::uint64_t prepared_key_generation = 0;
     struct RecoveryKeyLease {
         std::uint64_t generation = 0;

@@ -856,6 +856,79 @@ TEST(
         REQUIRE_EQ(f.actor->snapshot().detached_members, 0U);
     }
 }
+// L-6, pinned as designed. An admission that is reserved and then dropped
+// (the send failed on another member, say) has already prepared its key
+// generation on this member and, inside the pre-announcement window, built the
+// key-material announcement that the member's control path sends whether or
+// not the frame commits. The announcement replaces the receiver's key of the
+// generation two steps back, so a prefix recovery that would re-send history
+// of that generation is refused as invalid: the receiver can no longer decrypt
+// it. A member without such an admission recovers. Nothing is wedged: the
+// announcement goes out and later sends are admitted.
+TEST(
+    compat_group_coordinator_dropped_admission_keeps_its_key_announcement_and_refuses_stale_prefix)
+{
+    Fixture f(CryptoMode::aes_ctr, 8);
+    Receiver a(f, 8), b(f, 8);
+    // Positions 0 to 6 of the schedule (refresh 4, pre-announcement 1) span
+    // generations 0 and 1. The receivers acknowledge positions 0 to 2 only,
+    // within their four-packet window, so the oldest unacknowledged history
+    // on both members is position 3 of generation 0 and the last admission
+    // prepared generation 1.
+    for (unsigned i = 0; i < 7; ++i) {
+        REQUIRE_EQ(f.send(), Status::accepted);
+        a.exchange_keys();
+        b.exchange_keys();
+        f.pump();
+        if (i < 3) {
+            a.ack(initial.advanced(i + 1));
+            b.ack(initial.advanced(i + 1));
+        }
+        a.now += 1'000;
+        b.now += 1'000;
+        f.now += 1ms;
+    }
+    REQUIRE_EQ(a.buffered(), 4U);
+    REQUIRE_EQ(b.buffered(), 4U);
+    const auto next = f.actor->snapshot().next_sequence;
+    REQUIRE_EQ(next, initial.advanced(7));
+    const auto binding_of = [&](const Receiver& r) {
+        return GroupSendCoordinatorTestAccess::binding(*f.actor, r.id);
+    };
+    {
+        // Position 7 is the pre-announcement window: the reservation prepares
+        // generation 1 and announces generation 2 on member a, then is
+        // dropped without staging or committing.
+        auto guard = Admission::try_reserve(binding_of(a),
+            {.sequence = next,
+                .message_number = f.actor->snapshot().next_message,
+                .boundary = MessageBoundary::solo,
+                .in_order = true,
+                .timestamp = PacketTimestamp {5'000},
+                .destination_socket_id = group_id},
+            payload.size());
+        REQUIRE_EQ(guard.status(), Admission::Status::ready);
+    }
+    REQUIRE_EQ(f.actor->snapshot().next_sequence, next);
+    REQUIRE_EQ(a.buffered(), 4U);
+    // Member a's receiver will lose the generation 0 key to that announcement;
+    // re-sending its generation 0 history is refused. Member b recovers.
+    REQUIRE_EQ(
+        Admission::try_recover_prefix(binding_of(a), next).result().status,
+        Admission::Status::invalid);
+    REQUIRE_EQ(
+        Admission::try_recover_prefix(binding_of(b), next).result().status,
+        Admission::Status::ready);
+    // The announcement built by the dropped admission is sent on the member's
+    // control path like any other key material.
+    const auto controls_before = a.control_attempts;
+    a.exchange_keys();
+    REQUIRE(a.control_attempts > controls_before);
+    // Later sends are still admitted; nobody is detached.
+    REQUIRE_EQ(f.send(), Status::accepted);
+    REQUIRE_EQ(reason(f, a.id), Actor::Detachment::none);
+    REQUIRE_EQ(reason(f, b.id), Actor::Detachment::none);
+}
 TEST(
     compat_group_coordinator_unsent_key_announcement_detaches_only_affected_receiver)
 {

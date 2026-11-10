@@ -50,7 +50,7 @@ Only the evidence above is claimed for the first batch; no blanket resolution.
 | L-3 | Fixed in source: such a send fails with `SRT_ECONNLOST` and consumes nothing; see below | Hosted default and enabled builds |
 | L-4 | Measured and changed in source: 100 µs busy gate, blocked caller sleeps instead of polling; see below | Re-measure on Linux; the `full` wait still uses the global readiness signal |
 | L-5 | Fixed in source: an expired message fails the send instead of detaching the member; see below | Hosted builds |
-| L-6 | Open: prepared crypto generation advances on aborted admission | Cancelled-guard/prefix-recovery reproduction |
+| L-6 | Resolved as designed: the dropped admission's key announcement is real, so the refusal is required; pinned by a test and documented in the field comment; see below | None |
 | L-7 | Fixed in source: each wire submission of an overlap original is recorded once in either completion order; see below | Hosted builds |
 | L-8 | Measured: the per-poll send buffer probes are constant-time (2 to 13 ns a pair, no growth to 8192 packets); the coordinated fanout scan is bounded and measured with the sender benchmark; see below | Re-measure if the probes change |
 | T-1 | Fixed in source: the candidate check is compiled only with the hybrid control option; see below | Hosted default and enabled builds; no behavior difference was observable before the fix |
@@ -527,6 +527,42 @@ have equal delays on both paths.
 
 Not shown: a WAN or cross-host run, and the behaviour when the query interval
 is much longer than the real lag, where the tolerated lag grows with it.
+
+## Canonical DATA path: L-6
+
+The finding: `try_reserve` raises `prepared_key_generation` and runs
+`CryptoSession::prepare_data_sequence` before the guard is known to commit;
+both survive a dropped guard and can make `try_recover_prefix` refuse with
+`invalid` for a prefix that never advanced.
+
+Reading of the code: `prepare_data_sequence` installs the generation of the
+admitted sequence and, inside the pre-announcement window, installs the next
+generation and builds the key-material announcement. The member's unicast
+control path sends that announcement on its next poll whether or not the
+frame commits, and the receiver's slot of the generation two steps back is
+replaced when it arrives. `try_recover_prefix` refuses exactly when the
+prepared generation is two or more ahead of the oldest unacknowledged
+history, which is the case where the receiver no longer holds that history's
+key. The recorded value is therefore a faithful record of a real side effect,
+as the field's comment already said, and the refusal protects against
+repairing a prefix the receiver cannot decrypt. A dropped guard brings forward
+what the retry of the same send does on commit; nothing is wedged, since the
+next admission is accepted. The alternative, deferring the announcement from
+reservation to commit, would split `prepare_data_sequence` across the
+reservation, the commit (which must not fail) and the member's poll; the owner
+decided to keep the conservative refusal.
+
+Pinned by
+`compat_group_coordinator_dropped_admission_keeps_its_key_announcement_and_refuses_stale_prefix`:
+two members hold four unacknowledged originals, positions 3 to 6 (generations
+0 and 1, within their flow window); the reservation for position 7, the
+pre-announcement window (prepares generation 1, announces generation 2), is
+dropped on member A without staging; A's prefix
+recovery is `invalid`, B's is `ready`; A's control path emits the
+announcement; the next send is accepted and nobody is detached. The field
+comment states the reasoning. The admission API admits only the member's next
+sequence, so a far-ahead reservation cannot create the situation; it needs a
+member that is two generations behind in acknowledgements.
 
 ## Canonical DATA path: L-5
 
