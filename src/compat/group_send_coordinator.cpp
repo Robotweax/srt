@@ -245,6 +245,11 @@ void GroupSendCoordinator::remove_member(std::uint64_t id) noexcept
             retired = std::move(entry.binding);
             retired_lease = entry.unicast_lease;
             entry = {};
+            lost_connected_member_ = lost_connected_member_
+                && std::any_of(
+                    members_.begin(), members_.end(), [](const auto& member) {
+                        return member.state.id && member.lost_connected;
+                    });
             update_readiness();
             break;
         }
@@ -280,6 +285,13 @@ void GroupSendCoordinator::detach(std::uint64_t id, Detachment reason) noexcept
             ++state_.detached_members;
             return;
         }
+}
+
+bool GroupSendCoordinator::take_lost_connected_member() noexcept
+{
+    for (auto& entry : members_)
+        entry.lost_connected = false;
+    return std::exchange(lost_connected_member_, false);
 }
 
 GroupSendCoordinator::Transition GroupSendCoordinator::set_delivery(
@@ -613,9 +625,8 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
     retry_at_.reset();
     // Empty groups advance the same source/key timeline without a datagram.
     if (state_.active_members == 0)
-        return std::exchange(lost_connected_member_, false)
-            ? Status::receivers_lost
-            : advance_empty(deadline);
+        return take_lost_connected_member() ? Status::receivers_lost
+                                            : advance_empty(deadline);
     if (!crypto_writable()) {
         ++state_.full_sends;
         return Status::full;
@@ -724,9 +735,10 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
             if (reason != Detachment::none) {
                 // A closed or replaced runtime has already left; it is the
                 // late discovery of a member that was gone before this call.
-                lost_connected_member_ = lost_connected_member_
-                    || (reason != Detachment::closed
-                        && reason != Detachment::stale);
+                member.lost_connected =
+                    reason != Detachment::closed && reason != Detachment::stale;
+                lost_connected_member_ =
+                    lost_connected_member_ || member.lost_connected;
                 detach(member.state.id, reason);
                 continue;
             }
@@ -756,7 +768,7 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
         // untouched. Such a member may still listen to the multicast group
         // and expects this sequence from the next original.
         if (frame.count == 0)
-            return std::exchange(lost_connected_member_, false)
+            return take_lost_connected_member()
                 ? Status::receivers_lost
                 : Status::advanced_without_receivers;
         if (!manual_
@@ -793,7 +805,7 @@ GroupSendCoordinator::Status GroupSendCoordinator::send(
         // No snapshot calls on emitter/runtime while their guards remain alive.
         for (std::size_t i = 0; i < frame.count; ++i)
             tx.guards[i]->release();
-        lost_connected_member_ = false;
+        (void)take_lost_connected_member();
         return Status::accepted;
     }();
     return admitted == Status::advanced_without_receivers

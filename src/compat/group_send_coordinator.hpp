@@ -239,6 +239,9 @@ private:
         // Consecutive busy admissions since busy_since, saturating at
         // maximum_busy_attempts.
         std::uint32_t busy_attempts = 0;
+        // This member's admission detachment set lost_connected_member_ and
+        // no send has settled the sequence since.
+        bool lost_connected = false;
         bool unicast_lease = false;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
         std::uint64_t join_position = 0;
@@ -288,6 +291,8 @@ private:
     void drive() noexcept;
     void advance_cursor() noexcept;
     void detach(std::uint64_t, Detachment) noexcept;
+    // Settles the pending loss, if any, for a send that ends the sequence.
+    [[nodiscard]] bool take_lost_connected_member() noexcept;
     void update_readiness() noexcept;
     [[nodiscard]] bool crypto_writable() const noexcept;
     [[nodiscard]] Status advance_empty(Clock::time_point) noexcept;
@@ -324,6 +329,8 @@ private:
     // A member was detached during admission although its session is still
     // established, and no send has settled the sequence since: the call
     // returned busy, expired or full. Kept so that the retry reports the loss.
+    // Dropped when every member that set it has been removed: the
+    // application already knows those members are gone.
     bool lost_connected_member_ = false;
 };
 } // namespace robotweax::srt::compat

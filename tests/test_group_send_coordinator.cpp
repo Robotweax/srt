@@ -1252,6 +1252,79 @@ TEST(
     }
 }
 
+// The pending loss belongs to the detached member. Once the application has
+// removed that member, a group that empties afterwards is the documented
+// empty group: the next send advances unused and reports no late loss.
+// Removing only one of two detached members keeps the loss of the other.
+TEST(
+    compat_group_coordinator_removing_the_detached_member_drops_its_pending_loss)
+{
+    for (unsigned scenario = 0; scenario < 2; ++scenario) {
+        Fixture f;
+        auto admission_time = f.now;
+        f.actor->close();
+        f.config.admission_busy_grace = 10ms;
+        f.config.admission_clock = +[](void* p) noexcept {
+            return *static_cast<Clock::time_point*>(p);
+        };
+        f.config.admission_clock_context = &admission_time;
+        f.recreate();
+        Receiver slow(f, 1), second_slow(f, 1), other(f);
+        REQUIRE_EQ(f.send(), Status::accepted);
+        f.pump();
+        REQUIRE_EQ(f.output.size(), 1U);
+        other.ack(initial.next());
+        f.now += 1ms;
+        slow.now += 1'000;
+        second_slow.now += 1'000;
+        other.now += 1'000;
+        admission_time = f.now;
+        const auto message = f.actor->snapshot().next_message;
+
+        // Both slow members are detached with a full history while the other
+        // member's admission is held: the send returns busy.
+        auto held = other.hold(f);
+        REQUIRE_EQ(held.status(), Admission::Status::ready);
+        auto attempt = std::async(std::launch::async, [&] {
+            return f.send();
+        });
+        REQUIRE_EQ(attempt.wait_for(2s), std::future_status::ready);
+        REQUIRE_EQ(attempt.get(), Status::busy);
+        REQUIRE_EQ(reason(f, slow.id), Actor::Detachment::history_full);
+        REQUIRE_EQ(reason(f, second_slow.id), Actor::Detachment::history_full);
+        REQUIRE_EQ(reason(f, other.id), Actor::Detachment::none);
+        held.release();
+
+        // The application removes detached members, then the remaining
+        // member leaves before the retry.
+        f.actor->remove_member(slow.id);
+        if (scenario == 0)
+            f.actor->remove_member(second_slow.id);
+        f.actor->remove_member(other.id);
+        f.now += 11ms;
+        admission_time = f.now;
+        f.pump();
+        REQUIRE(f.actor->snapshot().writable);
+        REQUIRE_EQ(f.actor->snapshot().active_members, 0U);
+        if (scenario == 0) {
+            REQUIRE_EQ(f.actor->snapshot().detached_members, 0U);
+            REQUIRE_EQ(f.send(), Status::advanced_without_receivers);
+            REQUIRE_EQ(f.actor->snapshot().next_sequence, initial.advanced(2));
+        } else {
+            REQUIRE_EQ(f.actor->snapshot().detached_members, 1U);
+            REQUIRE_EQ(f.send(), Status::receivers_lost);
+            REQUIRE_EQ(f.actor->snapshot().next_sequence, initial.next());
+            REQUIRE_EQ(f.actor->snapshot().next_message, message);
+            REQUIRE_EQ(f.send(), Status::advanced_without_receivers);
+            REQUIRE_EQ(f.actor->snapshot().next_sequence, initial.advanced(2));
+        }
+        REQUIRE(!f.actor->snapshot().failed);
+        f.pump();
+        REQUIRE_EQ(f.output.size(), 1U);
+        f.actor->close();
+    }
+}
+
 TEST(compat_group_coordinator_retry_exhaustion_never_becomes_submission)
 {
     Fixture f;
