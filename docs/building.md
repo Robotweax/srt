@@ -54,6 +54,9 @@ version 2004 the request affects only the calling process; earlier versions
 apply the finest period any process requested to the whole system, with
 higher power use. MSVC static builds record the `winmm` dependency in the
 library; other static consumers add `-lwinmm` (the pkg-config file lists it).
+Configure with `-DROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD=OFF` to leave the timer
+period to the application; the library then neither requests it nor links
+`winmm`, and its pacing follows whatever period is in effect.
 
 ## Important CMake options
 
@@ -70,6 +73,7 @@ For unqualified mobile cross-build experiments, see
 | `ROBOTWEAX_SRT_BUILD_EXAMPLES` | `OFF` | Build public API demonstration applications |
 | `ROBOTWEAX_SRT_WARNINGS_AS_ERRORS` | `ON` | Treat library warnings as errors |
 | `ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT` | `OFF` | Install opt-in `srt.pc` metadata for shared-library consumers such as FFmpeg |
+| `ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD` | `ON` | Windows only: hold a one millisecond timer period while sockets exist |
 | `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1` | `OFF` | Build the [experimental ACP1 prototype](experimental-acp1.md) |
 | `ENABLE_AEAD_API_PREVIEW` | `OFF` | Enable the released Robotweax 0.2 AES-GCM extension |
 

@@ -13,7 +13,10 @@ namespace robotweax::srt::compat {
 // earlier versions apply the finest period any process has requested to the
 // whole system. A refused request is not an error: waits stay coarse.
 //
-// Other platforms need nothing; the object is empty there.
+// Other platforms need nothing; the object is empty there. It is also empty
+// on Windows when the library is built with
+// ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD=OFF, for integrators who manage the
+// timer period themselves.
 class PlatformTimerResolution {
 public:
     PlatformTimerResolution() noexcept;

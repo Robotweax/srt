@@ -45,6 +45,8 @@ option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable experimental authenticated runtime controls" OFF)
+option(ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD
+    "On Windows, hold a one millisecond timer period while the runtime scheduler exists" ON)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL
     "Build staged hybrid control authentication components (no socket activation)" OFF)
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL AND NOT ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
@@ -286,7 +288,13 @@ endif()
 if(WIN32)
     target_compile_definitions(robotweax_srt
         PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_link_libraries(robotweax_srt PRIVATE ws2_32 winmm)
+    target_link_libraries(robotweax_srt PRIVATE ws2_32)
+    if(ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD)
+        target_link_libraries(robotweax_srt PRIVATE winmm)
+    else()
+        target_compile_definitions(robotweax_srt
+            PRIVATE ROBOTWEAX_SRT_NO_WINDOWS_TIMER_PERIOD)
+    endif()
 endif()
 target_link_libraries(
     robotweax_srt PRIVATE ${ROBOTWEAX_SRT_CRYPTO_LIBRARY} Threads::Threads)
@@ -2421,7 +2429,10 @@ if(ENABLE_MAXREXMITBW)
 endif()
 string(STRIP "${ROBOTWEAX_SRT_PC_CFLAGS}" ROBOTWEAX_SRT_PC_CFLAGS)
 if(WIN32)
-    string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lws2_32 -lwinmm")
+    string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lws2_32")
+    if(ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD)
+        string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lwinmm")
+    endif()
 endif()
 string(STRIP
     "${ROBOTWEAX_SRT_PC_PRIVATE_LIBS}"

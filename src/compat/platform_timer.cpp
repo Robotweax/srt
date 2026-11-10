@@ -1,6 +1,6 @@
 #include "compat/platform_timer.hpp"
 
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(ROBOTWEAX_SRT_NO_WINDOWS_TIMER_PERIOD)
 #if !defined(NOMINMAX)
 #define NOMINMAX
 #endif
@@ -19,7 +19,7 @@
 
 namespace robotweax::srt::compat {
 
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(ROBOTWEAX_SRT_NO_WINDOWS_TIMER_PERIOD)
 PlatformTimerResolution::PlatformTimerResolution() noexcept
     : held_(timeBeginPeriod(1U) == TIMERR_NOERROR)
 {
