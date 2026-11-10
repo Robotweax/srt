@@ -115,6 +115,8 @@ combining features.
 - [Sender-drop semantics under kernel shaping](sender-drop-semantics.md)
 - [Protocol edge-case policy](protocol-edge-cases.md)
 - [Bounded payload storage](payload-storage.md) — resident memory, capacity and ownership.
+- [Jumbo MSS draft](jumbo-mss.md) — unimplemented proposal for `SRTO_MSS` above
+  1,500 bytes on controlled networks, with storage and path-MTU rules.
 - [Performance and scalability measurement](performance.md)
 - [Scheduler shards and staged scaling](scheduler-shards.md)
 - [Same-host UDP group throughput diagnostic](group-throughput.md)
