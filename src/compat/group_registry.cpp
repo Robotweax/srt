@@ -1572,31 +1572,80 @@ void GroupRegistry::refresh_coordinated_members(
         GroupSendCoordinator::maximum_members>
         rows;
     const auto count = coordinator->members(rows);
-    std::lock_guard lock(record->mutex);
-    if (record->closed || record->dispatch->coordinator != coordinator)
-        return;
-    for (auto& member : record->members) {
-        if (!member.coordinator_member)
-            continue;
-        for (std::size_t i = 0; i < count; ++i) {
-            if (rows[i].id != member.coordinator_member
-                || rows[i].status_revision
-                    <= member.coordinator_status_revision)
+    // Taken after the rows: a source failure is permanent, so a detachment
+    // it caused is never seen without it.
+    const bool source_failed = coordinator->snapshot().source_failure
+        != GroupMulticastEmitter::Failure::none;
+    struct Disconnect {
+        SRTSOCKET socket = SRT_INVALID_SOCK;
+        std::uint64_t generation = 0;
+    };
+    std::array<Disconnect, GroupSendCoordinator::maximum_members> disconnects;
+    std::size_t disconnect_count = 0;
+    SRTSOCKET group = SRT_INVALID_SOCK;
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->closed || record->dispatch->coordinator != coordinator)
+            return;
+        group = record->handle;
+        for (auto& member : record->members) {
+            if (!member.coordinator_member)
                 continue;
-            member.coordinator_status_revision = rows[i].status_revision;
-            member.coordinator_detached =
-                rows[i].detachment != GroupSendCoordinator::Detachment::none;
-            if (member.coordinator_detached) {
-                member.public_data.memberstate = SRT_GST_BROKEN;
-                member.public_data.result = SRT_ECONNLOST;
-            } else if (member.public_data.sockstate == SRTS_CONNECTED) {
-                member.public_data.memberstate = SRT_GST_RUNNING;
-                member.public_data.result = 0;
+            for (std::size_t i = 0; i < count; ++i) {
+                if (rows[i].id != member.coordinator_member
+                    || rows[i].status_revision
+                        <= member.coordinator_status_revision)
+                    continue;
+                using Detachment = GroupSendCoordinator::Detachment;
+                const auto reason = rows[i].detachment;
+                member.coordinator_status_revision = rows[i].status_revision;
+                member.coordinator_detached = reason != Detachment::none;
+                if (member.coordinator_detached) {
+                    member.public_data.memberstate = SRT_GST_BROKEN;
+                    member.public_data.result = SRT_ECONNLOST;
+                    // A detached member gets no further originals, key
+                    // announcements or repair retention. Its peer must not
+                    // be left connected to a stream that starves it. A
+                    // closed or replaced runtime has already left. After a
+                    // hard source error the sessions stay for inspection
+                    // and the internal recovery to unicast.
+                    if (reason != Detachment::closed
+                        && reason != Detachment::stale
+                        && !(reason == Detachment::source_not_submitted
+                            && source_failed)
+                        && member.public_data.sockstate == SRTS_CONNECTED
+                        && disconnect_count < disconnects.size())
+                        disconnects[disconnect_count++] = {
+                            member.public_data.id, member.generation};
+                } else if (member.public_data.sockstate == SRTS_CONNECTED) {
+                    member.public_data.memberstate = SRT_GST_RUNNING;
+                    member.public_data.result = 0;
+                }
+                advance_version(record->snapshot_version);
+                advance_version(record->update_version);
+                break;
             }
-            advance_version(record->snapshot_version);
-            advance_version(record->update_version);
-            break;
         }
+    }
+    // Outside the group lock: the socket lock orders before it, and the
+    // runtime is entered with no registry, group or coordinator lock held.
+    for (std::size_t i = 0; i < disconnect_count; ++i) {
+        const auto socket =
+            SocketRegistry::instance().find(disconnects[i].socket);
+        if (socket == nullptr)
+            continue;
+        std::shared_ptr<ConnectionRuntime> runtime;
+        {
+            std::lock_guard lock(socket->mutex);
+            if (socket->state == SRTS_CONNECTED && socket->group_id == group
+                && socket->member_generation == disconnects[i].generation)
+                runtime = socket->runtime;
+        }
+        if (runtime == nullptr)
+            continue;
+        runtime->disconnect_peer();
+        // Publish SRTS_BROKEN on the member socket and its group row now.
+        (void)SocketRegistry::instance().state(disconnects[i].socket);
     }
 }
 

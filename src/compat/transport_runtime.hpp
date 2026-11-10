@@ -726,6 +726,11 @@ public:
         std::size_t& remaining_send_attempts) noexcept;
     void apply_options(const SocketOptions& options) noexcept;
     void mark_broken(int system_error) noexcept;
+    // Break an established connection from this side and tell the peer once
+    // with SHUTDOWN, as the idle expiry does: no retry, no queued DATA. The
+    // peer observes a lost connection. No effect on a terminal or closed
+    // runtime. Callers hold no group, socket or coordinator lock.
+    void disconnect_peer() noexcept;
     [[nodiscard]] bool report_peer_error(
         std::int32_t error_code) noexcept;
     void close() noexcept;

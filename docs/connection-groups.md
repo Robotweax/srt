@@ -734,10 +734,20 @@ detaching it, so a burst of sends while a member is inside one poll does not
 count against it. While a member admission is busy, the group refuses sends
 for 100 µs and a blocking sender sleeps for that time rather than polling. `srt_group_data` and the `srt_sendmsg2` group-data
 array show `SRT_GST_BROKEN` with `result=SRT_ECONNLOST` for a detached send path.
-The unicast socket can remain `SRTS_CONNECTED`. Group `SRT_EPOLL_UPDATE` reports
-the membership-status change. Close and reconnect that receiver to enroll it
-again; later ACKs do not restore its skipped history. It may still observe
-multicast DATA, with no repair-retention guarantee after detachment.
+A detached member gets no further key announcements or repairs, so the sender
+closes its unicast connection when it publishes the detachment: with the next
+group send that is accepted or fails with `SRT_ECONNLOST`, or with
+`srt_group_data` or a group epoll wait. The member socket becomes
+`SRTS_BROKEN` and its row stays in the group data until the application closes
+that socket. The peer is told once with SHUTDOWN, without retry. The receiver
+then sees the connection lost: its socket leaves `SRTS_CONNECTED` and, once
+buffered messages are read, receiving fails with `SRT_ECONNLOST`. Group
+`SRT_EPOLL_UPDATE` on the sender reports the membership-status change. Close
+and reconnect that receiver to enroll it again; later ACKs do not restore its
+skipped history. A receiver that missed the SHUTDOWN is not told again; it may
+still observe multicast DATA, with no repair or key announcement. A member
+whose original was not submitted because of a hard source error is the
+exception described below: its session is not closed.
 
 With no eligible members, sends succeed and advance the stream without emitting
 DATA. Members that have closed or left count as absent even when the sender
@@ -745,7 +755,8 @@ first notices during a send. A send that instead detaches its last members
 while their unicast sessions are still established, for example because the
 last member's repair history is full, fails with `SRT_ECONNLOST`. It emits
 nothing and consumes no sequence number; the group stays connected, the group
-data shows the detached members, and the next send finds no eligible members.
+data shows the detached members with their connections closed, and the next
+send finds no eligible members.
 Pause production until the receiver's join has completed and, for encrypted
 streams, wait for that member's `SRTO_SNDKMSTATE` to become `SRT_KM_S_SECURED`
 before resuming. An admission

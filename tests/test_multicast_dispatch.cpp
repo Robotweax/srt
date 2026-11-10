@@ -549,6 +549,18 @@ void report_unexpected_message(SRTSOCKET receiver, int index, int first,
     std::fflush(stderr);
 }
 
+// A receiver whose sender closed its connection leaves SRTS_CONNECTED once
+// the SHUTDOWN arrives; bounded so that a missing notification fails.
+[[nodiscard]] bool wait_until_not_connected(SRTSOCKET socket,
+    std::chrono::milliseconds budget = std::chrono::seconds {2})
+{
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    while (srt_getsockstate(socket) == SRTS_CONNECTED
+        && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds {5});
+    return srt_getsockstate(socket) != SRTS_CONNECTED;
+}
+
 void expect_messages(SRTSOCKET receiver, int first, int count)
 {
     std::array<char, 256> buffer {};
@@ -4504,11 +4516,10 @@ TEST(
     REQUIRE_EQ(srt_group_data(f.sender, data, &count), 2);
     int detached = 0, running = 0;
     for (auto& row : data) {
-        REQUIRE_EQ(row.sockstate, SRTS_CONNECTED);
-        detached +=
-            row.memberstate == SRT_GST_BROKEN && row.result == SRT_ECONNLOST;
-        running +=
-            row.memberstate == SRT_GST_RUNNING && row.result == SRT_SUCCESS;
+        detached += row.sockstate == SRTS_BROKEN
+            && row.memberstate == SRT_GST_BROKEN && row.result == SRT_ECONNLOST;
+        running += row.sockstate == SRTS_CONNECTED
+            && row.memberstate == SRT_GST_RUNNING && row.result == SRT_SUCCESS;
     }
     REQUIRE_EQ(detached, 1);
     REQUIRE_EQ(running, 1);
@@ -4520,7 +4531,92 @@ TEST(
             == robotweax::srt::compat::GroupSendCoordinator::Detachment::
                 history_full;
     }));
-    REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+    // The sender closed the detached member's connection.
+    REQUIRE(wait_until_not_connected(f.receiver));
+}
+
+// A member the coordinator detaches while its unicast session is still
+// established is cut off from key announcements and repairs. The sender
+// closes that member's connection, so the receiver observes the loss instead
+// of starving silently: its group leaves SRTS_CONNECTED and its reads fail
+// with SRT_ECONNLOST once the buffered messages are drained. The healthy
+// receiver keeps receiving and the sender group data shows the broken row.
+TEST(
+    multicast_dispatch_coordinated_detached_member_connection_is_closed_and_receiver_observes_loss)
+{
+    SKIP_UNLESS(
+        loopback_multicast_available(), "no loopback multicast on this host");
+    CoordinatedNative f(1'000'000, false, false, 32);
+    const auto healthy =
+        make_receiver(f.peers, f.bound, false, false, 120, true);
+    REQUIRE(wait_for_members(f.sender, 2));
+    std::shared_ptr<robotweax::srt::compat::DatagramChannel> control;
+    {
+        const auto record = GroupRegistry::instance().find(f.receiver);
+        std::lock_guard lock(record->mutex);
+        control = record->dispatch->control_channel.lock();
+    }
+    REQUIRE(control);
+    SendHookReset cleanup {control};
+    // The receiver stops acknowledging, so its repair history fills.
+    control->set_send_hook_for_testing(
+        +[](std::span<const std::byte> bytes, IpEndpoint peer,
+             void* p) noexcept {
+            const auto decoded = decode_packet(bytes);
+            if (decoded && decoded.packet.kind == PacketKind::control
+                && (decoded.packet.control.type == ControlType::acknowledgement
+                    || decoded.packet.control.type
+                        == ControlType::negative_acknowledgement))
+                return UdpIoResult {.bytes_transferred = bytes.size()};
+            return static_cast<robotweax::srt::compat::DatagramChannel*>(p)
+                ->socket.send_to(bytes, peer);
+        },
+        control.get());
+    const auto actor = f.actor();
+    int sent = 0;
+    for (; sent < 96 && actor->snapshot().detached_members == 0U; ++sent) {
+        REQUIRE_EQ(f.send(sent), static_cast<int>(message(sent).size()));
+        expect_messages(healthy, sent, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds {5});
+    }
+    REQUIRE_EQ(actor->snapshot().detached_members, 1U);
+    REQUIRE_EQ(actor->snapshot().active_members, 1U);
+
+    SRT_SOCKGROUPDATA data[2] {};
+    std::size_t count = 2;
+    REQUIRE_EQ(srt_group_data(f.sender, data, &count), 2);
+    int detached = 0, running = 0;
+    for (auto& row : data) {
+        detached += row.sockstate == SRTS_BROKEN
+            && row.memberstate == SRT_GST_BROKEN && row.result == SRT_ECONNLOST;
+        running += row.sockstate == SRTS_CONNECTED
+            && row.memberstate == SRT_GST_RUNNING && row.result == SRT_SUCCESS;
+    }
+    REQUIRE_EQ(detached, 1);
+    REQUIRE_EQ(running, 1);
+    REQUIRE_EQ(srt_getsockstate(f.sender), SRTS_CONNECTED);
+
+    // The detached receiver observes the loss within a bounded wait.
+    REQUIRE(wait_until_not_connected(f.receiver));
+    std::array<char, 256> buffer {};
+    int drained = 0;
+    int received = 0;
+    while (drained <= sent
+        && (received = srt_recvmsg2(
+                f.receiver, buffer.data(), buffer.size(), nullptr))
+            != SRT_ERROR)
+        ++drained;
+    REQUIRE_EQ(received, SRT_ERROR);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNLOST);
+    REQUIRE(drained <= sent);
+
+    // The healthy receiver is unaffected.
+    for (int i = sent; i < sent + 8; ++i) {
+        REQUIRE_EQ(f.send(i), static_cast<int>(message(i).size()));
+        expect_messages(healthy, i, 1);
+    }
+    REQUIRE_EQ(srt_getsockstate(healthy), SRTS_CONNECTED);
+    REQUIRE_EQ(actor->snapshot().active_members, 1U);
 }
 
 // The only receiver stops acknowledging, so its repair history fills and the
@@ -4578,11 +4674,12 @@ TEST(
     SRT_SOCKGROUPDATA data[1] {};
     std::size_t count = 1;
     REQUIRE_EQ(srt_group_data(f.sender, data, &count), 1);
-    REQUIRE_EQ(data[0].sockstate, SRTS_CONNECTED);
+    REQUIRE_EQ(data[0].sockstate, SRTS_BROKEN);
     REQUIRE_EQ(data[0].memberstate, SRT_GST_BROKEN);
     REQUIRE_EQ(data[0].result, SRT_ECONNLOST);
     REQUIRE_EQ(srt_getsockstate(f.sender), SRTS_CONNECTED);
-    REQUIRE_EQ(srt_getsockstate(f.receiver), SRTS_CONNECTED);
+    // The sender closed the detached member's connection.
+    REQUIRE(wait_until_not_connected(f.receiver));
 
     REQUIRE_EQ(f.send(failed_at), static_cast<int>(message(failed_at).size()));
     REQUIRE_EQ(actor->snapshot().next_sequence, before.next());

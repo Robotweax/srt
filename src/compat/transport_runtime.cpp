@@ -5537,7 +5537,9 @@ void ConnectionRuntime::notify_idle_expiry_locked(std::uint64_t now) noexcept
     if (!encoded) {
         return;
     }
-    --*poll_send_budget_;
+    // Null outside a poll: disconnect_peer() sends from the caller's thread.
+    if (poll_send_budget_ != nullptr)
+        --*poll_send_budget_;
     std::span<const std::byte> bytes =
         std::span {datagram}.first(encoded.bytes_written);
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
@@ -5605,6 +5607,15 @@ void ConnectionRuntime::mark_broken(int system_error) noexcept
 {
     std::lock_guard lock(mutex_);
     break_locked(system_error);
+}
+
+void ConnectionRuntime::disconnect_peer() noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || peer_closed_ || broken_)
+        return;
+    notify_idle_expiry_locked(now_microseconds());
+    break_locked(0);
 }
 
 bool ConnectionRuntime::report_peer_error(
