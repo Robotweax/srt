@@ -102,26 +102,28 @@ jobs:
           -V
           -R "^robotweax_srt_platform_timing_report$"
       # Every gate, with the 30-second budgets the test registration declares.
+      # Windows runs them all since the library holds a one millisecond timer
+      # period: run 42833218258 measured a median of 1.7 ms for a 1 ms sleep
+      # with the period held against 13.4 ms without.
       - name: Test all gates of the hybrid control build
-        if: runner.os == 'Linux'
+        if: runner.os != 'macOS'
         run: >-
           ctest --test-dir build-hybrid
           -C Release
           --no-tests=error
           --output-on-failure
-      # Hosted macOS and Windows runners do not hold the offered packet rate of
-      # the native hybrid cases. macOS: two attempts of run 42634228051 failed
-      # different timed gates with the sender at 53 to 375 packets per second
-      # against targets of 100 and 500. Windows: two attempts of run
-      # 42774111162 each failed nine of these gates, not the same nine, with
-      # the sender at 79 to 96 packets per second against targets of 100 and
-      # 250 and up to 91 pacer resets. The same gates pass on Linux runners and
-      # on a local Mac. Both therefore compile the whole configuration and run
-      # every gate except those labelled both hybrid and network. No test
-      # changes; Linux above remains the hosted evidence for the excluded
-      # gates. Why the Windows sender falls behind is not established.
+      # Hosted macOS runners do not hold the offered packet rate of the native
+      # hybrid cases: two attempts of run 42634228051 failed different timed
+      # gates with the sender at 53 to 375 packets per second against targets
+      # of 100 and 500, and run 42826401578 measured a median of 5 ms for a
+      # 1 ms sleep and up to 55 ms for 10 ms. That is runner load, not a timer
+      # period. The same gates pass on Linux runners and on a local Mac. macOS
+      # therefore compiles the whole configuration and runs every gate except
+      # those labelled both hybrid and network. No test changes. Windows had
+      # the same exclusion while its sender reached 79 to 96 packets per
+      # second at the default 15.6 ms timer period (run 42774111162).
       - name: Test the gates that do not depend on hosted timing
-        if: runner.os != 'Linux'
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
