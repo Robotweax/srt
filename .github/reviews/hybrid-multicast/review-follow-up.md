@@ -879,6 +879,23 @@ caller ... 24 ctr` timed out after 40 seconds, after the preceding pairs had
 passed) and passed on the second attempt. Recorded with the intermittent
 hosted failures above; one occurrence.
 
+Head `6ce334c` (workflow and notes only): hybrid control passed on Linux,
+macOS and Windows. CI run 42779265494 failed its first attempt in two jobs and
+passed on the second attempt:
+
+- `windows-latest Debug`:
+  `multicast_dispatch_coordinated_aggregate_budget_bounds_correlated_prefix_repairs`,
+  `tests/test_multicast_dispatch.cpp:4894`, a forced policy transition was not
+  `applied`.
+- `AES-GCM platform/ABI (macos-latest)`:
+  `srt_compat_session_auth_admission_rejects_mismatch_and_failed_children_do_not_leak`,
+  `tests/test_session_authentication_admission.cpp:260`, the recovery connect
+  with a one-second timeout did not return 0.
+
+Both passed 15 and 10 consecutive local runs on a Mac at the same source. One
+occurrence each, no cause established; they join the intermittent hosted
+failures above.
+
 ## Remaining harness and evidence work
 
 - Use normal failure reports and membership/control diagnostics to investigate
