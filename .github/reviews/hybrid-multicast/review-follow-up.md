@@ -975,6 +975,29 @@ members; the next hosted failure decides between the two. The group row of
 `srt_bstats` carries deliveries only, so its loss and undecrypted fields are
 zero on a group handle.
 
+Local reproduction on macOS, source change not committed: with
+`admission_busy_grace` forced from 50 ms to zero, so that the first busy
+admission detaches the member, the test failed in four of four runs with the
+hosted signatures. Three runs timed out on message 64 after 64 deliveries with
+16 undecryptable packets on the member and one or two detached members,
+reason `admission_busy`; one run delivered a later message in place of the
+expected one. With the grace at 150 µs and at 1 µs the test still passed on
+the Mac, where a busy admission clears within one 100 µs retry. So a member
+that stays busy for the full grace on hosted Windows explains both failures;
+that it does is not yet observed there. The report prints the detachment
+reason for the next hosted failure.
+
+This is the documented contract working against a healthy receiver: the
+detached member stays `SRTS_CONNECTED`, gets no further key announcements and
+no signal, and cannot decrypt after the next key switch. Whether a busy
+sender-side admission should cut off a receiver this way, and whether the
+receiver should be told, is an owner decision.
+
+`platform_timing_report_measures_short_sleeps_and_timed_waits` and a step in
+the hybrid control workflow now print sleep and timed-wait granularity on
+every runner. Local Mac: a 1 ms sleep takes about 1.3 ms, a 100 µs sleep
+about 130 µs.
+
 ## Remaining harness and evidence work
 
 - Use normal failure reports and membership/control diagnostics to investigate
