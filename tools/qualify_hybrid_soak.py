@@ -51,6 +51,27 @@ def validate(output: str, seconds: int) -> list[dict]:
     return sorted(rows, key=lambda row: row["profile"])
 
 
+def bind_build(build: Path, config: str, allow_dirty: bool, run=subprocess.run,
+               output=subprocess.check_output) -> dict:
+    """Tie the binary about to run to the checked-out commit.
+
+    A clean worktree whose test binary is up to date was built from HEAD.
+    Uncommitted changes are refused unless allowed, and are then recorded as
+    not bound. The build step makes a stale binary current rather than
+    trusting its timestamp.
+    """
+    commit = output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    dirty = bool(output(["git", "status", "--porcelain"], cwd=ROOT, text=True))
+    if dirty and not allow_dirty:
+        raise ValueError("uncommitted changes: the binary cannot be bound to a commit")
+    result = run(["cmake", "--build", str(build), "--config", config,
+                  "--target", "robotweax_srt_tests"], cwd=ROOT,
+                 stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    if result.returncode:
+        raise RuntimeError(f"build exit {result.returncode}: the binary is not up to date")
+    return {"commit": commit, "worktree_dirty": dirty, "binary_bound_to_commit": not dirty}
+
+
 def digest(path: Path) -> str:
     result = hashlib.sha256()
     with path.open("rb") as stream:
@@ -65,6 +86,8 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--seconds", type=int, default=30, help="loaded seconds per crypto profile, 4..300")
     parser.add_argument("--config", default="Release")
+    parser.add_argument("--allow-dirty", action="store_true",
+                        help="run with uncommitted changes; the record then says the binary is not bound to a commit")
     args = parser.parse_args()
     if not 4 <= args.seconds <= 300:
         parser.error("--seconds must be 4..300")
@@ -72,10 +95,10 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=False)
     record = {"status": "failed", "seconds_per_profile": args.seconds,
               "platform": platform.platform(), "configuration": args.config,
-              "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-              "worktree_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)),
+              "binary_bound_to_commit": False,
               "scope": "Two-receiver IPv4 loopback upper-profile soak; one midpoint recovery pause; sampled retention, not a whole-process memory or WAN claim."}
     try:
+        record.update(bind_build(build, args.config, args.allow_dirty))
         cache = (build / "CMakeCache.txt").read_text()
         configured = re.search(r"^CMAKE_BUILD_TYPE:STRING=(.+)$", cache, re.MULTILINE)
         if configured:

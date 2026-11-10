@@ -27,6 +27,37 @@ class HybridSoakQualificationTests(unittest.TestCase):
                 + "".join("[HYBRID_SOAK] " + json.dumps(row) + "\n" for row in rows)
                 + "2/2 tests passed\n")
 
+    def binding(self, status: str, build_exit: int = 0, allow_dirty: bool = False):
+        calls = []
+
+        def output(command, **_):
+            return "0123abcd\n" if command[1] == "rev-parse" else status
+
+        def run(command, **_):
+            calls.append(command)
+            return type("Result", (), {"returncode": build_exit})()
+
+        return qualification.bind_build(Path("build-x"), "Release", allow_dirty,
+                                        run=run, output=output), calls
+
+    def test_binds_an_up_to_date_binary_of_a_clean_worktree_to_the_commit(self):
+        record, calls = self.binding("")
+        self.assertEqual(record, {"commit": "0123abcd", "worktree_dirty": False,
+                                  "binary_bound_to_commit": True})
+        self.assertEqual(calls, [["cmake", "--build", "build-x", "--config", "Release",
+                                  "--target", "robotweax_srt_tests"]])
+
+    def test_refuses_uncommitted_changes_and_a_failed_build(self):
+        with self.assertRaises(ValueError):
+            self.binding(" M src/session.cpp\n")
+        with self.assertRaises(RuntimeError):
+            self.binding("", build_exit=2)
+
+    def test_allowed_uncommitted_changes_are_recorded_as_not_bound(self):
+        record, _ = self.binding(" M src/session.cpp\n", allow_dirty=True)
+        self.assertEqual(record, {"commit": "0123abcd", "worktree_dirty": True,
+                                  "binary_bound_to_commit": False})
+
     def test_accepts_complete_bounded_capacity_run(self):
         self.assertEqual(qualification.validate(self.transcript(self.rows()), 4), self.rows())
 
