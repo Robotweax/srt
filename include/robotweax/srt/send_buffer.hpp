@@ -165,6 +165,17 @@ public:
     [[nodiscard]] std::optional<OutboundPacket>
     peek_retransmission_packet() noexcept;
     void requeue_prepared_retransmission(SequenceNumber sequence) noexcept;
+    // Bound a transport scan across polls. Rotating a prepared repair does
+    // not add new work; a newly queued NAK/timeout/probe advances revision.
+    [[nodiscard]] std::size_t pending_retransmission_count() const noexcept
+    {
+        return retransmission_size_;
+    }
+    [[nodiscard]] std::uint64_t retransmission_revision() const noexcept
+    {
+        return retransmission_revision_;
+    }
+
     [[nodiscard]] std::optional<OutboundPacket>
     peek_new_packet() const noexcept;
     // A prepared UDP retry must not revive an ACKed or expired packet.
@@ -331,7 +342,8 @@ private:
     void compact_retransmission_queue() noexcept;
     void compact_drop_request_queue() noexcept;
     [[nodiscard]] bool queue_drop_request(SequenceNumber sequence) noexcept;
-    [[nodiscard]] bool queue_retransmission(SequenceNumber sequence) noexcept;
+    [[nodiscard]] bool queue_retransmission(
+        SequenceNumber sequence, bool new_work = true) noexcept;
 
     // Fenwick counts change only on tombstone creation/removal, not DATA sends.
     [[nodiscard]] std::size_t dropped_prefix(std::size_t end) const noexcept;
@@ -363,6 +375,7 @@ private:
     std::uint64_t last_buffered_enqueue_microseconds_ = 0;
     std::size_t retransmission_head_ = 0;
     std::size_t retransmission_size_ = 0;
+    std::uint64_t retransmission_revision_ = 0;
     std::size_t drop_request_head_ = 0;
     std::size_t drop_request_size_ = 0;
     std::size_t packets_in_flight_ = 0;

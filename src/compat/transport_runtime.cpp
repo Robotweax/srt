@@ -2700,21 +2700,31 @@ ConnectionRuntime::next_receive_wakeup_locked(
 
 bool ConnectionRuntime::retransmission_ready(std::uint64_t now) noexcept
 {
-    // A member waits only after one of its repairs was selected for unicast
-    // and refused for credit. Until that credit exists every repair of this
-    // member waits: the refused one is requeued behind the others, so letting
-    // them through would offer each to the budget in turn without sleeping.
-    // Members that were not refused still classify repairs in send_data, so
-    // multicast and skipped repairs stay free for them.
-    if (unicast_repeat_wait_) {
-        if (group_data_egress_.transmit
-            && !group_data_egress_.transmit->unicast_repeat_ready(
+    // Examine each queued repair once, across as many bounded polls as
+    // needed. A refused unicast repair rotates to the tail; it must not
+    // prevent later multicast/skip decisions, nor start another busy pass.
+    if (group_data_egress_.transmit
+        && group_data_egress_.transmit->unicast_repeat_limited()) {
+        const auto& buffer = session_.send_buffer();
+        const bool credit_ready = unicast_repeat_wait_
+            && group_data_egress_.transmit->unicast_repeat_ready(
                 unicast_repeat_wait_->second,
-                DispatchTransmitState::unicast_repeat_clock()))
-            return false;
-        const auto packet = session_.peek_retransmission_packet();
-        if (!packet || packet->header.sequence != unicast_repeat_wait_->first)
+                DispatchTransmitState::unicast_repeat_clock());
+        if (credit_ready)
             unicast_repeat_wait_.reset();
+        if (!unicast_repeat_scan_revision_
+            || *unicast_repeat_scan_revision_
+                != buffer.retransmission_revision()
+            || credit_ready) {
+            unicast_repeat_scan_revision_ = buffer.retransmission_revision();
+            unicast_repeat_scan_remaining_ =
+                buffer.pending_retransmission_count();
+        }
+        if (unicast_repeat_wait_ && unicast_repeat_scan_remaining_ == 0U)
+            return false;
+    } else {
+        unicast_repeat_wait_.reset();
+        unicast_repeat_scan_revision_.reset();
     }
 #ifdef ENABLE_MAXREXMITBW
     const auto packet = session_.peek_retransmission_packet();
@@ -2919,7 +2929,10 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
             send_budgeted_datagram(*channel, bytes, completion, budget_wait);
         if (budget_wait) {
             if (completion.unicast_repeat_state) {
-                unicast_repeat_wait_ = {completion.data.sequence, bytes.size()};
+                if (!unicast_repeat_wait_
+                    || bytes.size() < unicast_repeat_wait_->second)
+                    unicast_repeat_wait_ = {
+                        completion.data.sequence, bytes.size()};
                 session_.requeue_prepared_retransmission(
                     completion.data.sequence);
                 return true;
@@ -3212,8 +3225,10 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
             const auto sent = send_budgeted_datagram(
                 *channel, bytes, pending.completion, budget_wait);
             if (budget_wait && pending.completion.unicast_repeat_state) {
-                unicast_repeat_wait_ = {
-                    pending.completion.data.sequence, pending.size};
+                if (!unicast_repeat_wait_
+                    || pending.size < unicast_repeat_wait_->second)
+                    unicast_repeat_wait_ = {
+                        pending.completion.data.sequence, pending.size};
                 session_.requeue_prepared_retransmission(
                     pending.completion.data.sequence);
                 auto retired = std::move(pending_datagram_head_);
@@ -3504,8 +3519,6 @@ bool ConnectionRuntime::send_data(
     DispatchTransmitState::RepeatDecision repeat_decision;
     const bool selected_unicast = unicast_repeat_wait_
         && unicast_repeat_wait_->first == packet.header.sequence;
-    if (selected_unicast)
-        unicast_repeat_wait_.reset();
     if (!selected_unicast && packet.header.retransmitted
         && group_data_egress_.mode != GroupDataEgress::Mode::normal
         && group_data_egress_.transmit != nullptr
@@ -5369,6 +5382,9 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         if (!packet.has_value()) {
             break;
         }
+        if (packet->header.retransmitted
+            && unicast_repeat_scan_remaining_ != 0U)
+            --unicast_repeat_scan_remaining_;
         if (!send_data(*packet, packet_time)) {
             return {};
         }

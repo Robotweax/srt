@@ -1005,9 +1005,12 @@ private:
     RetransmissionBudget retransmission_budget_;
 
 #endif
-    // Preserve the unicast selection and exact wire size across credit waits;
-    // do not tally a repeated scheduling attempt as a fresh receiver NAK.
+    // Remember the smallest refused repair for the next credit wakeup.
+    // A queue revision bounds scanning across polls without making rotations
+    // look like new NAKs or blocking unclassified multicast/skip repairs.
     std::optional<std::pair<SequenceNumber, std::size_t>> unicast_repeat_wait_;
+    std::optional<std::uint64_t> unicast_repeat_scan_revision_;
+    std::size_t unicast_repeat_scan_remaining_ = 0;
     [[nodiscard]] bool retransmission_ready(std::uint64_t now) noexcept;
     // Protected by mutex_; accepted payload DATA, independent of app reads
     // and of statistics interval resets. Control/undecryptable traffic cannot

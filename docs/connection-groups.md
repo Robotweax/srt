@@ -632,10 +632,13 @@ Repeats, pacing and readiness:
   limit counts the SRT header and protected payload of each repeat, without
   IP/UDP headers, as `SRTO_MAXREXMITBW` does. Burst credit is the greater of
   1500 bytes and 100 ms of the limit and starts empty. A repeat without
-  credit stays pending and is sent when credit returns; the receiver's
-  ordinary too-late drop still applies, so the limit bounds egress and does
-  not guarantee repair deadlines or a fair share for each receiver. Changing
-  the group value moves the limit and discards accumulated credit. Failed UDP
+  credit stays pending and is sent when credit returns. A bounded scan lets
+  multicast and suppressed repairs proceed behind a credit-blocked unicast
+  repair, then sleeps rather than cycling through the same queued repairs.
+  The receiver's ordinary too-late drop still applies, so the limit bounds
+  egress and does not guarantee repair deadlines or a fair share for each
+  receiver. Changing the group value moves the limit and discards accumulated
+  credit. Failed UDP
   attempts spend no credit; each retry checks the current limit at submission.
   With `SRTO_MAXBW` unset (`-1`) or `0` there is no aggregate limit, and a value
   set on a single member socket does not change it. Originals, control

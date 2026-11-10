@@ -9074,12 +9074,13 @@ struct BackpressureFixture {
     explicit BackpressureFixture(bool too_late_drop = false,
         std::uint32_t peer_idle_timeout_milliseconds = 5'000,
         bool peer_periodic_nak = false, std::uint32_t capacity = 64,
-        bool file_mode = false)
+        bool file_mode = false, std::uint32_t send_capacity = 64)
     {
         channel->set_send_hook_for_testing(backpressure_datagram, &output);
         SocketOptions options;
         REQUIRE_EQ(
-            options.set(SocketOption::send_buffer_packets, 64), Error::none);
+            options.set(SocketOption::send_buffer_packets, send_capacity),
+            Error::none);
         REQUIRE_EQ(options.set(SocketOption::receive_buffer_packets,
                        static_cast<std::int64_t>(capacity)),
             Error::none);
@@ -14560,8 +14561,8 @@ TEST(multicast_dispatch_repair_several_repairs_without_credit_do_not_spin)
     REQUIRE_EQ(
         f.runtime->statistics(false, true).total.sent_retransmitted.packets,
         0U);
-    // Only the first repair was offered to the budget and refused.
-    REQUIRE_EQ(state->unicast_repeat_waits(), 1U);
+    // Each queued repair was examined once, not once per poll or batch slot.
+    REQUIRE_EQ(state->unicast_repeat_waits(), 2U);
     // With credit, both repairs leave.
     state->configure_unicast_repeat_limit(
         -1, DispatchTransmitState::unicast_repeat_clock());
@@ -14573,4 +14574,96 @@ TEST(multicast_dispatch_repair_several_repairs_without_credit_do_not_spin)
         f.runtime->statistics(false, true).total.sent_retransmitted.packets,
         2U);
     REQUIRE(!f.runtime->broken());
+}
+
+TEST(multicast_dispatch_repair_wait_allows_multicast_and_suppressed_repairs)
+{
+    for (bool arrive_while_waiting : {false, true}) {
+        for (bool already_repaired : {false, true}) {
+            BackpressureFixture f;
+            f.output.blocked = false;
+            auto state = std::make_shared<DispatchTransmitState>();
+            dispatch_repair_egress(f, state, 2);
+            f.enqueue();
+            f.enqueue();
+            (void)f.runtime->poll();
+            f.now += 10'000;
+            (void)f.runtime->poll();
+            REQUIRE_EQ(state->multicast_packets(), 2U);
+            state->configure_unicast_repeat_limit(
+                1, DispatchTransmitState::unicast_repeat_clock());
+            if (arrive_while_waiting) {
+                dispatch_repair_nak(f);
+                f.now += 1'000;
+                const auto result = f.runtime->poll();
+                REQUIRE(!result.immediate_work);
+                REQUIRE_EQ(state->unicast_repeat_waits(), 1U);
+            }
+            const auto decision = state->note_repeat(SequenceNumber {701}, 2,
+                f.now, already_repaired ? 1 : 2, 100'000);
+            if (already_repaired)
+                state->complete_repeat(
+                    SequenceNumber {701}, decision.attempt, true);
+            std::array<std::byte, 8> loss_bytes {};
+            const std::array losses {SequenceRange {
+                SequenceNumber {arrive_while_waiting ? 701U : 700U},
+                SequenceNumber {701}}};
+            const auto encoded = encode_loss_ranges(losses, loss_bytes);
+            REQUIRE(encoded);
+            f.runtime->process_packet(
+                {.kind = PacketKind::control,
+                    .control = {.type = ControlType::negative_acknowledgement},
+                    .payload =
+                        std::span {loss_bytes}.first(encoded.bytes_written)},
+                f.peer);
+            for (int round = 0; round < 3; ++round) {
+                f.now += 1'000;
+                (void)f.runtime->poll();
+            }
+            REQUIRE_EQ(state->multicast_repeats(), already_repaired ? 0U : 1U);
+            REQUIRE_EQ(state->skipped_repeats(), already_repaired ? 1U : 0U);
+            REQUIRE_EQ(state->unicast_repeat_bytes(), 0U);
+            REQUIRE(!f.runtime->poll().immediate_work);
+            REQUIRE(!f.runtime->broken());
+        }
+    }
+}
+
+TEST(multicast_dispatch_repair_scan_spans_batches_then_sleeps)
+{
+    BackpressureFixture f {false, 5'000, false, 128, false, 128};
+    f.output.blocked = false;
+    auto state = std::make_shared<DispatchTransmitState>();
+    dispatch_repair_egress(f, state, 0);
+    constexpr unsigned count = 65;
+    for (unsigned index = 0; index < count; ++index) {
+        f.enqueue();
+        f.now += 1'000;
+        (void)f.runtime->poll();
+    }
+    REQUIRE_EQ(state->multicast_packets(), count);
+    state->configure_unicast_repeat_limit(
+        1, DispatchTransmitState::unicast_repeat_clock());
+    std::array<std::byte, 8> loss_bytes {};
+    const std::array losses {
+        SequenceRange {SequenceNumber {700}, SequenceNumber {764}}};
+    const auto encoded = encode_loss_ranges(losses, loss_bytes);
+    REQUIRE(encoded);
+    f.runtime->process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::negative_acknowledgement},
+            .payload = std::span {loss_bytes}.first(encoded.bytes_written)},
+        f.peer);
+    f.now += 1'000;
+    REQUIRE(f.runtime->poll().immediate_work);
+    REQUIRE_EQ(state->unicast_repeat_waits(), 64U);
+    for (int round = 0; round < 3; ++round) {
+        f.now += 1'000;
+        const auto result = f.runtime->poll();
+        REQUIRE(!result.immediate_work);
+        REQUIRE(result.next_work_delay.has_value());
+        REQUIRE(result.next_work_delay->count() > 0);
+    }
+    REQUIRE_EQ(state->unicast_repeat_waits(), count);
+    REQUIRE_EQ(state->unicast_repeat_bytes(), 0U);
 }
