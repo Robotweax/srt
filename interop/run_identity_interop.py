@@ -86,6 +86,16 @@ def run_case(root, name, programs, policies, *, rendezvous=False, crypto=None, k
                       observations=observations)
         print('PASS', name, flush=True)
         return result
+    except Exception as error:
+        # The default temporary directory is removed by main on failure.
+        # Emit peer state and logs before cleanup so CI keeps the first cause.
+        diagnostics = [f"{name}: {type(error).__name__}: {error}"]
+        diagnostics.append(f"peer exit states (receiver, sender): {[p.poll() for p in processes]}")
+        diagnostics.append(f"received bytes: {destination.stat().st_size if destination.exists() else 0}; expected: {len(data)}")
+        for index in (0, 1):
+            log = directory / f"peer-{index}.log"
+            diagnostics.append(f"--- peer-{index}.log ---\n{log.read_text(errors='replace') if log.exists() else 'not started'}")
+        raise RuntimeError("\n".join(diagnostics)) from error
     finally:
         for process in processes:
             if process.poll() is None:
