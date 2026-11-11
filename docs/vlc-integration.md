@@ -24,7 +24,7 @@ installer, a general codec qualification, or a Windows/macOS package.
 
 ## Build the VLC integration
 
-On Ubuntu 24.04, install the build dependencies:
+On Ubuntu 26.04, install the build dependencies:
 
 ```sh
 sudo apt-get install build-essential cmake git pkg-config python3 \

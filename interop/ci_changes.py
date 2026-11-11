@@ -242,8 +242,8 @@ class ChangeSet:
         lines.append(
             "mbedtls_platforms="
             + json.dumps(
-                ["ubuntu-24.04", "macos-latest"]
-                if self.mbedtls_macos else ["ubuntu-24.04"],
+                ["ubuntu-26.04", "macos-latest"]
+                if self.mbedtls_macos else ["ubuntu-26.04"],
                 separators=(",", ":"),
             )
         )

@@ -6,7 +6,7 @@ checkout. The source archive SHA-256 is
 `4798208d99d66417209a461d4b24e4a6269b6ea740fbee8d8beab7e5b295258d`.
 The CI workflow verifies this hash before starting a container.
 
-Ubuntu 24.04 produces `librobotweax-srt0.3` and
+Ubuntu 26.04 produces `librobotweax-srt0.3` and
 `librobotweax-srt-dev`. Fedora 44 produces `robotweax-srt` and
 `robotweax-srt-devel`. Both install Robotweax-specific library, headers,
 CMake target and pkg-config metadata; they leave the existing Haivision SRT
@@ -14,7 +14,7 @@ package in place. The qualification scripts build packages, install and run
 Robotweax consumers before and after installing Haivision, then remove
 Robotweax and rerun the Haivision consumer.
 
-The Ubuntu recipe targets the `noble` series. Its test also creates an
+The Ubuntu recipe targets the `resolute` series. Its test also creates an
 unsigned `robotweax-srt_0.3.3-1_source.changes`, `.dsc`, packaging diff
 and the original tarball. Lintian checks the source package, and extraction
 checks that the original tarball is byte-for-byte the pinned upstream archive.
@@ -39,7 +39,7 @@ the SHA-256 above, and mount it as `/source.tar.gz`, this repository as
 
 ```sh
 docker run --rm -v "$PWD:/work:ro" -v "$PWD/source.tar.gz:/source.tar.gz:ro" \
-  -v "$PWD/deb-out:/out" ubuntu:24.04 bash /work/packaging/linux/qualify-ubuntu.sh
+  -v "$PWD/deb-out:/out" ubuntu:26.04 bash /work/packaging/linux/qualify-ubuntu.sh
 docker run --rm -v "$PWD:/work:ro" -v "$PWD/source.tar.gz:/source.tar.gz:ro" \
   -v "$PWD/rpm-out:/out" fedora:44 bash /work/packaging/linux/qualify-fedora.sh
 ```

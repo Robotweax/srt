@@ -39,7 +39,7 @@ OBS-version-scoped lifecycle finding, not an SRT wire-compatibility rule.
 The script contains no copied upstream implementation. The modified OBS
 build retains OBS's upstream license; this does not relicense its source.
 
-The supported test setup is Ubuntu 24.04, X11/Xvfb, Mesa software rendering,
+The supported test setup is Ubuntu 26.04, X11/Xvfb, Mesa software rendering,
 IPv4 loopback, H.264/AAC MPEG-TS, and cleartext or AES-CTR. The restricted
 FFmpeg profile is not a general media player. Browser sources, screen/device
 capture, desktop/microphone capture, hardware encoders, Wayland, Windows and

@@ -572,7 +572,7 @@ Pin the peer release and configuration in your test records. An unspecified
 ### Isolated group investigations
 
 The `Timing diagnostics` workflow has a manual `group-receive-contract`
-selection. It builds clean Release group peers on Ubuntu 24.04 and runs only
+selection. It builds clean Release group peers on Ubuntu 26.04 and runs only
 Robotweax Caller to Haivision Listener with the Broadcast receive contract,
 60 times serially. Haivision 1.5.7 is pinned to commit
 `899348d8318eb9a3c5a5b6ec43c4a1114288773a`. Alternatively, select

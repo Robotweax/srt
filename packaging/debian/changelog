@@ -1,4 +1,4 @@
-robotweax-srt (0.3.3-1) noble; urgency=medium
+robotweax-srt (0.3.3-1) resolute; urgency=medium
 
   * Package hybrid multicast and transport hardening from immutable source.
   * Preserve shared-library ABI 0.3 and matching public documentation.

@@ -36,7 +36,7 @@ class CiChangeClassifierTests(unittest.TestCase):
                 self.assertTrue(result.cpp)
                 self.assertTrue(result.mbedtls)
                 self.assertFalse(result.mbedtls_macos)
-                self.assertEqual(self.mbedtls_platforms(result), ["ubuntu-24.04"])
+                self.assertEqual(self.mbedtls_platforms(result), ["ubuntu-26.04"])
 
     def test_mbedtls_production_crypto_and_package_changes_keep_both(self) -> None:
         for path in (
@@ -58,7 +58,7 @@ class CiChangeClassifierTests(unittest.TestCase):
                 self.assertTrue(result.mbedtls)
                 self.assertTrue(result.mbedtls_macos)
                 self.assertEqual(self.mbedtls_platforms(result),
-                                 ["ubuntu-24.04", "macos-latest"])
+                                 ["ubuntu-26.04", "macos-latest"])
 
     def test_mbedtls_python_runners_select_their_backend_jobs(self) -> None:
         for path in ci_changes.MBEDTLS_TOOLING_FILES:
@@ -79,11 +79,11 @@ class CiChangeClassifierTests(unittest.TestCase):
                 self.assertFalse(result.mbedtls)
                 self.assertFalse(result.mbedtls_macos)
                 # A skipped job still receives a valid nonempty matrix.
-                self.assertEqual(self.mbedtls_platforms(result), ["ubuntu-24.04"])
+                self.assertEqual(self.mbedtls_platforms(result), ["ubuntu-26.04"])
         result = ci_changes.classify([], force_full=True)
         self.assertTrue(result.mbedtls)
         self.assertEqual(self.mbedtls_platforms(result),
-                         ["ubuntu-24.04", "macos-latest"])
+                         ["ubuntu-26.04", "macos-latest"])
 
     def test_mbedtls_mixed_changes_cannot_narrow_crypto_coverage(self) -> None:
         narrow = "experimental/packet_filters/test_socket_filter.cpp"
@@ -94,7 +94,7 @@ class CiChangeClassifierTests(unittest.TestCase):
                     result = ci_changes.classify(paths)
                     self.assertTrue(result.mbedtls)
                     self.assertEqual(self.mbedtls_platforms(result),
-                                     ["ubuntu-24.04", "macos-latest"])
+                                     ["ubuntu-26.04", "macos-latest"])
 
     def test_mbedtls_workflow_consumes_selected_platforms(self) -> None:
         workflow = (INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml").read_text()
@@ -1114,6 +1114,20 @@ class CiChangeClassifierTests(unittest.TestCase):
                 self.assertFalse(result.gstreamer)
                 self.assertFalse(result.ffmpeg)
         self.assertTrue(ci_changes.classify([], force_full=True).vlc)
+
+    def test_linux_release_matrices_use_explicit_ubuntu26_baseline(self) -> None:
+        root = INTEROP_DIRECTORY.parent
+        for workflow in (root / ".github/workflows").glob("*.yml"):
+            with self.subTest(workflow=workflow.name):
+                content = workflow.read_text()
+                self.assertNotIn("ubuntu-24.04", content)
+                self.assertNotIn("ubuntu:24.04", content)
+                self.assertNotIn("ubuntu-latest", content)
+                self.assertNotIn("ubuntu:26.10", content)
+        packages = (root / ".github/workflows/linux-packages.yml").read_text()
+        self.assertIn("image: 'ubuntu:26.04'", packages)
+        self.assertTrue((root / "packaging/debian/changelog").read_text().startswith(
+            "robotweax-srt (0.3.3-1) resolute;"))
 
     def test_vlc_artifact_is_diagnostics_only(self) -> None:
         workflow = (INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml").read_text()

@@ -50,7 +50,7 @@ older release records remain unchanged. No vcpkg registry, PPA or COPR is publis
 The [Ubuntu and Fedora recipes](linux/README.md) build DEB and RPM packages
 from the pinned 0.3.3 source archive. Separate runtime and development
 packages retain Robotweax-specific filenames and metadata. The Linux
-packages workflow builds and installs them on Ubuntu 24.04 and Fedora 44,
+packages workflow builds and installs them on Ubuntu 26.04 and Fedora 44,
 executes installed consumers, checks coexistence with Haivision, and tests
 removal. No PPA or COPR has been published.
 
