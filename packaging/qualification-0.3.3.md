@@ -5,7 +5,36 @@ new frozen-source hosted qualification is pending. This record does not authoriz
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
-## Current corrected product
+## Final product and accepted timeout disposition
+
+- Product commit: `d6ad0c3e595b6ce5d518d3310e103e480fbc633d`.
+- [Public archive](https://github.com/Robotweax/srt/archive/d6ad0c3e595b6ce5d518d3310e103e480fbc633d.tar.gz); 3160300 bytes.
+- SHA-256: `4798208d99d66417209a461d4b24e4a6269b6ea740fbee8d8beab7e5b295258d`.
+- SHA-512: `b0d1dc75aafc4d5475e371025d3488060d369648e49851438374cde47d81dd73a0eda38b5c5b766ac21b2a0fe0f673df547dfbd98d5b9e0ce232b00da5416675`.
+- All 952 regular files and executable bits verified against Git.
+- [Source identity](source-0.3.3.json); [accepted risk](acceptance-0.3.3.json).
+
+On 11 November 2026 the owner accepted proceeding with final qualification while
+retaining the original macOS identity-rendezvous timeout as an unresolved risk.
+This disposition is not a root-cause fix or blanket acceptance of other failures.
+The old harness deleted peer logs. Failures now emit both peer logs, exit states
+and received-byte counts before cleanup, and preserve the original exception.
+The diagnostic regression test and all 873 Python tests passed.
+
+After 600 isolated rendezvous successes across local Release/Debug and hosted
+Debug, the full original sequence passed 50 times locally and 50 times in hosted
+macOS Debug: 900 cases each, all 18 policy/role combinations and payload integrity
+verified in every sequence, without retries or increased deadlines.
+[Hosted full-sequence evidence](https://github.com/Robotweax/srt/actions/runs/43035645485).
+The original timeout remains unexplained. Keep the diagnostics and original
+failure evidence available for recurrence.
+
+The earlier GCC 15, Ubuntu DEB and hybrid-sanitizer failures during the latest
+qualification attempt were package-mirror DNS failures before compilation/tests.
+Original runs 43035645583, 43035645566 and 43035645536 remain historical. New
+final-source qualification must pass; this disposition does not waive those gates.
+
+## Superseded corrected product
 
 - Commit: `7345251711709efc72e26be5af0deddc3038f970`.
 - [Public archive](https://github.com/Robotweax/srt/archive/7345251711709efc72e26be5af0deddc3038f970.tar.gz); 3158793 bytes.
