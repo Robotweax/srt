@@ -217,10 +217,10 @@ class AeadContractTests(unittest.TestCase):
                     "Linux Release",
                     "macos-latest Release",
                     "windows-latest Release",
-                    "Shared library (ubuntu-latest)",
+                    "Shared library (ubuntu-24.04)",
                     "Shared library (macos-latest)",
                     "Shared library (windows-latest)",
-                    "AES-GCM platform/ABI (ubuntu-latest)",
+                    "AES-GCM platform/ABI (ubuntu-24.04)",
                     "AES-GCM platform/ABI (macos-latest)",
                     "AES-GCM platform/ABI (windows-latest)",
                     "Address/undefined sanitizers",
@@ -268,7 +268,7 @@ class AeadContractTests(unittest.TestCase):
 
         workflow = CI_PATH.read_text(encoding="utf-8")
         self.assertIn("aead_platform:", workflow)
-        self.assertIn("os: [ubuntu-latest, macos-latest, windows-latest]", workflow)
+        self.assertIn("os: [ubuntu-24.04, macos-latest, windows-latest]", workflow)
         self.assertGreaterEqual(
             workflow.count("-DENABLE_AEAD_API_PREVIEW=ON"), 5
         )

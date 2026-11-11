@@ -96,6 +96,34 @@ def vlc_command(provider, mode, source, argument, encrypted=False, wrong_key=Fal
     return [str(peer), mode, str(source), str(argument)], env
 
 
+def reference_frames(ffmpeg, fixture, artifacts):
+    """Complete oracle from synchronous libmpeg2, independent of VLC playback."""
+    helper = artifacts / "reference-decode"
+    if not helper.exists():
+        flags = shlex.split(gst.run(["pkg-config", "--cflags", "--libs", "libmpeg2"]))
+        gst.run([
+            *shlex.split(os.environ.get("CC", "cc")), "-std=c11", "-Wall",
+            "-Wextra", "-Werror", str(Path(__file__).with_name("reference.c")),
+            "-o", str(helper), *flags,
+        ])
+    elementary = artifacts / (fixture.stem + ".reference.m2v")
+    gst.extract(ffmpeg, fixture, elementary)
+    output = gst.run([str(helper), str(elementary)])
+    (artifacts / (fixture.stem + ".reference.frames")).write_text(output)
+    frames = re.findall(r"^FRAME ([0-9a-f]{16})$", output, re.MULTILINE)
+    # Both generated fixtures are 2 seconds at 25 fps with distinct pictures.
+    # Never let an incomplete oracle turn a correct receiver into a mismatch.
+    if len(frames) != 50 or len(set(frames)) != 50:
+        raise RuntimeError("reference must decode all 50 distinct fixture frames")
+    return set(frames)
+
+
+def require_local_frames(log, expected):
+    actual = hashes(log)
+    if len(set(actual)) < 10 or not set(actual).issubset(expected):
+        raise RuntimeError("local VLC decode differs from complete reference")
+
+
 def require_frames(log, expected, minimum=15):
     actual = hashes(log)
     if len(actual) < minimum or len(set(actual)) < 5:
@@ -207,13 +235,12 @@ def qualify(args, artifacts):
             str(fixture),
         ]
     )
+    expected = reference_frames(ffmpeg, fixture, artifacts)
     baseline_log = artifacts / "baseline.log"
     with process(*vlc_command(vlc, "decode", fixture, 0), baseline_log) as peer:
         gst.require_success(peer, "local decode")
-    expected = set(hashes(baseline_log))
-    if len(expected) < 10:
-        raise RuntimeError("local VLC reference did not decode diverse video")
-    print("PASS local MPEG-2 decoding reference", flush=True)
+    require_local_frames(baseline_log, expected)
+    print("PASS complete MPEG-2 oracle and local VLC decode", flush=True)
 
     for encrypted in (False, True):
         cipher = "aes" if encrypted else "clear"
@@ -371,12 +398,14 @@ def qualify(args, artifacts):
             str(second_fixture),
         ]
     )
+    second_reference = reference_frames(ffmpeg, second_fixture, artifacts)
     second_baseline = artifacts / "second-baseline.log"
     with process(
         *vlc_command(vlc, "decode", second_fixture, 0), second_baseline
     ) as peer:
         gst.require_success(peer, "second local decode")
-    second_expected = set(hashes(second_baseline)) - expected
+    require_local_frames(second_baseline, second_reference)
+    second_expected = second_reference - expected
     if len(second_expected) < 15:
         raise RuntimeError("reconnect fixture is not distinguishable")
     number = gst.port()

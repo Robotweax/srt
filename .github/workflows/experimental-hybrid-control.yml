@@ -49,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -198,8 +198,8 @@ jobs:
             build-timer-off/Testing/Temporary/LastTest.log
 
   sanitizers:
-    name: Hybrid control sanitizers (ubuntu-latest${{ matrix.compiler == 'gcc' && ', GCC' || '' }})
-    runs-on: ubuntu-latest
+    name: Hybrid control sanitizers (ubuntu-24.04${{ matrix.compiler == 'gcc' && ', GCC' || '' }})
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -296,7 +296,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: hybrid-control-sanitizers-ubuntu-latest${{ matrix.compiler == 'gcc' && '-gcc' || '' }}
+          name: hybrid-control-sanitizers-ubuntu-24.04${{ matrix.compiler == 'gcc' && '-gcc' || '' }}
           path: |
             build-hybrid-san/evidence/
             build-hybrid-san/CMakeCache.txt

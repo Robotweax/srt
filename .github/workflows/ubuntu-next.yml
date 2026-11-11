@@ -1,0 +1,141 @@
+name: Ubuntu 26 compatibility
+
+# Separate migration signal; release qualification remains on Ubuntu 24.04.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/ubuntu-next.yml'
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'interop/**'
+      - 'examples/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+  schedule:
+    - cron: '37 5 * * 2'
+
+permissions:
+  contents: read
+
+env:
+  VLC_COMMIT: 6de05adcbaf2e8b85fe86aad4169393098628119
+  GSTREAMER_COMMIT: 070125524a8422e29d3b69a372ed4f62fd343ffa
+  FFMPEG_COMMIT: 3acec0a1af2dda0a0838689b8b8649e7deb080a0
+  REFERENCE_SRT_COMMIT: 899348d8318eb9a3c5a5b6ec43c4a1114288773a
+  REFERENCE_SRT_VERSION: "1.5.7"
+
+jobs:
+  native:
+    name: Ubuntu 26 native (${{ matrix.profile }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [default, hybrid]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/multicast-interface
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev pkg-config
+      - name: Configure
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          options=()
+          if [[ "$PROFILE" == hybrid ]]; then
+            options+=(-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL=ON)
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_AEAD_API_PREVIEW=ON "${options[@]}"
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --parallel 1
+      - name: Build reference FileCC peer
+        if: matrix.profile == 'default'
+        run: |
+          git init reference
+          git -C reference remote add origin https://github.com/Haivision/srt.git
+          git -C reference fetch --depth 1 origin "$REFERENCE_SRT_COMMIT"
+          git -C reference checkout --detach FETCH_HEAD
+          test "$(git -C reference rev-parse HEAD)" = "$REFERENCE_SRT_COMMIT"
+          cmake -S reference -B reference-build -DCMAKE_BUILD_TYPE=Release -DENABLE_APPS=OFF -DENABLE_SHARED=OFF -DENABLE_TESTING=OFF
+          cmake --build reference-build --parallel 4
+          c++ -std=c++17 -O2 -DROBOTWEAX_SRT_REFERENCE_DIAGNOSTICS=1 interop/api_peer.cpp -Ireference/srtcore -Ireference-build reference-build/libsrt.a -lcrypto -lpthread -ldl -o reference-api-peer
+      - name: FileCC caller/listener and rendezvous
+        if: matrix.profile == 'default'
+        run: python3 interop/run_file_interop.py --robotweax-peer build/robotweax_srt_interop_peer --reference-peer ./reference-api-peer --expected-reference-version "$REFERENCE_SRT_VERSION" --skip-rollover --skip-resilience --skip-rendezvous-resilience
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ubuntu26-native-${{ matrix.profile }}
+          path: |
+            build/CMakeCache.txt
+            build/Testing/Temporary/
+
+  vlc_integration:
+    name: Ubuntu 26 VLC integration
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: videolan/vlc
+          ref: ${{ env.VLC_COMMIT }}
+          path: vlc-source
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: GStreamer/gstreamer
+          ref: ${{ env.GSTREAMER_COMMIT }}
+          path: gstreamer-source
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: FFmpeg/FFmpeg
+          ref: ${{ env.FFMPEG_COMMIT }}
+          path: ffmpeg-source
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Haivision/srt
+          ref: ${{ env.REFERENCE_SRT_COMMIT }}
+          path: reference-source
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3-venv ninja-build pkg-config libglib2.0-dev libssl-dev flex bison autoconf automake libtool gettext autopoint libmpeg2-4-dev libdvbpsi-dev
+          python3 -m venv "$RUNNER_TEMP/vlc-tools"
+          "$RUNNER_TEMP/vlc-tools/bin/pip" install meson==1.9.1
+          echo "$RUNNER_TEMP/vlc-tools/bin" >> "$GITHUB_PATH"
+      - name: Build and qualify VLC with Robotweax SRT
+        run: >-
+          tests/vlc/build_and_test.sh
+          "$GITHUB_WORKSPACE/vlc-source"
+          "$GITHUB_WORKSPACE/gstreamer-source"
+          "$GITHUB_WORKSPACE/ffmpeg-source"
+          "$GITHUB_WORKSPACE/reference-source"
+          "$RUNNER_TEMP/vlc-qualification"
+      - name: Preserve VLC qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vlc-evidence
+          path: |
+            ${{ runner.temp }}/vlc-qualification/evidence/*.log
+            ${{ runner.temp }}/vlc-qualification/evidence/*.txt
+            ${{ runner.temp }}/vlc-qualification/evidence/*.frames
+            ${{ runner.temp }}/vlc-qualification/evidence/*.ts
+            ${{ runner.temp }}/vlc-qualification/evidence/*.m2v
+            ${{ runner.temp }}/vlc-qualification/vlc-build/config.log
+            ${{ runner.temp }}/vlc-qualification/gst-build/meson-logs/
+          retention-days: 7
+

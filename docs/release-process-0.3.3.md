@@ -26,6 +26,11 @@ freeze and qualification; failures and superseded records remain historical.
 
 ## Exact-source qualification
 
+Pin Linux release qualification to `ubuntu-24.04`; a versioned label still
+receives image updates, so retain the actual image identity in run evidence.
+The separate Ubuntu 26 compatibility workflow runs native default/hybrid, FileCC
+and VLC checks; it does not replace Ubuntu 24.04 release acceptance.
+
 Require full source CI and its Required CI gate, including the complete ecosystem
 suite. A path-selected PR run that omits OBS, VLC, FFmpeg or GStreamer does not
 satisfy this gate. Do not duplicate the ecosystem suite with release-integrations

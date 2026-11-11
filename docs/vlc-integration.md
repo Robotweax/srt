@@ -123,7 +123,13 @@ tests/vlc/build_and_test.sh /path/to/vlc-source /path/to/gstreamer-source \
 
 The installed-API test driver uses libVLC video callbacks to hash the visible
 I420 pixels of decoded synthetic video. Incoming live samples are checked
-against a local decode of the same fixture. It also verifies outgoing MPEG-2
+against a synchronous libmpeg2 decode of the same fixture, independent of
+VLC playback clocks and its video-output picture pool. The oracle must produce
+all 50 distinct frames of each two-second, 25-fps fixture. Local VLC playback
+is still checked against that oracle, but cannot define or shrink the expected
+frame set. This prevents an incomplete playback reference from rejecting correct
+network frames. CI retains the fixture, elementary stream and frame hashes.
+The driver also verifies outgoing MPEG-2
 elementary payloads, cleartext/encrypted peers, Stream-ID and wrong-key
 rejection with a subsequent valid connection, listener reconnection, and five
 stop/restart cycles while waiting for a caller.

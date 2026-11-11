@@ -64,7 +64,7 @@ class LiveTransmitSourceTests(unittest.TestCase):
     def test_ci_retains_only_summary_json_not_app_or_sources(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
         job = workflow.split('  live_transmit_integration:\n', 1)[1].split('  ffmpeg_integration:\n', 1)[0]
-        self.assertIn('os: [ubuntu-latest, macos-latest, windows-latest]', job)
+        self.assertIn('os: [ubuntu-24.04, macos-latest, windows-latest]', job)
         upload = job.split('          path: |\n', 1)[1].split('          if-no-files-found:', 1)[0]
         self.assertEqual([line.strip() for line in upload.splitlines()], [
             '${{ runner.temp }}/live-transmit/evidence/build-identity.json',
