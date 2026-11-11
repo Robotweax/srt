@@ -1227,6 +1227,15 @@ void run_dispatch_shared_loss(bool lose_multicast_repair,
     Peers peers;
     AdmissionLog admissions;
     const SRTSOCKET listener = peers.keep(srt_create_socket());
+    // This test asserts repair routing and complete delivery, not a live
+    // playback deadline. Keep the deliberately lost original/repair eligible
+    // for retry even when the host pauses beyond the default 120 ms latency.
+    const auto preserve_repairs = +[](void*, SRTSOCKET socket, bool) {
+        const bool drop = false;
+        REQUIRE_EQ(
+            srt_setsockflag(socket, SRTO_TLPKTDROP, &drop, sizeof(drop)), 0);
+    };
+    preserve_repairs(nullptr, listener, false);
     const sockaddr_in group_address =
         ipv4_sockaddr({239, 255, 133, 11}, multicast_port);
     const sockaddr_in interface = ipv4_sockaddr({127, 0, 0, 1}, 0);
@@ -1280,14 +1289,14 @@ void run_dispatch_shared_loss(bool lose_multicast_repair,
         }
     } unhook {hook};
 
-    const SRTSOCKET receiver_a =
-        make_receiver(peers, bound, false, false, 120, independent);
+    const SRTSOCKET receiver_a = make_receiver(peers, bound, false, false, 120,
+        independent, false, false, preserve_repairs);
     const SRTSOCKET sender = peers.keep(srt_accept(listener, nullptr, nullptr));
     REQUIRE(sender != SRT_INVALID_SOCK);
-    const SRTSOCKET receiver_b =
-        make_receiver(peers, bound, false, false, 120, independent);
-    const SRTSOCKET receiver_c =
-        make_receiver(peers, bound, false, false, 120, independent);
+    const SRTSOCKET receiver_b = make_receiver(peers, bound, false, false, 120,
+        independent, false, false, preserve_repairs);
+    const SRTSOCKET receiver_c = make_receiver(peers, bound, false, false, 120,
+        independent, false, false, preserve_repairs);
     REQUIRE(wait_for_members(sender, 3));
     for (const SRTSOCKET receiver : {receiver_a, receiver_b, receiver_c}) {
         REQUIRE(wait_for_members(receiver, 1));
@@ -1327,7 +1336,10 @@ void run_dispatch_shared_loss(bool lose_multicast_repair,
         REQUIRE_EQ(srt_sendmsg(sender, payload.data(),
                        static_cast<int>(payload.size()), -1, 1),
             static_cast<int>(payload.size()));
-        std::this_thread::sleep_for(std::chrono::milliseconds {2});
+        // Expose the missing sequence only after its normal live deadline.
+        // This reproduces the slow-host case without relying on runner load.
+        std::this_thread::sleep_for(std::chrono::milliseconds {
+            lose_multicast_repair && index == 4 ? 250 : 2});
     }
     for (const SRTSOCKET receiver : {receiver_a, receiver_b, receiver_c}) {
         expect_messages(receiver, 0, count);
@@ -4404,7 +4416,12 @@ TEST(
     REQUIRE_EQ(f.send(1), static_cast<int>(message(1).size()));
     expect_messages(f.receiver, 1, 1);
     REQUIRE(!owners.receiver->data_progress());
-    REQUIRE(owners.sender->data_progress());
+    // Source observations use a nonblocking runtime snapshot. A busy runtime
+    // may temporarily return no sample even though the lease is still valid.
+    // Observe success once before revoking; do not immediately resample it.
+    owners.wait([&] {
+        return owners.sender->data_progress().has_value();
+    });
     owners.lease->revoke();
     REQUIRE(!owners.sender->data_progress());
 }
