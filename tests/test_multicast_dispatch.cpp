@@ -5,6 +5,7 @@
 #include "test.hpp"
 #include "hybrid_fault_link.hpp"
 
+#include "compat/connection.hpp"
 #include "compat/group_registry.hpp"
 #include "compat/group_send_coordinator.hpp"
 #include "compat/hybrid/hybrid_automatic.hpp"
@@ -5001,12 +5002,11 @@ TEST(
 {
     SKIP_UNLESS(
         loopback_multicast_available(), "no loopback multicast on this host");
-    // SRTO_MESSAGEAPI stays settable on a bound socket and is frozen once it
-    // listens. A setter that races the listen call must never leave a
-    // listening independent sender outside its profile.
+    // Change SRTO_MESSAGEAPI after native setup has accepted the snapshot,
+    // but before listen commits. Exercise both outcomes deterministically;
+    // sanitizer scheduling need not happen to produce a successful race.
     const bool yes = true, no = false;
-    int listening = 0;
-    for (int iteration = 0; iteration < 200; ++iteration) {
+    for (bool invalidate : {false, true}) {
         Peers peers;
         const auto listener = peers.keep(srt_create_socket());
         auto local = ipv4_sockaddr({127, 0, 0, 1}, 0);
@@ -5026,24 +5026,27 @@ TEST(
         REQUIRE_EQ(srt_bind(listener, reinterpret_cast<const sockaddr*>(&local),
                        sizeof(local)),
             0);
-        std::atomic<bool> started {false}, stop {false};
-        std::thread setter([&] {
-            while (!stop.load()) {
-                (void)srt_setsockflag(
-                    listener, SRTO_MESSAGEAPI, &no, sizeof(no));
-                started.store(true);
-                (void)srt_setsockflag(
-                    listener, SRTO_MESSAGEAPI, &yes, sizeof(yes));
-            }
-        });
-        while (!started.load())
-            std::this_thread::yield();
-        const int result = srt_listen(listener, 2);
+        struct Mutation {
+            SRTSOCKET listener;
+            bool message_api;
+            int calls = 0;
+            int result = SRT_ERROR;
+        } mutation {listener, !invalidate};
+        const auto change_profile = [](void* context) noexcept {
+            auto& mutation = *static_cast<Mutation*>(context);
+            ++mutation.calls;
+            mutation.result =
+                srt_setsockflag(mutation.listener, SRTO_MESSAGEAPI,
+                    &mutation.message_api, sizeof(mutation.message_api));
+        };
+        const int result = robotweax::srt::compat::listen_socket(
+            SocketRegistry::instance().find(listener), 2, change_profile,
+            &mutation);
         const int error = result == 0 ? 0 : srt_getlasterror(nullptr);
-        stop.store(true);
-        setter.join();
+        REQUIRE_EQ(mutation.calls, 1);
+        REQUIRE_EQ(mutation.result, 0);
+        REQUIRE_EQ(result, invalidate ? SRT_ERROR : 0);
         if (result == 0) {
-            ++listening;
             bool message_api = false;
             int size = sizeof(message_api);
             REQUIRE_EQ(
@@ -5053,10 +5056,22 @@ TEST(
         } else {
             REQUIRE_EQ(error, SRT_EINVPARAM);
             REQUIRE_EQ(srt_getsockstate(listener), SRTS_OPENED);
+            // A rejected commit must leave the bound socket usable.
+            REQUIRE_EQ(
+                srt_setsockflag(listener, SRTO_MESSAGEAPI, &yes, sizeof(yes)),
+                0);
+            REQUIRE_EQ(srt_listen(listener, 2), 0);
         }
+        REQUIRE_EQ(srt_getsockstate(listener), SRTS_LISTENING);
+        // Once committed, an incompatible setter cannot alter the profile.
+        REQUIRE_EQ(srt_setsockflag(listener, SRTO_MESSAGEAPI, &no, sizeof(no)),
+            SRT_ERROR);
+        bool message_api = false;
+        int size = sizeof(message_api);
+        REQUIRE_EQ(
+            srt_getsockflag(listener, SRTO_MESSAGEAPI, &message_api, &size), 0);
+        REQUIRE(message_api);
     }
-    // The race must leave both outcomes reachable, or it proves nothing.
-    REQUIRE(listening > 0);
 }
 
 TEST(multicast_dispatch_coordinated_final_cleanup_retires_live_source_services)
