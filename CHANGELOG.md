@@ -6,6 +6,24 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+## 0.3.3 — Hybrid Multicast and Transport Hardening
+
+See the [release notes](docs/release-notes-0.3.3.md) for upgrade behavior and limits.
+
+- Add opt-in independent-source and coordinated IPv4 multicast, bounded canonical
+  history and aggregate wire budgets, explicit source recovery and receiver
+  detachment reporting. Existing default multicast behavior remains separate.
+- Add default-off authenticated hybrid startup, bounded automatic unicast fallback
+  and multicast return, membership recovery, and exact overlap coverage. The
+  multicast sample supports this through internal APIs in static enabled builds;
+  live catch-up can discard unread media and reports discontinuity events.
+- Hold a one-millisecond Windows timer period while the runtime scheduler exists;
+  `ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD=OFF` leaves timer resolution to the host.
+- Prevent overdue timers from starving listener-close work, apply multicast
+  profiles at listen commit, and retire superseded routes only for their binding.
+- Enforce hybrid soak source-directory provenance and split long native lifecycle
+  cases into serial bounded test partitions without changing protocol assertions.
+
 - A default (not coordinated) multicast dispatch sender with a positive group
   `SRTO_MAXBW` now limits the unicast repeats of all its members together to
   four times that rate. Previously only each member's own pacer applied, so a
