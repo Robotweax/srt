@@ -5,7 +5,30 @@ new frozen-source hosted qualification is pending. This record does not authoriz
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
-## Final product and accepted timeout disposition
+## Current Ubuntu 26 product
+
+The owner requested migrating all current Linux CI and package qualification to
+Ubuntu 26.04 on 11 November 2026, superseding the earlier Ubuntu 24 baseline.
+All active runner labels, the compiler container, package containers, current
+platform contracts and current integration instructions select Ubuntu 26.04.
+The standalone preview workflow was folded into the primary matrices. Historical
+results below retain their real environments and are not Ubuntu 26 acceptance.
+
+- Product commit: `57cf22319ead3fd74bf7f9b6f2dfe551938639b6`.
+- [Public archive](https://github.com/Robotweax/srt/archive/57cf22319ead3fd74bf7f9b6f2dfe551938639b6.tar.gz); 3160738 bytes.
+- SHA-256: `2ae9e816c64fa10d3caa21f358e608f889637a98754225da3e656d948096dc55`.
+- SHA-512: `a88db33db883cfad7963a86cccd9a3c69f3c1070de1564057bb2797abe72073c743b55cfe15e6d5ed944a0f0caa25f664d35f04bd7b8dc5df4443c342ce63a3e`.
+- All 952 regular files and executable bits verified against Git.
+- [Current identity](source-0.3.3.json).
+
+Local validation: 874 Python tests, 100-document consistency check, Ubuntu 26.04
+container package-index refresh and availability of GCC 15/CMake/debhelper.
+Native library sources and public headers are unchanged. Full hosted Ubuntu 26
+CI, ecosystem, providers, hybrid/sanitizers and package qualification are pending.
+The mirror-DNS and encrypted FileCC recovery failures remain recorded; changing
+the OS baseline does not dispose of those failures or waive their gates.
+
+## Superseded Ubuntu 24 product and accepted timeout disposition
 
 - Product commit: `d6ad0c3e595b6ce5d518d3310e103e480fbc633d`.
 - [Public archive](https://github.com/Robotweax/srt/archive/d6ad0c3e595b6ce5d518d3310e103e480fbc633d.tar.gz); 3160300 bytes.
