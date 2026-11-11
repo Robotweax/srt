@@ -88,3 +88,28 @@ These requests are pending, not passing downstream qualification evidence.
 
 No release tag or published release has been created. Any product or harness
 correction inside the frozen paths requires a new source freeze and qualification.
+
+## Follow-up investigation
+
+[Machine-readable comparison and reproduction record](investigation-0.3.3.json).
+The failing VLC network case's 20 frame hashes match the successful 0.3.2
+network case exactly, in order. All occur in the successful reference; the
+November 9 reference also matches 0.3.2. The failing local reference replaces
+positions 1–12 (zero-based) with the valid frame from position 13. It has
+46 captures but only 34 distinct hashes, compared with 46/46 previously.
+The local reference checker accepts ten distinct hashes, so it accepts this
+incomplete reference and subsequently attributes the mismatch to network decoding.
+This locates the immediate failure; the underlying decoder/scheduling trigger
+remains unresolved. The VLC harness, pinned application revisions and libmpeg2
+package are unchanged; the hosted runner image changed. No runner-image
+causality is established.
+
+Forty local Linux/ARM reference decodes with pinned VLC/FFmpeg (20 ordinary,
+20 under CPU contention) did not reproduce invalid-picture errors. Fifteen
+FileCC repetitions passed across both rendezvous roles. These are diagnostic
+results, not replacements for the failed hosted x86-64 evidence.
+The FileCC harness and flight-wide RTO timer are unchanged from 0.3.2. More
+packets in an application write do not guarantee their transmission before an
+existing flight timeout. Preserve the NAK gate; instrument sender timeout/ACK
+selection before deciding how to enforce its gap-exposure precondition.
+Neither issue is marked fixed, and release acceptance remains blocked.
