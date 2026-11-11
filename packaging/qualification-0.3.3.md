@@ -1,10 +1,36 @@
 # Package inputs and qualification — 0.3.3
 
-Release acceptance is blocked by full-CI failures. This record does not authorize publication.
+The initial product failed full CI. Corrections now have local regression evidence;
+new frozen-source hosted qualification is pending. This record does not authorize publication.
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
-## Immutable product
+## Current corrected product
+
+- Commit: `7345251711709efc72e26be5af0deddc3038f970`.
+- [Public archive](https://github.com/Robotweax/srt/archive/7345251711709efc72e26be5af0deddc3038f970.tar.gz); 3158793 bytes.
+- SHA-256: `e36892f9607eee7ba4d525a9a4f8e5ed7f4e6357e37684b4976f35a49c6253e4`.
+- SHA-512: `2d2fbc4cd61d169b023f4735ff553b229868092073d6b72e37a587199be2275ab3f801a356f7890592af4f066070a75a46eb773b6e97d9ae8671c8102d81141a`.
+- All 950 regular files and executable bits verified against Git.
+- [Current source identity](source-0.3.3.json).
+
+Linux release jobs now select Ubuntu 24.04. The separate Ubuntu 26 workflow
+runs default/hybrid native suites, FileCC and VLC without replacing release gates.
+VLC's oracle is a synchronous libmpeg2 decoder required to produce all 50 distinct
+fixture frames, independent of incomplete playback. Local VLC and network-frame
+checks remain. Robotweax-sender rendezvous NAK cases now explicitly inject a
+bounded loss window until the actual matching receiver NAK is forwarded; retries
+are recorded, not silently accepted, and missing feedback fails closed.
+
+Local corrections passed 872 Python tests, six real FFmpeg-to-VLC cleartext/CTR
+runs, the FileCC baseline/IPv6/rendezvous-resilience matrix, and delayed-feedback
+probes with two premature retries suppressed before matching NAK delivery. The
+new regression tests reject incomplete/duplicate reference output, unrelated NAKs,
+and missing matching feedback. Runtime library sources and exports are unchanged.
+All original failures and the initial source record below remain historical;
+these local results do not replace new hosted acceptance.
+
+## Superseded initial product
 
 - Product commit: `d1f1b15393c0d0b5598c0af308b24966cbbfbd5e`.
 - [Public archive](https://github.com/Robotweax/srt/archive/d1f1b15393c0d0b5598c0af308b24966cbbfbd5e.tar.gz).
