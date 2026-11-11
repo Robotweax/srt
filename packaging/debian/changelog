@@ -1,3 +1,10 @@
+robotweax-srt (0.3.3-1) noble; urgency=medium
+
+  * Package hybrid multicast and transport hardening from immutable source.
+  * Preserve shared-library ABI 0.3 and matching public documentation.
+
+ -- Robotweax GmbH <srtpioneer@proton.me>  Wed, 11 Nov 2026 11:00:00 +0000
+
 robotweax-srt (0.3.2-1) noble; urgency=medium
 
   * Package multicast and recovery stabilization from immutable source.
