@@ -1478,8 +1478,8 @@ void set_key_material_state_response(
 
 } // namespace
 
-int listen_socket(
-    std::shared_ptr<SocketRecord> socket, int backlog) noexcept
+int listen_socket(std::shared_ptr<SocketRecord> socket, int backlog,
+    void (*before_commit)(void*) noexcept, void* context) noexcept
 {
     if (backlog <= 0) {
         return fail(SRT_EINVPARAM);
@@ -1562,6 +1562,8 @@ int listen_socket(
             control_endpoint, multicast_transmitter, multicast_source)
         == SRT_ERROR)
         return SRT_ERROR;
+    if (before_commit != nullptr)
+        before_commit(context);
     {
         std::lock_guard lock(socket->mutex);
         if (validate_locked() == SRT_ERROR)
