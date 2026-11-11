@@ -15,6 +15,7 @@ on:
       - 'src/**'
       - 'include/**'
       - 'tests/**'
+      - 'examples/**'
       - 'CMakeLists.txt'
       - 'tools/qualify_hybrid_soak.py'
       - 'tools/qualify_multicast.py'
@@ -26,6 +27,7 @@ on:
       - 'src/**'
       - 'include/**'
       - 'tests/**'
+      - 'examples/**'
       - 'CMakeLists.txt'
       - 'tools/qualify_hybrid_soak.py'
       - 'tools/qualify_multicast.py'
@@ -84,7 +86,7 @@ jobs:
           -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL=ON
           -DROBOTWEAX_SRT_BUILD_TESTS=ON
           -DROBOTWEAX_SRT_BUILD_TOOLS=OFF
-          -DROBOTWEAX_SRT_BUILD_EXAMPLES=OFF
+          -DROBOTWEAX_SRT_BUILD_EXAMPLES=ON
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
       - name: Build
         run: >-
@@ -101,7 +103,7 @@ jobs:
           --no-tests=error
           -V
           -R "^robotweax_srt_platform_timing_report$"
-      # Every gate, with the 30-second budgets the test registration declares.
+      # Every gate, with the per-suite budgets the test registration declares.
       # Windows runs them all since the library holds a one millisecond timer
       # period: run 42833218258 measured a median of 1.7 ms for a 1 ms sleep
       # with the period held against 13.4 ms without.

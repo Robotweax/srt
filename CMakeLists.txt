@@ -691,9 +691,23 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests --include multicast_dispatch_independent_)
     set_tests_properties(robotweax_srt_multicast_independent_tests PROPERTIES
         TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+    # The two slow-receiver lifecycle cases deliberately wait for sequential
+    # live playout and detachment. Give them separate bounded processes so
+    # their cumulative waits cannot consume the other coordinated cases' budget.
+    # Each native case still runs exactly once, with the same assertions.
     add_test(NAME robotweax_srt_multicast_coordinated_tests
-        COMMAND robotweax_srt_tests --include multicast_dispatch_coordinated_)
+        COMMAND robotweax_srt_tests --include multicast_dispatch_coordinated_
+            --exclude multicast_dispatch_coordinated_slow_receiver_
+            multicast_dispatch_coordinated_detached_member_)
     set_tests_properties(robotweax_srt_multicast_coordinated_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+    add_test(NAME robotweax_srt_multicast_slow_receiver_tests
+        COMMAND robotweax_srt_tests --include multicast_dispatch_coordinated_slow_receiver_)
+    set_tests_properties(robotweax_srt_multicast_slow_receiver_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+    add_test(NAME robotweax_srt_multicast_detachment_tests
+        COMMAND robotweax_srt_tests --include multicast_dispatch_coordinated_detached_member_)
+    set_tests_properties(robotweax_srt_multicast_detachment_tests PROPERTIES
         TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
     if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
         add_test(NAME robotweax_srt_multicast_startup_tests
@@ -1258,6 +1272,36 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
                     PROPERTIES TIMEOUT 45 LABELS "example;application;multicast;media;integration")
             endif()
         endforeach()
+        if(TARGET robotweax_srt_multicast_test)
+            foreach(mode IN LISTS multicast_example_modes)
+                add_test(NAME robotweax_srt_hybrid_multicast_sample_${mode}
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_hybrid_multicast.py
+                        --binary $<TARGET_FILE:robotweax_srt_multicast_test> --crypto ${mode})
+                set_tests_properties(robotweax_srt_hybrid_multicast_sample_${mode}
+                    PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE LABELS "example;hybrid;network;multicast")
+            endforeach()
+            add_test(NAME robotweax_srt_hybrid_multicast_sample_buffered
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_hybrid_multicast.py
+                    --binary $<TARGET_FILE:robotweax_srt_multicast_test> --latency-ms 1000)
+            add_test(NAME robotweax_srt_hybrid_multicast_sample_wrong_key
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_hybrid_multicast.py
+                    --binary $<TARGET_FILE:robotweax_srt_multicast> --wrong-key)
+            set_tests_properties(robotweax_srt_hybrid_multicast_sample_buffered
+                robotweax_srt_hybrid_multicast_sample_wrong_key
+                PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE LABELS "example;hybrid;network;multicast")
+            set(hybrid_sample_validation enabled)
+        else()
+            set(hybrid_sample_validation disabled)
+        endif()
+        add_test(NAME robotweax_srt_hybrid_multicast_sample_options
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_hybrid_multicast.py
+                --binary $<TARGET_FILE:robotweax_srt_multicast> --validation ${hybrid_sample_validation})
+        set_tests_properties(robotweax_srt_hybrid_multicast_sample_options
+            PROPERTIES TIMEOUT 20 LABELS "example;hybrid;security")
         add_test(NAME robotweax_srt_demo_terminal_output
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_demo_terminal_output.py

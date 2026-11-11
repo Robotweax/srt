@@ -45,6 +45,15 @@ cmake --build build-hybrid-control --parallel
 ./tools/python tests/hybrid_control_vectors.py
 ```
 
+## Live media sample
+
+`robotweax_srt_multicast --hybrid` explicitly provisions startup, automatic
+fallback and automatic return in static hybrid-enabled builds. It does not
+change the default public API behavior. See the
+[media sample guide](multicast-media.md#hybrid-multicast-with-automatic-fallback-and-return)
+for credentials, build commands, timing assumptions, bounded controllers, and
+the live catch-up policy that reports local media discards.
+
 ## Capability record
 
 The provisional body version is 1; all integers are network byte order. Encoders
