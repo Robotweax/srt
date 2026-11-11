@@ -693,8 +693,12 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
     add_test(NAME robotweax_srt_multicast_coordinated_tests
         COMMAND robotweax_srt_tests --include multicast_dispatch_coordinated_)
+    # This aggregate runs 14 cases, including sequential live playout,
+    # detachment waits and CTR/GCM rotations. Hosted macOS Mbed TLS reached
+    # the final case after 28 seconds; allow suite overhead without changing
+    # the individual cases' bounded waits or assertions.
     set_tests_properties(robotweax_srt_multicast_coordinated_tests PROPERTIES
-        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+        TIMEOUT 90 RUN_SERIAL TRUE LABELS "network;integration;multicast")
     if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
         add_test(NAME robotweax_srt_multicast_startup_tests
             COMMAND robotweax_srt_tests --include multicast_dispatch_native_startup_)
