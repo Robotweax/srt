@@ -1,12 +1,53 @@
 # Package inputs and qualification — 0.3.3
 
 The initial product failed full CI. The owner declared the corrected source final
-on 12 November 2026; its hosted qualification is recorded below. Two intermittent
-OBS desktop failures block acceptance. This record does not authorize publication.
+on 12 November 2026 and, after two OBS fixture corrections, declared their result
+final the same day. Its qualification is recorded below; results on the recipe
+commit are pending. This record does not authorize publication.
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
 ## Current final product
+
+On 12 November 2026 the owner declared this source final after the two OBS
+fixture corrections described under "OBS desktop follow-up" below. It differs
+from the superseded product only in `tests/obs`, `interop/tests` and three OBS
+documents. Library sources, public headers and examples are unchanged.
+
+- Product commit: `becfc32bf9c6c9cb69c607200b3d0f4ffaabceeb`.
+- [Public archive](https://github.com/Robotweax/srt/archive/becfc32bf9c6c9cb69c607200b3d0f4ffaabceeb.tar.gz); 3175622 bytes.
+- SHA-256: `c8b596e07eab4b7022b8f7feb42492706b160757aa6a12d040e497afbc3b5b03`.
+- SHA-512: `24d0e60dae82857dbedf321194bf91d2474306181c461e296053fe579f70d87c296b20de1ad838a6e5843e3f430082983f27ebe035f87d0c0c1bec5f3835dc80`.
+- All 958 regular files and executable bits verified against Git; two downloads were byte-identical.
+- [Current identity](source-0.3.3.json); [accepted risk](acceptance-0.3.3.json).
+- `dev/release-0.3.3-product` advertises this commit.
+
+Hosted results on this exact commit:
+
+- [Full CI, 43241435093](https://github.com/Robotweax/srt/actions/runs/43241435093): successful on attempt 2 with the
+  Required CI gate and the complete ecosystem suite. Attempt 1's single macOS
+  timing failure is recorded under "OBS desktop follow-up" below.
+- Pull-request workflows, all successful: CI 43241690451, hybrid control
+  43241690111 (including the strict soak), ACP1 43241690179, BCrypt 43241689818,
+  Windows SDK 43241689980, identity timeout 43241690002, timing diagnostics
+  43241690189. Linux packages 43241690409 and Package managers 43241690070
+  passed with recipes that still selected the superseded archive.
+
+Open on this product:
+
+- The intermittent Windows desktop reconnect timeout of run 43232416015 has no
+  established cause. A use-after-free on that path is corrected and the
+  reference receiver now records why reception ends; one passing run does not
+  show the timeout is gone.
+- Exact-archive package workflows and full CI on the recipe commit.
+- Downstream Lab requests [smoke](https://github.com/Robotweax/srt_network_lab/actions/runs/43249759212), [interop](https://github.com/Robotweax/srt_network_lab/actions/runs/43249767080)
+  and [telemetry](https://github.com/Robotweax/srt_network_lab/actions/runs/43249775098) with the companion revisions recorded below.
+- A commit-bound local macOS hybrid soak; [the recorded one](soak-0.3.3-macos.json)
+  is bound to the superseded product.
+- Then the protected annotated tag, independent Windows rebuild/signing and
+  final asset verification.
+
+## Superseded first final product
 
 On 12 November 2026 the owner declared this source final and instructed the
 release process to proceed. It supersedes the Ubuntu 26 migration product below

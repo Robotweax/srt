@@ -1,6 +1,6 @@
 {
   "version": "0.3.3",
-  "product_commit": "0669b862b020b66bf38d4760d603d45715337a4a",
+  "product_commit": "becfc32bf9c6c9cb69c607200b3d0f4ffaabceeb",
   "decision_date": "2026-11-11",
   "decision": "Owner accepted proceeding with final qualification with the unresolved macOS identity-rendezvous timeout recorded as a residual risk.",
   "root_cause_established": false,
@@ -11,7 +11,7 @@
   "full_sequence_retries": 0,
   "hosted_run": "https://github.com/Robotweax/srt/actions/runs/43035645485",
   "scope": "Only the historical identity timeout. All other required release gates must pass.",
-  "previous_product_commit": "57cf22319ead3fd74bf7f9b6f2dfe551938639b6",
+  "previous_product_commit": "0669b862b020b66bf38d4760d603d45715337a4a",
   "linux_baseline": "Ubuntu 26.04",
   "migration_instruction_date": "2026-11-11",
   "final_source_instruction_date": "2026-11-12"
