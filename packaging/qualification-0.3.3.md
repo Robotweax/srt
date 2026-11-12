@@ -2,8 +2,8 @@
 
 The initial product failed full CI. The owner declared the corrected source final
 on 12 November 2026 and, after two OBS fixture corrections, declared their result
-final the same day. Its qualification is recorded below; results on the recipe
-commit are pending. This record does not authorize publication.
+final the same day. Its hosted, package, downstream and soak qualification passed
+and is recorded below with two open items. This record does not authorize publication.
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
@@ -33,17 +33,36 @@ Hosted results on this exact commit:
   43241690189. Linux packages 43241690409 and Package managers 43241690070
   passed with recipes that still selected the superseded archive.
 
+Recipe commit `259975c` selects this archive and leaves every frozen path
+unchanged. Results on it, all successful on the first attempt:
+
+- [Full CI, 43250057217](https://github.com/Robotweax/srt/actions/runs/43250057217) with the Required CI gate and the
+  complete ecosystem suite, including both OBS desktop jobs.
+- [Linux packages, 43250069828](https://github.com/Robotweax/srt/actions/runs/43250069828) and
+  [Package managers, 43250070768](https://github.com/Robotweax/srt/actions/runs/43250070768) from the exact archive: DEB,
+  RPM, Homebrew and the six vcpkg profiles.
+- Pull-request CI 43250071468, hybrid control 43250070662, ACP1 43250070371,
+  BCrypt 43250069845, Windows SDK 43250070110, identity timeout 43250069858 and
+  timing diagnostics 43250069797.
+
+Downstream Lab requests on the product commit all succeeded, with Haivision
+`899348d8318eb9a3c5a5b6ec43c4a1114288773a`, Telemetry
+`7a6b8eff65c686ccafa36a0adace148a8b87d3ca`, Doctor
+`88f8e33851f4fa975ab1b708e9f707d27505a399` and the telemetry endpoint profile:
+[smoke](https://github.com/Robotweax/srt_network_lab/actions/runs/43249759212), [interop](https://github.com/Robotweax/srt_network_lab/actions/runs/43249767080), [telemetry](https://github.com/Robotweax/srt_network_lab/actions/runs/43249775098).
+
+[Local macOS hybrid soak](soak-0.3.3-macos.json): passed on a clean checkout of
+the product commit, Release/OpenSSL, CTR and GCM at 30 seconds each.
+
 Open on this product:
 
 - The intermittent Windows desktop reconnect timeout of run 43232416015 has no
   established cause. A use-after-free on that path is corrected and the
-  reference receiver now records why reception ends; one passing run does not
-  show the timeout is gone.
-- Exact-archive package workflows and full CI on the recipe commit.
-- Downstream Lab requests [smoke](https://github.com/Robotweax/srt_network_lab/actions/runs/43249759212), [interop](https://github.com/Robotweax/srt_network_lab/actions/runs/43249767080)
-  and [telemetry](https://github.com/Robotweax/srt_network_lab/actions/runs/43249775098) with the companion revisions recorded below.
-- A commit-bound local macOS hybrid soak; [the recorded one](soak-0.3.3-macos.json)
-  is bound to the superseded product.
+  reference receiver now records why reception ends. The OBS Windows desktop job
+  has passed in both full CI runs since; two passes do not show the timeout is
+  gone. Its disposition is the owner's.
+- The macOS group receive timing failure of run 43241435093 attempt 1 is
+  attributed, without measurement, to a hosted-runner stall.
 - Then the protected annotated tag, independent Windows rebuild/signing and
   final asset verification.
 
