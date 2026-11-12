@@ -24,8 +24,37 @@ headers, examples and every other fixture are unchanged.
 - [Current identity](source-0.3.3.json); [accepted risk](acceptance-0.3.3.json).
 - `dev/release-0.3.3-product` advertises this commit.
 
-Hosted, package, downstream and soak results on this product are pending and
-will be recorded here.
+Recipe commit `084ed25` selects this archive and leaves every frozen path
+unchanged. Results on it:
+
+- [Full CI, 43299574634](https://github.com/Robotweax/srt/actions/runs/43299574634): failed. Every job passed, including
+  GStreamer integration and the rest of the ecosystem suite, except
+  `ubuntu-26.04 Debug`: the hosted runner received a shutdown signal 78 seconds
+  into `cmake --build build --config Debug --parallel`, which on Linux places no
+  bound on Make jobs. Memory exhaustion is the likely cause, as with the
+  sanitizer build corrected earlier; it was not measured. The eight matrix
+  build steps that used an unbounded count off macOS now use four jobs. The job
+  was not rerun.
+- [Linux packages, 43299585285](https://github.com/Robotweax/srt/actions/runs/43299585285) and
+  [Package managers, 43299585117](https://github.com/Robotweax/srt/actions/runs/43299585117) from the exact archive,
+  successful on the first attempt.
+- Pull-request CI 43299585208, hybrid control 43299585221, ACP1 43299585346,
+  BCrypt 43299585409, Windows SDK 43299585172, identity timeout 43299585141 and
+  timing diagnostics 43299585122, all successful on the first attempt.
+
+Downstream Lab requests on the product commit all succeeded, with Haivision
+`899348d8318eb9a3c5a5b6ec43c4a1114288773a`, Telemetry
+`7a6b8eff65c686ccafa36a0adace148a8b87d3ca`, Doctor
+`88f8e33851f4fa975ab1b708e9f707d27505a399` and the telemetry endpoint profile:
+[smoke](https://github.com/Robotweax/srt_network_lab/actions/runs/43299579908), [interop](https://github.com/Robotweax/srt_network_lab/actions/runs/43299584730), [telemetry](https://github.com/Robotweax/srt_network_lab/actions/runs/43299591832).
+
+[Local macOS hybrid soak](soak-0.3.3-macos.json): passed on a clean checkout of
+the product commit, Release/OpenSSL, CTR and GCM at 30 seconds each.
+
+Commit `99cb5ad` carries only the soak record; its message also names the
+build-count change and these results, which landed in the following commit.
+
+A complete green full CI run on this product is still pending.
 
 Open on this product:
 
