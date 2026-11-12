@@ -9,6 +9,7 @@ import errno
 import os
 from pathlib import Path
 import queue
+import signal
 import socket
 import subprocess
 import sys
@@ -17,11 +18,18 @@ import time
 
 
 class Peer:
-    def __init__(self, command: list[str], environment: dict[str, str]) -> None:
+    def __init__(self, command: list[str], environment: dict[str, str],
+                 interruptible: bool = False) -> None:
         self.program = command[0]
+        # Windows has no SIGTERM: terminate() kills the process outright.
+        # Its console stop request is Ctrl+Break, which can only be addressed
+        # to a child that leads its own process group.
+        self.console_break = interruptible and os.name == "nt"
         self.process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, env=environment,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP
+                           if self.console_break else 0),
         )
         self.lines: list[str] = []
         self.events: queue.Queue[str] = queue.Queue()
@@ -54,7 +62,10 @@ class Peer:
 
     def close(self) -> None:
         if self.process.poll() is None:
-            self.process.terminate()
+            if self.console_break:
+                self.process.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                self.process.terminate()
         try:
             self.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -269,7 +280,8 @@ def run_bridge(demo: Path, reverse: bool = False, encrypted: bool = False,
 
 
 def run_setup_shutdown(demo: Path) -> None:
-    """SIGTERM must interrupt a real pending rendezvous, not await its timeout."""
+    """A stop request (SIGTERM, or Ctrl+Break on Windows) must interrupt a
+    real pending rendezvous, not await its timeout."""
     for role in ("send", "receive"):
         with ExitStack() as reservations:
             ports = [reserve_port(reservations) for _ in range(3)]
@@ -279,7 +291,8 @@ def run_setup_shutdown(demo: Path) -> None:
             peer = Peer([str(demo), role, "--udp-port", str(udp),
                          "--srt-mode", "rendezvous", "--srt-host", "127.0.0.1",
                          "--srt-local-port", str(local), "--srt-port", str(remote),
-                         "--connect-timeout-ms", "60000"], os.environ.copy())
+                         "--connect-timeout-ms", "60000"], os.environ.copy(),
+                        interruptible=True)
             try:
                 peer.wait_for("CONNECTING SRT rendezvous")
                 time.sleep(0.15)

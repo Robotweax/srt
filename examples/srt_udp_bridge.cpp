@@ -825,6 +825,11 @@ int main(int argc, char** argv)
     }
     std::signal(SIGINT, stop);
     std::signal(SIGTERM, stop);
+#ifdef SIGBREAK
+    // Windows delivers neither SIGTERM nor, to a process-group leader,
+    // Ctrl+C; Ctrl+Break is the stop request a supervisor can send there.
+    std::signal(SIGBREAK, stop);
+#endif
     try {
         return run(parse(argc, argv));
     } catch (const std::exception& error) {
