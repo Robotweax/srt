@@ -37,6 +37,7 @@ windows_preview = load("obs_windows_preview", "package_windows_preview.py")
 macos_cache = load("obs_macos_cache", "check_macos_cache.py")
 macos = load("obs_macos_smoke", "run_macos_smoke.py")
 macos_desktop = load("obs_macos_desktop", "run_macos_desktop_smoke.py")
+macos_core = load("obs_macos_core", "macos_core_backtrace.py")
 
 
 def signed_macho(payload: bytes, signature: bytes = b"signature") -> bytes:
@@ -202,6 +203,49 @@ class ObsHarnessTests(unittest.TestCase):
             self.assertFalse((root / "OBS-unrelated.ips").exists())
             inventory = json.loads((root / "failure-report-inventory.json").read_text())
             self.assertEqual(inventory, {"endpoint_pids": [4321], "reports": ["OBS-startup.ips"]})
+
+    def test_macos_core_collector_uses_only_crashed_endpoint_pids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cores = root / "cores"
+            cores.mkdir()
+            artifacts = root / "evidence"
+            artifacts.mkdir()
+            (artifacts / "reconnected-endpoint-status.json").write_text(json.dumps({
+                "desktop_pid": 123, "desktop_exit": -11,
+                "receiver_pid": 456, "receiver_exit": None,
+            }))
+            for pid in (123, 456, 1234):
+                (cores / f"core.{pid}").touch()
+            with mock.patch.object(macos_core, "backtrace") as capture:
+                macos_core.collect(artifacts, cores)
+                capture.assert_called_once_with(
+                    cores / "core.123", artifacts / "endpoint-123-lldb.txt"
+                )
+            inventory = json.loads((artifacts / "core-backtrace-inventory.json").read_text())
+            self.assertEqual(inventory["crashed_pids"], [123])
+            self.assertEqual(inventory["backtraces"], ["endpoint-123-lldb.txt"])
+            self.assertEqual(inventory["missing"], [])
+            (cores / "core.123").unlink()
+            (cores / "core.123").symlink_to(cores / "core.1234")
+            with mock.patch.object(macos_core, "backtrace") as capture:
+                with self.assertRaisesRegex(RuntimeError, "missing cores"):
+                    macos_core.collect(artifacts, cores)
+                capture.assert_not_called()
+
+    def test_macos_core_rejects_debugger_failure_and_missing_stack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "lldb.txt"
+            for status, text in [(1, "thread #1 frame #0:"), (0, "cannot load core")]:
+                def debugger(_command, *, stdout, **_kwargs):
+                    stdout.write(text)
+                    return SimpleNamespace(returncode=status)
+                with self.subTest(status=status), mock.patch.object(
+                    macos_core.subprocess, "run", side_effect=debugger
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "did not produce a core backtrace"):
+                        macos_core.backtrace(Path("core.123"), output)
+                    self.assertEqual(output.read_text(), text)
 
     def test_macos_desktop_window_requires_initialized_scenes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1081,6 +1125,37 @@ class ObsHarnessTests(unittest.TestCase):
                     event = json.loads(log.with_suffix(".controls.jsonl").read_text())
                     self.assertEqual(event["acknowledged"], fresh)
                     self.assertEqual(event["focused_window"], 42)
+
+    def test_desktop_window_search_intersects_pid_and_title(self):
+        # Include another OBS process and same-process auxiliary windows.
+        windows = [(42, 123, "OBS 32.2.2"), (43, 999, "OBS 32.2.2"),
+                   (44, 123, "Settings")]
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "desktop.log"
+            log.touch()
+
+            def xdotool(command, **_kwargs):
+                if command[1] == "search":
+                    pid = int(command[command.index("--pid") + 1])
+                    name = command[command.index("--name") + 1]
+                    combine = all if "--all" in command else any
+                    matches = [str(window) for window, owner, title in windows
+                               if combine((owner == pid, name in title))]
+                    return SimpleNamespace(stdout="\n".join(matches))
+                if command[1] == "getwindowfocus":
+                    return SimpleNamespace(stdout="42\n")
+                self.assertEqual(command, ["xdotool", "windowfocus", "--sync", "42"])
+                return SimpleNamespace()
+
+            def press(_key):
+                with log.open("a") as stream:
+                    stream.write("Starting stream due to hotkey\n")
+
+            with mock.patch.object(desktop.subprocess, "run", side_effect=xdotool), \
+                 mock.patch.object(desktop, "hotkey", side_effect=press) as hotkey:
+                desktop.frontend_hotkey(SimpleNamespace(pid=123, poll=lambda: None), log, "F9")
+                hotkey.assert_called_once_with("F9")
+            self.assertTrue(json.loads(log.with_suffix(".controls.jsonl").read_text())["acknowledged"])
 
     def test_desktop_rejects_wrong_focus_without_pressing_a_key(self):
         with tempfile.TemporaryDirectory() as directory:

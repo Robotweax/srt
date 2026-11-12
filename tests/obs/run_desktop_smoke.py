@@ -193,7 +193,8 @@ def frontend_hotkey(desktop, log, key):
         "F10": "Stopping stream due to hotkey",
     }[key]
     windows = subprocess.run(
-        ["xdotool", "search", "--sync", "--onlyvisible", "--pid",
+        # xdotool otherwise ORs PID and title, including unrelated windows.
+        ["xdotool", "search", "--all", "--sync", "--onlyvisible", "--pid",
          str(desktop.pid), "--name", "OBS"],
         check=True, capture_output=True, text=True, timeout=10,
     ).stdout.split()

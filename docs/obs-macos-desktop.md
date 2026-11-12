@@ -58,6 +58,15 @@ allocation count no higher than the idle baseline. Build cache, app contents,
 and running mappings must identify Robotweax SRT and the selected FFmpeg,
 without a competing SRT provider.
 
+The dedicated macOS CI job enables kernel core dumps in a runner-temporary
+directory and verifies core generation and LLDB symbolization with a small
+crash probe before building OBS. A failed endpoint's recorded PID selects its
+core for LLDB's all-thread backtrace, registers, loaded images and fault-frame
+disassembly. Only text diagnostics are uploaded; binary cores remain on the
+temporary runner. Missing cores or debugger failures are reported explicitly.
+This captures a reconnect crash without attaching a debugger to the running
+qualification or changing its media deadlines.
+
 This profile uses IPv4 loopback, AES-CTR with a 128-bit key, synthetic MPEG-TS,
 software encoding and the hosted macOS GUI session. It does not qualify capture
 devices, hardware encoders, adverse networks, AES-GCM, IPv6, quantitative A/V
