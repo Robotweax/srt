@@ -32,9 +32,13 @@ unchanged. Results on it:
   `ubuntu-26.04 Debug`: the hosted runner received a shutdown signal 78 seconds
   into `cmake --build build --config Debug --parallel`, which on Linux places no
   bound on Make jobs. Memory exhaustion is the likely cause, as with the
-  sanitizer build corrected earlier; it was not measured. The eight matrix
-  build steps that used an unbounded count off macOS now use four jobs. The job
-  was not rerun.
+  sanitizer build corrected earlier; it was not measured. The job was not
+  rerun. Commit `615df45` bounded the eight matrix build steps to four jobs off
+  macOS, but `interop/tests/test_macos_ci_batches.py`, a frozen path, pins the
+  unbounded text, so [full CI 43306921676](https://github.com/Robotweax/srt/actions/runs/43306921676) and pull-request
+  CI 43306939325 and hybrid control 43306939306 failed on that assertion alone.
+  The workflow change was withdrawn; the unbounded build count remains and the
+  shutdown stays an unmeasured first failure.
 - [Linux packages, 43299585285](https://github.com/Robotweax/srt/actions/runs/43299585285) and
   [Package managers, 43299585117](https://github.com/Robotweax/srt/actions/runs/43299585117) from the exact archive,
   successful on the first attempt.
