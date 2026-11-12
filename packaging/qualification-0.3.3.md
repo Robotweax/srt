@@ -1,11 +1,57 @@
 # Package inputs and qualification — 0.3.3
 
-The initial product failed full CI. Corrections now have local regression evidence;
-new frozen-source hosted qualification is pending. This record does not authorize publication.
+The initial product failed full CI. The owner declared the corrected source final
+on 12 November 2026; its hosted qualification is recorded below. Downstream and
+exact-archive package results are pending. This record does not authorize publication.
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
-## Current Ubuntu 26 product
+## Current final product
+
+On 12 November 2026 the owner declared this source final and instructed the
+release process to proceed. It supersedes the Ubuntu 26 migration product below
+because later corrections changed frozen paths: OBS desktop hotkey injection and
+preview PNG decoding, OBS diagnostics, the UDP bridge's interruptible connection
+setup with its Windows Ctrl+Break stop request, and the bridge fixture.
+Library sources and public headers under `src`, `include` and `compat` are
+unchanged from the superseded product.
+
+- Product commit: `0669b862b020b66bf38d4760d603d45715337a4a`.
+- [Public archive](https://github.com/Robotweax/srt/archive/0669b862b020b66bf38d4760d603d45715337a4a.tar.gz); 3172256 bytes.
+- SHA-256: `fe5ab9b53bb15d0b6259651847907a2d59caa9c5c60234a50fa3ca988dd35c62`.
+- SHA-512: `37ae8cbc287c267e5b89312cc6bbc36c73a0aab434e3b1627cd27ba1c392f8ca85c3b75c42a2fc7e68f7b4afac6babb11b501785dcfff261779b8da38fceb44b`.
+- All 957 regular files and executable bits verified against Git; two downloads were byte-identical.
+- [Current identity](source-0.3.3.json); [accepted risk](acceptance-0.3.3.json).
+- `dev/release-0.3.3-product` advertises this commit.
+
+Hosted results on this exact commit, all successful:
+
+- [Full CI, 43225015754](https://github.com/Robotweax/srt/actions/runs/43225015754): manual dispatch with the Required CI
+  gate and the complete ecosystem suite (OBS, VLC, FFmpeg, GStreamer), FileCC
+  reference interoperability, Windows bridge tests and both sanitizer jobs.
+- [Pull-request CI, 43224998535](https://github.com/Robotweax/srt/actions/runs/43224998535).
+- [Hybrid control, 43224998753](https://github.com/Robotweax/srt/actions/runs/43224998753), including the strict soak.
+- [ACP1, 43225000092](https://github.com/Robotweax/srt/actions/runs/43225000092); [BCrypt, 43224998743](https://github.com/Robotweax/srt/actions/runs/43224998743).
+- [Windows SDK installers, 43224998634](https://github.com/Robotweax/srt/actions/runs/43224998634).
+- [Identity timeout investigation, 43224998149](https://github.com/Robotweax/srt/actions/runs/43224998149);
+  [Timing diagnostics, 43224998549](https://github.com/Robotweax/srt/actions/runs/43224998549).
+- [Linux packages, 43224998141](https://github.com/Robotweax/srt/actions/runs/43224998141) and
+  [Package managers, 43224998467](https://github.com/Robotweax/srt/actions/runs/43224998467) passed, but their recipes still
+  selected the superseded archive. They are not exact-archive package evidence.
+
+The earlier FileCC NAK and VLC reference failures, the mirror-DNS setup failures
+and the Windows bridge and sanitizer-runner failures remain recorded as first
+failures. Their passing on this source does not rewrite those records.
+
+Pending on this product: package workflows on the recipe commit that selects
+this archive; downstream [smoke](https://github.com/Robotweax/srt_network_lab/actions/runs/43232147838), [interop](https://github.com/Robotweax/srt_network_lab/actions/runs/43232152822) and
+[telemetry](https://github.com/Robotweax/srt_network_lab/actions/runs/43232158722) Lab requests (same Haivision, Telemetry and Doctor
+revisions and endpoint profile as recorded below); a commit-bound local macOS
+hybrid soak, since [the recorded one](soak-0.3.3-macos.json) is bound to an
+earlier commit; then the protected annotated tag, independent Windows
+rebuild/signing and final asset verification.
+
+## Superseded Ubuntu 26 migration product
 
 The owner requested migrating all current Linux CI and package qualification to
 Ubuntu 26.04 on 11 November 2026, superseding the earlier Ubuntu 24 baseline.
