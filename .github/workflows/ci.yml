@@ -1286,7 +1286,9 @@ jobs:
           cmake --build build --target robotweax_srt_ubsan_canary
           python3 tests/sanitizers/verify_ubsan.py build/robotweax_srt_ubsan_canary
       - name: Build
-        run: cmake --build build --parallel
+        # An unbounded Make job count exhausts the hosted runner's memory
+        # with sanitizer instrumentation and the runner is shut down.
+        run: cmake --build build --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
