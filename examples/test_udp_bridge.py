@@ -284,11 +284,17 @@ def run_setup_shutdown(demo: Path) -> None:
                 peer.wait_for("CONNECTING SRT rendezvous")
                 time.sleep(0.15)
                 assert peer.process.poll() is None, "setup was not pending"
-                owned = (udp, local) if role == "send" else (local,)
-                for port in owned:
+                # Probe each port on the exact address the bridge bound: Windows
+                # lets a default socket bind a specific address beside a
+                # wildcard holder of the same port (and the reverse), so only
+                # an identical address proves the port is still held there.
+                owned = [("0.0.0.0", local)]
+                if role == "send":
+                    owned.append(("127.0.0.1", udp))
+                for host, port in owned:
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
                         try:
-                            probe.bind(("127.0.0.1", port))
+                            probe.bind((host, port))
                         except OSError as error:
                             assert error.errno in (errno.EADDRINUSE, 10048)
                         else:
