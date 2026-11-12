@@ -187,6 +187,48 @@ def hotkey(key):
         subprocess.run(["xdotool", "keyup", key], check=True, timeout=5)
 
 
+def frontend_hotkey(desktop, log, key):
+    acknowledgement = {
+        "F9": "Starting stream due to hotkey",
+        "F10": "Stopping stream due to hotkey",
+    }[key]
+    windows = subprocess.run(
+        ["xdotool", "search", "--sync", "--onlyvisible", "--pid",
+         str(desktop.pid), "--name", "OBS"],
+        check=True, capture_output=True, text=True, timeout=10,
+    ).stdout.split()
+    if len(windows) != 1:
+        raise RuntimeError(f"expected one visible OBS window for pid {desktop.pid}: {windows}")
+    window = int(windows[0], 0)
+    subprocess.run(["xdotool", "windowfocus", "--sync", str(window)],
+                   check=True, timeout=5)
+    focused = int(subprocess.run(
+        ["xdotool", "getwindowfocus"], check=True, capture_output=True,
+        text=True, timeout=5,
+    ).stdout.strip(), 0)
+    evidence = log.with_suffix(".controls.jsonl")
+    event = dict(pid=desktop.pid, window=window, focused_window=focused,
+                 key=key, acknowledged=False)
+    try:
+        if focused != window:
+            raise RuntimeError(f"OBS focus mismatch: expected {window}, got {focused}")
+        # Byte offset excludes acknowledgements from any earlier command.
+        offset = log.stat().st_size
+        hotkey(key)
+
+        def acknowledged():
+            with log.open("rb") as stream:
+                stream.seek(offset)
+                return acknowledgement in stream.read().decode("utf-8", errors="replace")
+
+        media.wait_for(desktop, log, acknowledged,
+                       f"frontend {key} acknowledgement missing", timeout=5)
+        event["acknowledged"] = True
+    finally:
+        with evidence.open("a") as output:
+            output.write(json.dumps(event) + "\n")
+
+
 def wait_decoded(desktop, receiver, ffmpeg, output, artifacts, label, offset=0):
     """Wait for media, not padded MPEG-TS bytes emitted before input is ready."""
     deadline = time.monotonic() + 15
@@ -339,24 +381,6 @@ def qualify(args):
                     timeout=40,
                 )
                 verify_maps(desktop, args, artifacts / f"{label}-maps.txt")
-                windows = subprocess.run(
-                    [
-                        "xdotool",
-                        "search",
-                        "--sync",
-                        "--onlyvisible",
-                        "--pid",
-                        str(desktop.pid),
-                        "--name",
-                        "OBS",
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                ).stdout.strip()
-                if not windows:
-                    raise RuntimeError("no visible OBS desktop window")
                 source = None
                 if network:
                     gst.wait_listener(desktop, incoming)
@@ -372,7 +396,7 @@ def qualify(args):
                         )
                     )
                 # Exercise real frontend hotkeys, not a substitute libobs driver.
-                hotkey("F9")
+                frontend_hotkey(desktop, log, "F9")
                 wait_decoded(desktop, receiver, ffmpeg, output, artifacts, label)
                 if encrypted and not network:
                     for cycle in range(args.reconnect_cycles):
@@ -419,7 +443,7 @@ def qualify(args):
                     raise RuntimeError(
                         "stream stopped before the frontend stop command"
                     )
-                hotkey("F10")
+                frontend_hotkey(desktop, log, "F10")
                 media.wait_for(
                     desktop,
                     log,

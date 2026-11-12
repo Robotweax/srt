@@ -1044,6 +1044,64 @@ class ObsHarnessTests(unittest.TestCase):
                     lifecycle.prepare(root)
                 self.assertEqual(target.read_bytes(), fixed + b"unrelated change\n")
 
+    def test_desktop_hotkeys_require_focus_and_fresh_acknowledgement(self):
+        for key, text in [("F9", "Starting stream due to hotkey"),
+                          ("F10", "Stopping stream due to hotkey")]:
+            for fresh in (True, False):
+                with self.subTest(key=key, fresh=fresh), tempfile.TemporaryDirectory() as directory:
+                    log = Path(directory) / "desktop.log"
+                    log.write_text(text + "\n")  # stale acknowledgement must not count
+                    child = SimpleNamespace(pid=123, poll=lambda: None)
+
+                    def press(value):
+                        self.assertEqual(value, key)
+                        if fresh:
+                            with log.open("a") as output:
+                                output.write(text + "\n")
+
+                    def wait(_child, _log, predicate, description, timeout):
+                        self.assertEqual(timeout, 5)
+                        if not predicate():
+                            raise RuntimeError(description)
+
+                    with mock.patch.object(desktop.subprocess, "run", side_effect=[
+                        SimpleNamespace(stdout="42\n"), SimpleNamespace(),
+                        SimpleNamespace(stdout="42\n"),
+                    ]) as run, mock.patch.object(desktop, "hotkey", side_effect=press) as hotkey, mock.patch.object(desktop.media, "wait_for", side_effect=wait):
+                        if fresh:
+                            desktop.frontend_hotkey(child, log, key)
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "acknowledgement missing"):
+                                desktop.frontend_hotkey(child, log, key)
+                        hotkey.assert_called_once_with(key)
+                        self.assertEqual(run.call_args_list[1].args[0],
+                                         ["xdotool", "windowfocus", "--sync", "42"])
+                        self.assertEqual(run.call_args_list[2].args[0],
+                                         ["xdotool", "getwindowfocus"])
+                    event = json.loads(log.with_suffix(".controls.jsonl").read_text())
+                    self.assertEqual(event["acknowledged"], fresh)
+                    self.assertEqual(event["focused_window"], 42)
+
+    def test_desktop_rejects_wrong_focus_without_pressing_a_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "desktop.log"
+            log.touch()
+            with mock.patch.object(desktop.subprocess, "run", side_effect=[
+                SimpleNamespace(stdout="42\n"), SimpleNamespace(),
+                SimpleNamespace(stdout="99\n"),
+            ]), mock.patch.object(desktop, "hotkey") as press:
+                with self.assertRaisesRegex(RuntimeError, "focus mismatch"):
+                    desktop.frontend_hotkey(SimpleNamespace(pid=123), log, "F9")
+                press.assert_not_called()
+            self.assertFalse(json.loads(log.with_suffix(".controls.jsonl").read_text())["acknowledged"])
+
+    def test_desktop_rejects_ambiguous_windows_without_pressing_a_key(self):
+        with mock.patch.object(desktop.subprocess, "run", return_value=SimpleNamespace(stdout="42\n43\n")) as run, mock.patch.object(desktop, "hotkey") as press:
+            with self.assertRaisesRegex(RuntimeError, "expected one visible OBS window"):
+                desktop.frontend_hotkey(SimpleNamespace(pid=123), Path("unused.log"), "F9")
+            press.assert_not_called()
+            run.assert_called_once()
+
     def test_desktop_checkpoint_reads_only_fresh_bounded_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             artifacts = Path(directory)
