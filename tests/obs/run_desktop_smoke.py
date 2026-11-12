@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import ctypes
 import importlib.util
 import json
 import os
@@ -178,14 +179,45 @@ def stop_desktop(child, log, baseline=None):
     return check_shutdown(child.wait(timeout=15), log.read_text(), baseline)
 
 
+def unmodified_keycode(key):
+    """Resolve the base XKB level; libxdo can choose an Alt-modified alias."""
+    x11 = ctypes.CDLL("libX11.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
+    x11.XStringToKeysym.restype = ctypes.c_ulong
+    x11.XDisplayKeycodes.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+                                   ctypes.POINTER(ctypes.c_int)]
+    x11.XkbKeycodeToKeysym.argtypes = [ctypes.c_void_p, ctypes.c_ubyte,
+                                     ctypes.c_int, ctypes.c_int]
+    x11.XkbKeycodeToKeysym.restype = ctypes.c_ulong
+    display = x11.XOpenDisplay(None)
+    if not display:
+        raise RuntimeError("cannot open X11 display for OBS hotkey")
+    try:
+        symbol = x11.XStringToKeysym(key.encode("ascii"))
+        low, high = ctypes.c_int(), ctypes.c_int()
+        x11.XDisplayKeycodes(display, ctypes.byref(low), ctypes.byref(high))
+        if symbol:
+            for code in range(low.value, high.value + 1):
+                if x11.XkbKeycodeToKeysym(display, code, 0, 0) == symbol:
+                    return code
+        raise RuntimeError(f"no unmodified XKB keycode for {key}")
+    finally:
+        x11.XCloseDisplay(display)
+
+
 def hotkey(key):
-    subprocess.run(["xdotool", "keydown", key], check=True, timeout=5)
+    # Numeric keycodes bypass libxdo's keysym/modifier selection entirely.
+    code = str(unmodified_keycode(key))
+    subprocess.run(["xdotool", "keydown", code], check=True, timeout=5)
     try:
         # libobs polls X11 keys every 25 ms. Hold the key like a human press;
         # an instantaneous injected down/up pair can be missed completely.
         time.sleep(0.2)
     finally:
-        subprocess.run(["xdotool", "keyup", key], check=True, timeout=5)
+        subprocess.run(["xdotool", "keyup", code], check=True, timeout=5)
 
 
 def frontend_hotkey(desktop, log, key):

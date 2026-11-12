@@ -102,7 +102,10 @@ user's scenes, stream keys, plugins or OBS preferences. Test passphrases are
 public synthetic fixtures, not credentials.
 
 The test opens the real Qt application and operates its start/stop streaming
-hotkeys. It checks native SRT output against an isolated Haivision-backed
+hotkeys. The fixture resolves the unmodified XKB keycode and injects that numeric
+code: symbolic libxdo lookup can select an Alt-modified alias for F9. Opt-in
+diagnostics record the loaded streaming bindings, Qt key events and routed
+callbacks in the fixture log. It checks native SRT output against an isolated Haivision-backed
 GStreamer receiver, cleartext and encrypted. An additional encrypted duplex
 case receives through the GUI media source and forwards through the native
 output in the same OBS process. The visible application window must exist.

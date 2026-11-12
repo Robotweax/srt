@@ -38,6 +38,8 @@ macos_cache = load("obs_macos_cache", "check_macos_cache.py")
 macos = load("obs_macos_smoke", "run_macos_smoke.py")
 macos_desktop = load("obs_macos_desktop", "run_macos_desktop_smoke.py")
 macos_core = load("obs_macos_core", "macos_core_backtrace.py")
+desktop_trace = load("obs_desktop_trace", "prepare_desktop_trace.py")
+allocation_symbols = load("obs_allocation_symbols", "symbolize_allocations.py")
 
 
 def signed_macho(payload: bytes, signature: bytes = b"signature") -> bytes:
@@ -69,6 +71,67 @@ def universal_macho(arm64: bytes, *, fat64: bool = False) -> bytes:
 
 
 class ObsHarnessTests(unittest.TestCase):
+    def test_desktop_trace_requires_complete_version_locked_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            originals = {}
+            for path in desktop_trace.HASHES:
+                original = "\n".join(old for old, _ in desktop_trace.replacements(path)) + "\n"
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(original)
+                originals[path] = original
+            hashes = {path: hashlib.sha256(text.encode()).hexdigest()
+                      for path, text in originals.items()}
+            with mock.patch.object(desktop_trace, "HASHES", hashes):
+                desktop_trace.prepare(root)
+                fixed = {path: (root / path).read_text() for path in originals}
+                desktop_trace.prepare(root)
+                self.assertEqual(fixed, {path: (root / path).read_text() for path in originals})
+                path = "frontend/OBSApp.cpp"
+                (root / path).write_text(fixed[path] + "unknown change\n")
+                with self.assertRaisesRegex(RuntimeError, "unrecognized OBS"):
+                    desktop_trace.prepare(root)
+                self.assertEqual((root / "libobs/util/bmem.c").read_text(), fixed["libobs/util/bmem.c"])
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("cc"), "native macOS trace helper")
+    def test_allocation_trace_reports_live_frames_and_removes_freed_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "trace.c"
+            source.write_text(
+                '#include <stdlib.h>\nstatic long num_allocs;\n'
+                f'#include "{ROOT / "tests/obs/trace_allocations.h"}"\n'
+                'int main(void) { char *a=calloc(1,8), *b=calloc(1,16);\n'
+                'rw_allocation_update(NULL,a,8); rw_allocation_update(NULL,b,16);\n'
+                'rw_allocation_update(a,NULL,0); free(a); num_allocs=1; rw_allocation_dump();\n'
+                'rw_allocation_update(b,NULL,0); free(b); num_allocs=0; rw_allocation_dump(); return 0; }\n'
+            )
+            subprocess.run(["cc", "-Wall", "-Wextra", "-Werror", str(source),
+                            "-o", str(root / "trace")], check=True, capture_output=True)
+            result = subprocess.run([str(root / "trace")], check=True, capture_output=True,
+                                    text=True, env={**os.environ, "ROBOTWEAX_OBS_TRACE_ALLOCATIONS": "1"})
+            self.assertEqual(result.stderr.count("OBS_ALLOCATION ptr="), 1)
+            self.assertIn("size=16 bytes=" + "00" * 16, result.stderr)
+            self.assertIn("OBS_ALLOC_FRAME", result.stderr)
+            self.assertTrue(result.stderr.endswith("OBS_ALLOCATIONS counter=0\n"))
+
+    def test_allocation_symbolizer_keeps_allocation_identity_and_resolves_frames(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "idle-stdout.log"
+            log.write_text("unrelated log\nOBS_ALLOCATION ptr=0x12 size=8 bytes=00\n"
+                           "OBS_ALLOC_FRAME 0x1234 0x1000 /runner/OBS.app/Contents/MacOS/OBS\n")
+            with mock.patch.object(allocation_symbols.subprocess, "run",
+                                   return_value=SimpleNamespace(stdout="allocation_origin\n")) as atos:
+                allocation_symbols.symbolize(root)
+                self.assertEqual(atos.call_args.args[0], ["atos", "-o",
+                                 "/runner/OBS.app/Contents/MacOS/OBS", "-l", "0x1000", "0x1234"])
+            text = (root / "idle-stdout-allocations.txt").read_text()
+            self.assertIn("OBS_ALLOCATION ptr=0x12", text)
+            self.assertIn("allocation_origin", text)
+            self.assertNotIn("unrelated log", text)
+
     def test_macos_signed_macho_hash_ignores_only_signing_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "library.dylib"
@@ -263,6 +326,24 @@ class ObsHarnessTests(unittest.TestCase):
                 )
                 log.write_text("Loaded scenes:\n")
                 self.assertTrue(macos_desktop.ready_window(None, None, None, config))
+
+    def test_macos_preview_asset_must_decode_a_frame(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "OBS.app/Contents/MacOS/OBS"
+            for output, success in [("# no decoded frames\n", False),
+                                    ("0, 0, 0, 1, 64, " + "a" * 64 + "\n", True)]:
+                with self.subTest(success=success), mock.patch.object(
+                    macos_desktop.subprocess, "run", return_value=SimpleNamespace(stdout=output)
+                ) as run:
+                    if success:
+                        macos_desktop.verify_preview_asset(executable, root / "ffmpeg", root)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "did not decode"):
+                            macos_desktop.verify_preview_asset(executable, root / "ffmpeg", root)
+                    self.assertIn(str(root / "OBS.app/Contents/Resources/images/overflow.png"),
+                                  run.call_args.args[0])
+                    self.assertTrue(run.call_args.kwargs["check"])
 
     def test_macos_desktop_requires_exact_embedded_provider_and_normal_shutdown(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1125,6 +1206,43 @@ class ObsHarnessTests(unittest.TestCase):
                     event = json.loads(log.with_suffix(".controls.jsonl").read_text())
                     self.assertEqual(event["acknowledged"], fresh)
                     self.assertEqual(event["focused_window"], 42)
+
+    def test_hotkey_resolves_only_unmodified_xkb_level(self):
+        def keycodes(_display, low, high):
+            low._obj.value, high._obj.value = 74, 76
+
+        for base_level_available in (True, False):
+            x11 = SimpleNamespace(
+                XOpenDisplay=mock.Mock(return_value=1234), XCloseDisplay=mock.Mock(),
+                XStringToKeysym=mock.Mock(return_value=0xffc6),
+                XDisplayKeycodes=mock.Mock(side_effect=keycodes),
+                XkbKeycodeToKeysym=mock.Mock(side_effect=lambda _d, code, _group, level:
+                    0xffc6 if code == 75 and (level != 0 or base_level_available) else 0),
+            )
+            with self.subTest(base_level_available=base_level_available), \
+                 mock.patch.object(desktop.ctypes, "CDLL", return_value=x11):
+                if base_level_available:
+                    self.assertEqual(desktop.unmodified_keycode("F9"), 75)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "no unmodified XKB"):
+                        desktop.unmodified_keycode("F9")
+                x11.XCloseDisplay.assert_called_once_with(1234)
+                self.assertTrue(all(call.args[2:] == (0, 0)
+                                    for call in x11.XkbKeycodeToKeysym.call_args_list))
+
+    def test_hotkey_sends_raw_keycode_and_releases_it_on_failure(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), \
+                 mock.patch.object(desktop, "unmodified_keycode", return_value=75), \
+                 mock.patch.object(desktop.subprocess, "run") as run, \
+                 mock.patch.object(desktop.time, "sleep", side_effect=RuntimeError("interrupted") if fail else None):
+                if fail:
+                    with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                        desktop.hotkey("F9")
+                else:
+                    desktop.hotkey("F9")
+                self.assertEqual([call.args[0] for call in run.call_args_list],
+                                 [["xdotool", "keydown", "75"], ["xdotool", "keyup", "75"]])
 
     def test_desktop_window_search_intersects_pid_and_title(self):
         # Include another OBS process and same-process auxiliary windows.

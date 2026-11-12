@@ -86,13 +86,13 @@ mkdir -p "$work/ffmpeg-build"
     cd "$work/ffmpeg-build"
     "$ffmpeg_source/configure" --prefix="$work/ffmpeg" --libdir="$work/ffmpeg/lib" \
         --disable-autodetect --disable-debug --disable-doc --disable-static \
-        --enable-shared --disable-everything --enable-libsrt \
+        --enable-shared --disable-everything --enable-libsrt --enable-zlib \
         --enable-ffmpeg --enable-ffprobe --enable-avdevice --enable-avfilter \
         --enable-swscale --enable-swresample \
         --enable-encoder=mpeg2video,aac,pcm_s16le,rawvideo,wrapped_avframe \
-        --enable-decoder=h264,aac,mpeg2video,pcm_s16le,wrapped_avframe \
+        --enable-decoder=h264,aac,mpeg2video,pcm_s16le,wrapped_avframe,png \
         --enable-parser=h264,aac,mpegvideo \
-        --enable-demuxer=mpegts \
+        --enable-demuxer=mpegts,image2,image2pipe \
         --enable-muxer=mpegts,framehash,pcm_s16le \
         --enable-protocol=file,pipe,libsrt \
         --enable-filter=testsrc2,sine,aresample,scale,format,aformat,anull,null \

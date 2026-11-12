@@ -44,6 +44,11 @@ does not necessarily honor `HOME` alone for Application Support. It never reads
 or changes a real OBS profile. The test uses public synthetic media and a
 synthetic passphrase.
 
+The restricted FFmpeg build includes PNG decoding and image demuxing for OBS's
+preview assets. Before launching the desktop, the fixture decodes the bundled
+`overflow.png` into one hashed video frame. Missing desktop codec support fails
+this preflight instead of repeatedly exercising an image-load failure path.
+
 ## Acceptance covered by CI
 
 The test requires an on-screen OBS main window and a normal idle shutdown.
@@ -66,6 +71,11 @@ disassembly. Only text diagnostics are uploaded; binary cores remain on the
 temporary runner. Missing cores or debugger failures are reported explicitly.
 This captures a reconnect crash without attaching a debugger to the running
 qualification or changing its media deadlines.
+
+The isolated desktop build also has opt-in allocation tracing. At the existing
+shutdown allocation-count check it records live libobs allocation sizes, bounded
+contents and allocation stacks. The runner resolves those stacks with `atos`
+before uploading text evidence. The allocation limits remain unchanged.
 
 This profile uses IPv4 loopback, AES-CTR with a 128-bit key, synthetic MPEG-TS,
 software encoding and the hosted macOS GUI session. It does not qualify capture
