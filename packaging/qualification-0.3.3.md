@@ -78,6 +78,30 @@ the product commit, Release/OpenSSL, CTR and GCM at 30 seconds each.
 Pending: disposition of the two OBS desktop failures; then the protected
 annotated tag, independent Windows rebuild/signing and final asset verification.
 
+### OBS desktop follow-up and a macOS timing failure
+
+Commits `67bde56` and `becfc32` correct the pinned OBS fixture: the macOS
+swap-chain update releases a texture it did not adopt (the established cause of
+the allocation count of two), and MPEG-TS cleanup flushes its I/O context before
+freeing the URL context (a use-after-free confirmed by a native AddressSanitizer
+reproduction; not established as the cause of the Windows reconnect timeout).
+They change frozen paths, so the product above is superseded once a new freeze
+is recorded.
+
+[Full CI, 43241435093](https://github.com/Robotweax/srt/actions/runs/43241435093) on `becfc32`: all five OBS jobs passed.
+Attempt 1 failed
+[AES-GCM platform/ABI (macos-latest), job 131262734220](https://github.com/Robotweax/srt/actions/runs/43241435093/job/131262734220)
+in `compat_group_receive_obeys_nonblocking_and_timeout_contract`: a 30 ms
+blocking group receive returned `SRT_ETIMEOUT` but exceeded the 500 ms bound at
+`tests/test_compat_groups.cpp:3569`. The receive loop is a single
+condition-variable wait to its deadline that rechecks the clock on every wake,
+and the step ran its tests serially, so a hosted-runner scheduling stall is the
+likely cause. The elapsed time was not recorded, so this is not measured. The
+owner directed a rerun of that job on 12 November 2026; the first failure
+remains recorded here.
+Attempt 2 reran only the failed jobs and the run completed successfully. That
+pass does not measure or establish the cause of attempt 1.
+
 ## Superseded Ubuntu 26 migration product
 
 The owner requested migrating all current Linux CI and package qualification to
