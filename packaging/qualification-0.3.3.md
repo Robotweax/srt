@@ -3,7 +3,8 @@
 The initial product failed full CI. The owner declared the corrected source final
 on 12 November 2026 and, after two OBS fixture corrections, declared their result
 final the same day. Its hosted, package, downstream and soak qualification passed
-and is recorded below with two open items. This record does not authorize publication.
+and is recorded below; one accepted residual risk and one unmeasured timing
+failure remain recorded. This record does not authorize publication.
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
@@ -60,7 +61,9 @@ Open on this product:
   established cause. A use-after-free on that path is corrected and the
   reference receiver now records why reception ends. The OBS Windows desktop job
   has passed in both full CI runs since; two passes do not show the timeout is
-  gone. Its disposition is the owner's.
+  gone. On 12 November 2026 the owner accepted it as a residual risk, recorded
+  in [acceptance-0.3.3.json](acceptance-0.3.3.json); it is not marked fixed and
+  the job is not waived.
 - The macOS group receive timing failure of run 43241435093 attempt 1 is
   attributed, without measurement, to a hosted-runner stall.
 - Then the protected annotated tag, independent Windows rebuild/signing and
