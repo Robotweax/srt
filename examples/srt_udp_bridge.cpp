@@ -682,6 +682,33 @@ void relay(SRTSOCKET srt, const Configuration& c, ConnectionHistory& history,
               << std::endl;
 }
 
+bool finish_connect(SRTSOCKET socket, int result)
+{
+    if (result == SRT_ERROR && srt_getlasterror(nullptr) != SRT_EASYNCRCV) {
+        transport_error("srt_connect");
+    }
+    while (!stopping) {
+        const auto state = srt_getsockstate(socket);
+        if (state == SRTS_CONNECTED) {
+            option(socket, SRTO_SNDSYN, true);
+            option(socket, SRTO_RCVSYN, true);
+            return true;
+        }
+        if (state != SRTS_CONNECTING) {
+            const int reason = srt_getrejectreason(socket);
+            const int code =
+                reason == SRT_REJ_UNKNOWN || reason == SRT_REJ_TIMEOUT
+                ? SRT_ENOSERVER
+                : SRT_ECONNREJ;
+            throw TransportFailure("SRT connection setup failed, reject_reason="
+                    + std::to_string(reason),
+                code);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds {50});
+    }
+    return false;
+}
+
 void session(const Configuration& c, ConnectionHistory& history)
 {
     // Keep SRT's ephemeral bind from acquiring the future UDP input port.
@@ -691,6 +718,7 @@ void session(const Configuration& c, ConnectionHistory& history)
         input_reservation.emplace();
         bind_udp_input(input_reservation->get(),
             endpoint(c.udp_host, c.udp_port, true, true));
+        std::cout << "INPUT RESERVED UDP port=" << c.udp_port << std::endl;
     }
     const auto srt_address = endpoint(c.srt_host, c.srt_port, c.listener);
     SrtSocket socket {srt_create_socket()};
@@ -700,17 +728,22 @@ void session(const Configuration& c, ConnectionHistory& history)
     configure(socket.get(), c);
     if (c.rendezvous) {
         const auto local = endpoint(c.srt_bind_host, c.srt_local_port, true);
+        option(socket.get(), SRTO_RENDEZVOUS, true);
+        option(socket.get(), SRTO_SNDSYN, false);
+        option(socket.get(), SRTO_RCVSYN, false);
+        if (srt_bind(socket.get(), reinterpret_cast<const sockaddr*>(&local),
+                sizeof(local))
+            == SRT_ERROR) {
+            transport_error("srt_bind");
+        }
         std::cout << "CONNECTING SRT rendezvous local=" << c.srt_bind_host
                   << ':' << c.srt_local_port << " peer=" << c.srt_host << ':'
                   << c.srt_port << std::endl;
-        // The public helper enables rendezvous and binds before connecting.
-        // Both processes must connect within their connection timeout window.
-        if (srt_rendezvous(socket.get(),
-                reinterpret_cast<const sockaddr*>(&local), sizeof(local),
-                reinterpret_cast<const sockaddr*>(&srt_address),
-                sizeof(srt_address))
-            == SRT_ERROR) {
-            transport_error("srt_rendezvous");
+        if (!finish_connect(socket.get(),
+                srt_connect(socket.get(),
+                    reinterpret_cast<const sockaddr*>(&srt_address),
+                    sizeof(srt_address)))) {
+            return;
         }
         relay(socket.get(), c, history, input_reservation);
     } else if (c.listener) {
@@ -727,13 +760,17 @@ void session(const Configuration& c, ConnectionHistory& history)
             relay(accepted.get(), c, history, input_reservation);
         }
     } else {
+        option(socket.get(), SRTO_SNDSYN, false);
+        option(socket.get(), SRTO_RCVSYN, false);
+        const int result = srt_connect(socket.get(),
+            reinterpret_cast<const sockaddr*>(&srt_address),
+            sizeof(srt_address));
+        // The asynchronous connect has bound its local endpoint before this
+        // readiness event lets the fixture hand the reserved peer port over.
         std::cout << "CONNECTING SRT caller peer=" << c.srt_host << ':'
                   << c.srt_port << std::endl;
-        if (srt_connect(socket.get(),
-                reinterpret_cast<const sockaddr*>(&srt_address),
-                sizeof(srt_address))
-            == SRT_ERROR) {
-            transport_error("srt_connect");
+        if (!finish_connect(socket.get(), result)) {
+            return;
         }
         relay(socket.get(), c, history, input_reservation);
     }
