@@ -2,13 +2,68 @@
 
 The initial product failed full CI. The owner declared the corrected source final
 on 12 November 2026 and, after two OBS fixture corrections, declared their result
-final the same day. Its hosted, package, downstream and soak qualification passed
-and is recorded below; one accepted residual risk and one unmeasured timing
-failure remain recorded. This record does not authorize publication.
+final the same day. That product qualified, but its last full CI run exposed a
+race in the GStreamer test peer; the owner directed a third freeze with that
+fixture corrected. Qualification of the current product is recorded below as it
+completes. This record does not authorize publication.
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
 ## Current final product
+
+On 12 November 2026 the owner directed a re-freeze after the GStreamer fixture
+correction described under "GStreamer sender follow-up" below. It differs from
+the superseded product only in `tests/gstreamer/peer.c`. Library sources, public
+headers, examples and every other fixture are unchanged.
+
+- Product commit: `4a1e49166bd761d7f065bc5a4b9c924ca73333ea`.
+- [Public archive](https://github.com/Robotweax/srt/archive/4a1e49166bd761d7f065bc5a4b9c924ca73333ea.tar.gz); 3178036 bytes.
+- SHA-256: `6769aaeffdc0cb8826c365a12e185ddd82e6af5c3d856e4de8236e980b3bcf3b`.
+- SHA-512: `b10c2c0e867b4ec2babe3964d3cef25f282222bdab1fc13103b671aaecd586622e9697bc05c1e85ef30bed8679f657adac2a84ea444c1e8fd3b6762fd20eb64b`.
+- All 958 regular files and executable bits verified against Git; two downloads were byte-identical.
+- [Current identity](source-0.3.3.json); [accepted risk](acceptance-0.3.3.json).
+- `dev/release-0.3.3-product` advertises this commit.
+
+Hosted, package, downstream and soak results on this product are pending and
+will be recorded here.
+
+Open on this product:
+
+- The accepted Windows desktop reconnect timeout and the unmeasured macOS group
+  receive timing failure, both described under the superseded second final
+  product, carry forward unchanged.
+- The macOS UDP bridge connection failure described under "GStreamer sender
+  follow-up" has no established cause.
+- Then the protected annotated tag, independent Windows rebuild/signing and
+  final asset verification.
+
+## Superseded second final product
+
+### GStreamer sender follow-up and a macOS bridge failure
+
+[Full CI, 43257384958](https://github.com/Robotweax/srt/actions/runs/43257384958) ran on `0294ca1`, which differs from the
+qualified recipe commit only in `packaging` records. Attempt 1 failed two jobs:
+
+- GStreamer integration, case `robotweax-clear-src-listener`: the receiver
+  reported the complete transfer; the sender exited after its 20 second deadline
+  with `finished=0` and every byte sent. Cause established in the fixture: the
+  sender loop waited for EOS or an error and then ran a second error check whose
+  filtered bus pop discards all other messages, so an EOS posted between the two
+  calls was lost. On the frozen source with the pinned GStreamer plugin the
+  unmodified case passed 520 of 520 local Linux runs; with a 40 ms delay between
+  the two calls it failed 13 of 20 with the same signature, and 0 of 20 with the
+  correction and the same delay. That the hosted run hit this window is inferred
+  from the matching signature, not observed. Corrected in `4a1e491`.
+- macos-latest Release, `robotweax_srt_udp_bridge_loopback`, first case
+  (listener receiver, no encryption): the caller's connection setup timed out
+  four times over 10 seconds. The listener's output was not captured. No cause
+  is established and nothing was changed for it.
+
+The owner's account reran the macOS job (attempt 2, passed) and then the
+GStreamer job (attempt 3, passed). These green reruns do not establish either
+cause; the first failures stay recorded here.
+
+### Product record
 
 On 12 November 2026 the owner declared this source final after the two OBS
 fixture corrections described under "OBS desktop follow-up" below. It differs
@@ -21,7 +76,7 @@ documents. Library sources, public headers and examples are unchanged.
 - SHA-512: `24d0e60dae82857dbedf321194bf91d2474306181c461e296053fe579f70d87c296b20de1ad838a6e5843e3f430082983f27ebe035f87d0c0c1bec5f3835dc80`.
 - All 958 regular files and executable bits verified against Git; two downloads were byte-identical.
 - [Current identity](source-0.3.3.json); [accepted risk](acceptance-0.3.3.json).
-- `dev/release-0.3.3-product` advertises this commit.
+- `dev/release-0.3.3-product` advertised this commit.
 
 Hosted results on this exact commit:
 
@@ -55,7 +110,7 @@ Downstream Lab requests on the product commit all succeeded, with Haivision
 [Local macOS hybrid soak](soak-0.3.3-macos.json): passed on a clean checkout of
 the product commit, Release/OpenSSL, CTR and GCM at 30 seconds each.
 
-Open on this product:
+Open when this product was superseded:
 
 - The intermittent Windows desktop reconnect timeout of run 43232416015 has no
   established cause. A use-after-free on that path is corrected and the
