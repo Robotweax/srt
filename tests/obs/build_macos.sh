@@ -105,6 +105,7 @@ make -C "$work/ffmpeg-build" REVISION="$(<"$ffmpeg_source/RELEASE")-3acec0a" ins
 if [[ "$profile" == desktop ]]; then
     "$repository/tools/python" "$repository/tests/obs/prepare_desktop_lifecycle.py" "$obs_source"
     "$repository/tools/python" "$repository/tests/obs/prepare_desktop_trace.py" "$obs_source"
+    "$repository/tools/python" "$repository/tests/obs/prepare_desktop_swapchain.py" "$obs_source"
 fi
 "$repository/tools/python" "$repository/tests/obs/prepare_source.py" "$obs_source" \
     --profile "$selection"

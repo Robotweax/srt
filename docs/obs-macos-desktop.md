@@ -72,6 +72,18 @@ temporary runner. Missing cores or debugger failures are reported explicitly.
 This captures a reconnect crash without attaching a debugger to the running
 qualification or changing its media deadlines.
 
+The desktop recipe applies `tests/obs/prepare_desktop_swapchain.py` to the
+pinned OBS 32.2.2 OpenGL backend. OBS defers each swap-chain framebuffer update
+to the main queue and adopts the replacement texture only as its last step; an
+update that runs after shutdown has deleted the framebuffer object fails to bind
+it and leaves that texture allocated. Hosted run 43232416015 showed this as an
+intermittent idle allocation count of two, with
+`glBindFramebuffer failed` logged immediately after shutdown began and the
+80-byte texture record traced to `device_texture_create`. The independently
+authored correction releases any texture the swap chain did not adopt. It
+validates the original file's SHA-256, is idempotent, and rejects unknown or
+partially modified source. The allocation limits remain unchanged.
+
 The isolated desktop build also has opt-in allocation tracing. At the existing
 shutdown allocation-count check it records live libobs allocation sizes, bounded
 contents and allocation stacks. The runner resolves those stacks with `atos`
