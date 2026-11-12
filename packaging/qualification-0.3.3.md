@@ -1,8 +1,8 @@
 # Package inputs and qualification — 0.3.3
 
 The initial product failed full CI. The owner declared the corrected source final
-on 12 November 2026; its hosted qualification is recorded below. Downstream and
-exact-archive package results are pending. This record does not authorize publication.
+on 12 November 2026; its hosted qualification is recorded below. Two intermittent
+OBS desktop failures block acceptance. This record does not authorize publication.
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
@@ -43,13 +43,40 @@ The earlier FileCC NAK and VLC reference failures, the mirror-DNS setup failures
 and the Windows bridge and sanitizer-runner failures remain recorded as first
 failures. Their passing on this source does not rewrite those records.
 
-Pending on this product: package workflows on the recipe commit that selects
-this archive; downstream [smoke](https://github.com/Robotweax/srt_network_lab/actions/runs/43232147838), [interop](https://github.com/Robotweax/srt_network_lab/actions/runs/43232152822) and
-[telemetry](https://github.com/Robotweax/srt_network_lab/actions/runs/43232158722) Lab requests (same Haivision, Telemetry and Doctor
-revisions and endpoint profile as recorded below); a commit-bound local macOS
-hybrid soak, since [the recorded one](soak-0.3.3-macos.json) is bound to an
-earlier commit; then the protected annotated tag, independent Windows
-rebuild/signing and final asset verification.
+Recipe commit `6f08399` selects this archive and leaves every frozen path
+unchanged. Results on it:
+
+- [Linux packages, 43232428802](https://github.com/Robotweax/srt/actions/runs/43232428802) and
+  [Package managers, 43232428647](https://github.com/Robotweax/srt/actions/runs/43232428647) passed from the exact archive:
+  DEB, RPM, Homebrew and the six vcpkg profiles.
+- The other seven pull-request workflows passed (CI 43232428909, hybrid control
+  43232428760, ACP1 43232428948, BCrypt 43232428731, Windows SDK 43232428681,
+  identity timeout 43232428796, timing diagnostics 43232428576).
+- [Full CI, 43232416015](https://github.com/Robotweax/srt/actions/runs/43232416015) **failed** its Required CI gate on two
+  OBS desktop jobs. All other jobs passed.
+  - [OBS Windows desktop, job 131231042658](https://github.com/Robotweax/srt/actions/runs/43232416015/job/131231042658):
+    `automatic desktop SRT reconnect: timeout` after the encrypted output and
+    visible-window checks had passed.
+  - [OBS macOS desktop, job 131231042684](https://github.com/Robotweax/srt/actions/runs/43232416015/job/131231042684):
+    `OBS desktop allocation regression: 2` at idle shutdown, against the
+    accepted baseline of one.
+
+Both jobs passed on the product commit in run 43225015754 with identical frozen
+paths, so both failures are intermittent on this source. Neither cause is
+established and neither job was rerun. The release contract requires the full
+CI gate; this product is therefore not accepted, and the failures are preserved.
+
+Downstream Lab requests on the product commit all succeeded, with Haivision
+`899348d8318eb9a3c5a5b6ec43c4a1114288773a`, Telemetry
+`7a6b8eff65c686ccafa36a0adace148a8b87d3ca`, Doctor
+`88f8e33851f4fa975ab1b708e9f707d27505a399` and the telemetry endpoint profile:
+[smoke](https://github.com/Robotweax/srt_network_lab/actions/runs/43232147838), [interop](https://github.com/Robotweax/srt_network_lab/actions/runs/43232152822), [telemetry](https://github.com/Robotweax/srt_network_lab/actions/runs/43232158722).
+
+[Local macOS hybrid soak](soak-0.3.3-macos.json): passed on a clean checkout of
+the product commit, Release/OpenSSL, CTR and GCM at 30 seconds each.
+
+Pending: disposition of the two OBS desktop failures; then the protected
+annotated tag, independent Windows rebuild/signing and final asset verification.
 
 ## Superseded Ubuntu 26 migration product
 
