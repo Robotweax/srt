@@ -123,6 +123,7 @@ def desktop_command(prefix, root):
         QT_QPA_PLATFORM="xcb",
         LIBGL_ALWAYS_SOFTWARE="1",
         LC_ALL="C",
+        ROBOTWEAX_OBS_TRACE_HOTKEYS="1",
     )
     return [
         str(prefix / "bin/obs"),

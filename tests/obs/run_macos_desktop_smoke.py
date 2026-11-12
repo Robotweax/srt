@@ -252,7 +252,8 @@ def desktop_command(executable: Path, config: Path, *, stream: bool):
         for key, value in os.environ.items()
         if not key.startswith(("DYLD_", "OBS_", "QT_"))
     }
-    env.update(HOME=str(home), CFFIXED_USER_HOME=str(home), LC_ALL="C")
+    env.update(HOME=str(home), CFFIXED_USER_HOME=str(home), LC_ALL="C",
+               ROBOTWEAX_OBS_TRACE_ALLOCATIONS="1")
     command = [
         str(executable),
         "--multi",
