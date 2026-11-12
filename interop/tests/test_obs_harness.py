@@ -30,6 +30,7 @@ obs = load("obs_smoke", "run_smoke.py")
 prepare = load("obs_prepare", "prepare_source.py")
 desktop = load("obs_desktop", "run_desktop_smoke.py")
 lifecycle = load("obs_desktop_lifecycle", "prepare_desktop_lifecycle.py")
+swapchain = load("obs_desktop_swapchain", "prepare_desktop_swapchain.py")
 windows_prepare = load("obs_windows_prepare", "prepare_windows_source.py")
 windows = load("obs_windows_smoke", "run_windows_smoke.py")
 windows_desktop = load("obs_windows_desktop", "run_windows_desktop_smoke.py")
@@ -1143,6 +1144,11 @@ class ObsHarnessTests(unittest.TestCase):
             b"bool ffmpeg_mpegts_data_init(void) {\n"
             + lifecycle.RESET
             + b"\n}\nstatic bool set_config(void) {\nfail:\nreturn false;\n}\n"
+            + lifecycle.CLOSE
+            + b"void) {\n"
+            + lifecycle.CLOSE_URL
+            + lifecycle.CLOSE_IO
+            + b"}\n"
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1158,6 +1164,12 @@ class ObsHarnessTests(unittest.TestCase):
                 self.assertIn(lifecycle.RELEASE, fixed)
                 self.assertIn(lifecycle.CLEAN_FAILURE, fixed)
                 self.assertNotIn(lifecycle.RESET, fixed)
+                # The buffered write goes through the URL context, so the
+                # flush must come before that context is closed and freed.
+                self.assertNotIn(lifecycle.CLOSE_IO, fixed)
+                self.assertLess(fixed.index(b"avio_flush(s);"), fixed.index(b"libsrt_close(h);"))
+                self.assertLess(fixed.index(b"avio_flush(s);"), fixed.index(b"av_freep(&h);"))
+                self.assertEqual(fixed.count(b"avio_flush(s);"), 1)
                 self.assertFalse(lifecycle.prepare(root))
                 target.write_bytes(
                     fixed.replace(lifecycle.CLEAN_FAILURE, lifecycle.FAIL)
@@ -1168,6 +1180,43 @@ class ObsHarnessTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "unrecognized"):
                     lifecycle.prepare(root)
                 self.assertEqual(target.read_bytes(), fixed + b"unrelated change\n")
+
+    def test_desktop_swapchain_fix_releases_unadopted_texture_and_is_pinned(self):
+        # Independently authored minimal fixture, not copied upstream source.
+        original = (
+            b"void other(void) {\nupdateSwapchainCleanup_unrelated();\n}\n"
+            + swapchain.FUNCTION
+            + b"void) {\n    if (!bound) goto updateSwapchainCleanup;\n    if (swap) {\n"
+            + swapchain.ADOPT
+            + b"    }\n\n"
+            + swapchain.CLEANUP
+            + b"    unlock();\n}\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / swapchain.TARGET
+            target.parent.mkdir(parents=True)
+            with mock.patch.object(
+                swapchain, "ORIGINAL_SHA256", hashlib.sha256(original).hexdigest()
+            ):
+                target.write_bytes(original.replace(b"\n", b"\r\n"))
+                self.assertTrue(swapchain.prepare(root))
+                fixed = target.read_bytes()
+                # The adopted texture is disowned; every exit releases the rest.
+                self.assertIn(swapchain.ADOPTED, fixed)
+                self.assertIn(swapchain.RELEASE, fixed)
+                self.assertLess(fixed.index(swapchain.ADOPTED), fixed.index(swapchain.RELEASE))
+                self.assertLess(fixed.index(swapchain.RELEASE), fixed.index(b"    unlock();"))
+                self.assertFalse(swapchain.prepare(root))
+                target.write_bytes(fixed.replace(swapchain.RELEASE, swapchain.CLEANUP))
+                with self.assertRaisesRegex(RuntimeError, "partially applied"):
+                    swapchain.prepare(root)
+                target.write_bytes(fixed + b"unrelated change\n")
+                with self.assertRaisesRegex(RuntimeError, "unrecognized"):
+                    swapchain.prepare(root)
+                self.assertEqual(target.read_bytes(), fixed + b"unrelated change\n")
+            with self.assertRaisesRegex(RuntimeError, "unrecognized"):
+                swapchain.transform(original.replace(swapchain.ADOPT, b""))
 
     def test_desktop_hotkeys_require_focus_and_fresh_acknowledgement(self):
         for key, text in [("F9", "Starting stream due to hotkey"),

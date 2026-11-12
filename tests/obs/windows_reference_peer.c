@@ -95,8 +95,14 @@ static uint64_t receive_file(SRTSOCKET socket, const char* path)
     uint64_t total = 0;
     for (;;) {
         int size = srt_recvmsg(socket, (char*)buffer, sizeof(buffer));
-        if (size == SRT_ERROR)
+        if (size == SRT_ERROR) {
+            /* Diagnostic only: say why reception ended and after how much. */
+            printf("RECEIVE_END bytes=%llu state=%d error=%d %s\n",
+                (unsigned long long)total, (int)srt_getsockstate(socket),
+                srt_getlasterror(NULL), srt_getlasterror_str());
+            fflush(stdout);
             break;
+        }
         if (size > 0
             && fwrite(buffer, 1, (size_t)size, output) != (size_t)size) {
             perror("cannot write reference output");

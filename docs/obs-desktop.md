@@ -25,6 +25,12 @@ releases the previous FFmpeg state before reinitializing it, and releases
 partially initialized state before reporting a failed start. Without this
 cleanup, reconnect can discard the previous error-string allocation and
 FFmpeg state. Existing serialized start/writer joins remain unchanged.
+It also flushes the custom I/O context before closing and freeing the SRT or
+RIST URL context that the flush writes through. The pinned source frees the URL
+context first; a flush that still holds buffered data then reads and writes
+freed memory, which a native AddressSanitizer reproduction of that function
+confirms. Whether this defect caused the intermittent Windows desktop
+reconnect timeout of hosted run 43232416015 is not established.
 The correction validates the original file's SHA-256, is idempotent, and
 rejects unknown or partially modified source. The headless recipe remains
 unpatched; do not reuse a desktop checkout for it.
