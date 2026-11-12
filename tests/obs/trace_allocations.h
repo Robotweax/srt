@@ -70,12 +70,16 @@ static void rw_allocation_dump(void)
             for (size_t i = 0; i < entry->size && i < 64; ++i)
                 fprintf(stderr, "%02x", ((const unsigned char*)entry->ptr)[i]);
             fprintf(stderr, "\n");
+#ifdef __APPLE__
             for (int i = 0; i < entry->depth; ++i) {
                 Dl_info image;
                 if (dladdr(entry->frames[i], &image))
                     fprintf(stderr, "OBS_ALLOC_FRAME %p %p %s\n",
                         entry->frames[i], image.dli_fbase, image.dli_fname);
             }
+#else
+            backtrace_symbols_fd(entry->frames, entry->depth, 2);
+#endif
         }
     }
     pthread_mutex_unlock(&rw_allocation_mutex);
