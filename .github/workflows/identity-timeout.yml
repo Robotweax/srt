@@ -1,0 +1,51 @@
+name: Identity timeout investigation
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/identity-timeout.yml'
+      - 'interop/run_identity_interop.py'
+      - 'interop/tests/test_identity_interop.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  identity:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Record environment and configure Debug peer
+        run: |
+          python3 --version
+          sw_vers
+          brew install openssl@3 pkg-config
+          cmake -S . -B build-identity -DCMAKE_BUILD_TYPE=Debug -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DROBOTWEAX_SRT_BUILD_EXAMPLES=OFF -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+          cmake --build build-identity --parallel 3 --target robotweax_srt_interop_peer
+      - name: Repeat complete original sequence, stopping on first failure
+        timeout-minutes: 20
+        run: |
+          python3 -u - <<'PYCODE'
+          import subprocess
+          import sys
+          from pathlib import Path
+          root = Path('identity-evidence')
+          root.mkdir()
+          peer = Path('build-identity/robotweax_srt_interop_peer').resolve()
+          for index in range(50):
+              print(f'Starting full identity sequence {index + 1}/50', flush=True)
+              subprocess.run([
+                  sys.executable, '-u', 'interop/run_identity_interop.py',
+                  '--robotweax-peer', str(peer),
+                  '--output', str(root / f'sequence-{index:03}'),
+              ], check=True)
+          PYCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: macos-identity-timeout-evidence
+          path: |
+            identity-evidence/**/*.log
+            identity-evidence/**/results.json
+            build-identity/CMakeCache.txt

@@ -34,22 +34,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: ubuntu-24.04, image: 'ubuntu:24.04', script: qualify-ubuntu.sh}
+          - {name: ubuntu-26.04, image: 'ubuntu:26.04', script: qualify-ubuntu.sh}
           - {name: fedora-44, image: 'fedora:44', script: qualify-fedora.sh}
     name: ${{ matrix.name }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Download and verify immutable 0.3.2 source
+      - name: Download and verify immutable 0.3.3 source
         shell: bash
         run: |
           set -euo pipefail
           curl -fL --retry 3 --output "$RUNNER_TEMP/source.tar.gz" \
-            https://github.com/Robotweax/srt/archive/838a022b75cfa95137bb7e40f575d0a65f6bd551.tar.gz
-          echo "b7f0cb906abe8d064e7d7c18287596ff0f594ac6cb07aaa10f5c791971683a9b  $RUNNER_TEMP/source.tar.gz" |
+            https://github.com/Robotweax/srt/archive/f5948a4b059aa1c8e7aa5e932053f92ff37eb6ff.tar.gz
+          echo "ccc2c409790f0d72bedbc7f87ebeb429fe723716af3b30bdd87f52fbc3d79ec7  $RUNNER_TEMP/source.tar.gz" |
             sha256sum --check -
       - name: Build, install, test coexistence and removal
         shell: bash

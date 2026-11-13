@@ -36,7 +36,7 @@ jobs:
   throughput:
     if: github.event_name == 'workflow_dispatch' && startsWith(inputs.investigation, 'throughput-')
     name: Linux serial throughput profiling (${{ inputs.investigation }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,7 +128,7 @@ jobs:
   linux:
     if: github.event_name != 'workflow_dispatch' || inputs.investigation == 'timing'
     name: Linux serial timing investigation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -181,7 +181,7 @@ jobs:
   group_receive_contract:
     name: Linux serial group investigation (${{ inputs.investigation }})
     if: github.event_name == 'workflow_dispatch' && (inputs.investigation == 'group-receive-contract' || inputs.investigation == 'group-backup-baseline' || inputs.investigation == 'group-matrix-context' || inputs.investigation == 'group-receive-stack' || inputs.investigation == 'group-strace-stack')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -300,7 +300,7 @@ jobs:
   fec_nak:
     if: github.event_name == 'workflow_dispatch' && inputs.investigation == 'fec-nak'
     name: Linux early FEC NAK diagnosis
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

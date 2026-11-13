@@ -295,3 +295,20 @@ The fixture is not linked into the library and adds no public API. Normal
 socket creation continues to use random initial sequence numbers. Shared or
 test-disabled Robotweax peers reject `--minimum-isn` explicitly; their other
 interop operations remain available.
+
+
+### NAK-specific rendezvous qualification
+
+The Robotweax-sender rendezvous NAK cases inject a bounded loss window for each
+selected missing packet. Premature retries of that packet are dropped until the
+relay forwards the reference receiver's matching NAK. Each suppressed retry is
+recorded, with a hard limit of 16; unrelated NAKs do not open the window. The
+relay does not synthesize feedback. Delivery must still be byte-identical, with
+matching retransmission identity and ciphertext, and a matching NAK before the
+successful repair. Absence of that report fails qualification.
+
+This establishes the intended receiver-loss-report precondition. Having later
+packets in the same application write does not itself establish that precondition:
+congestion control and a flight-wide timeout can retry the missing packet before
+later DATA exposes its gap. Separate single-drop causal and flight-tail RTO cases
+retain their original loss policy and recovery checks.

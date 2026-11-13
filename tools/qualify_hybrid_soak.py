@@ -51,25 +51,32 @@ def validate(output: str, seconds: int) -> list[dict]:
     return sorted(rows, key=lambda row: row["profile"])
 
 
+def require_source_tree(build: Path) -> None:
+    cache = (build / "CMakeCache.txt").read_text()
+    homes = re.findall(r"^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$", cache, re.MULTILINE)
+    if len(homes) != 1 or Path(homes[0]).resolve() != ROOT.resolve():
+        raise ValueError("build directory is not configured from this source checkout")
+
+
 def bind_build(build: Path, config: str, allow_dirty: bool, run=subprocess.run,
                output=subprocess.check_output) -> dict:
-    """Tie the binary about to run to the checked-out commit.
-
-    A clean worktree whose test binary is up to date was built from HEAD.
-    Uncommitted changes are refused unless allowed, and are then recorded as
-    not bound. The build step makes a stale binary current rather than
-    trusting its timestamp.
-    """
+    """Rebuild this checkout, refusing foreign sources or changes during build."""
+    require_source_tree(build)
     commit = output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    dirty = bool(output(["git", "status", "--porcelain"], cwd=ROOT, text=True))
-    if dirty and not allow_dirty:
+    status = output(["git", "status", "--porcelain"], cwd=ROOT, text=True)
+    if status and not allow_dirty:
         raise ValueError("uncommitted changes: the binary cannot be bound to a commit")
     result = run(["cmake", "--build", str(build), "--config", config,
                   "--target", "robotweax_srt_tests"], cwd=ROOT,
                  stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     if result.returncode:
         raise RuntimeError(f"build exit {result.returncode}: the binary is not up to date")
-    return {"commit": commit, "worktree_dirty": dirty, "binary_bound_to_commit": not dirty}
+    require_source_tree(build)
+    after_commit = output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    after_status = output(["git", "status", "--porcelain"], cwd=ROOT, text=True)
+    if after_commit != commit or after_status != status:
+        raise ValueError("source checkout changed during the build")
+    return {"commit": commit, "worktree_dirty": bool(status), "binary_bound_to_commit": not status}
 
 
 def digest(path: Path) -> str:

@@ -25,6 +25,23 @@ releases the previous FFmpeg state before reinitializing it, and releases
 partially initialized state before reporting a failed start. Without this
 cleanup, reconnect can discard the previous error-string allocation and
 FFmpeg state. Existing serialized start/writer joins remain unchanged.
+It also flushes the custom I/O context before closing and freeing the SRT or
+RIST URL context that the flush writes through. The pinned source frees the URL
+context first; a flush that still holds buffered data then reads and writes
+freed memory, which a native AddressSanitizer reproduction of that function
+confirms. It is not established as the cause of the intermittent desktop
+reconnect failures.
+Finally, it discards the packets a failed writer left queued. A writer that
+stops on a write error leaves its queue and semaphore counts behind, and the
+next writer starts before the new muxer header is written. It then passes a
+stale packet to an uninitialized FFmpeg muxer, which calls a null function
+pointer; the crashing OBS sends nothing and the new listener times out with
+zero bytes. Hosted run 43313241961 (macOS) sampled that state: the newest OBS
+thread at address zero called from libavformat, all other threads frozen. A
+native FFmpeg reproduction of a write before the header faults the same way.
+The Windows reconnect timeout of hosted run 43232416015 has the same
+signature; that a stale packet was queued in either run is inferred, not
+observed.
 The correction validates the original file's SHA-256, is idempotent, and
 rejects unknown or partially modified source. The headless recipe remains
 unpatched; do not reuse a desktop checkout for it.
@@ -39,7 +56,7 @@ OBS-version-scoped lifecycle finding, not an SRT wire-compatibility rule.
 The script contains no copied upstream implementation. The modified OBS
 build retains OBS's upstream license; this does not relicense its source.
 
-The supported test setup is Ubuntu 24.04, X11/Xvfb, Mesa software rendering,
+The supported test setup is Ubuntu 26.04, X11/Xvfb, Mesa software rendering,
 IPv4 loopback, H.264/AAC MPEG-TS, and cleartext or AES-CTR. The restricted
 FFmpeg profile is not a general media player. Browser sources, screen/device
 capture, desktop/microphone capture, hardware encoders, Wayland, Windows and
@@ -102,7 +119,10 @@ user's scenes, stream keys, plugins or OBS preferences. Test passphrases are
 public synthetic fixtures, not credentials.
 
 The test opens the real Qt application and operates its start/stop streaming
-hotkeys. It checks native SRT output against an isolated Haivision-backed
+hotkeys. The fixture resolves the unmodified XKB keycode and injects that numeric
+code: symbolic libxdo lookup can select an Alt-modified alias for F9. Opt-in
+diagnostics record the loaded streaming bindings, Qt key events and routed
+callbacks in the fixture log. It checks native SRT output against an isolated Haivision-backed
 GStreamer receiver, cleartext and encrypted. An additional encrypted duplex
 case receives through the GUI media source and forwards through the native
 output in the same OBS process. The visible application window must exist.

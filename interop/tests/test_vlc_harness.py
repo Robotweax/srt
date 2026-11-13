@@ -76,6 +76,40 @@ class VlcHarnessTests(unittest.TestCase):
         helper = (ROOT / "tests/vlc/configure.sh").read_text()
         self.assertLess(helper.index("prepare_source.py"), helper.index("./bootstrap"))
 
+    def test_reference_requires_every_distinct_fixture_frame(self):
+        complete = [f"{i:016x}" for i in range(50)]
+        cases = [(complete, True), (complete[:-1], False),
+                 (complete[:13] + [complete[13]] * 12 + complete[25:], False)]
+        for frames, valid in cases:
+            with self.subTest(valid=valid), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "reference-decode").touch()
+                output = "".join("FRAME " + value + "\n" for value in frames)
+                with mock.patch.object(vlc.gst, "extract"), mock.patch.object(
+                    vlc.gst, "run", return_value=output
+                ):
+                    if valid:
+                        self.assertEqual(vlc.reference_frames(Path("ffmpeg"), root / "fixture.ts", root), set(complete))
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "all 50 distinct"):
+                            vlc.reference_frames(Path("ffmpeg"), root / "fixture.ts", root)
+
+    def test_incomplete_playback_cannot_define_network_expected_frames(self):
+        complete = {f"{i:016x}" for i in range(50)}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline.log"
+            baseline.with_suffix(".frames").write_text(
+                "".join(f"FRAME {i:016x}\n" for i in range(13, 47)))
+            vlc.require_local_frames(baseline, complete)
+            network = root / "network.log"
+            network.write_text('using access module "access_srt"\n')
+            network.with_suffix(".frames").write_text(
+                "".join(f"FRAME {i:016x}\n" for i in range(20)))
+            vlc.require_frames(network, complete)
+            with self.assertRaisesRegex(RuntimeError, "differs"):
+                vlc.require_frames(network, set(vlc.hashes(baseline)))
+
     def test_frames_require_media_identity_and_real_input_module(self):
         frames = [f"{value:016x}" for value in range(20)]
         with tempfile.TemporaryDirectory() as directory:

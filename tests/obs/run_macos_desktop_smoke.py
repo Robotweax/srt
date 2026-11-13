@@ -252,7 +252,8 @@ def desktop_command(executable: Path, config: Path, *, stream: bool):
         for key, value in os.environ.items()
         if not key.startswith(("DYLD_", "OBS_", "QT_"))
     }
-    env.update(HOME=str(home), CFFIXED_USER_HOME=str(home), LC_ALL="C")
+    env.update(HOME=str(home), CFFIXED_USER_HOME=str(home), LC_ALL="C",
+               ROBOTWEAX_OBS_TRACE_ALLOCATIONS="1")
     command = [
         str(executable),
         "--multi",
@@ -495,6 +496,18 @@ def run_desktop(args, executable: Path, config: Path, label: str, *, stream: boo
     return command, env, stdout
 
 
+def verify_preview_asset(executable: Path, ffmpeg: Path, artifacts: Path):
+    image = executable.parents[1] / "Resources/images/overflow.png"
+    result = subprocess.run(
+        [str(ffmpeg), "-v", "error", "-i", str(image), "-frames:v", "1",
+         "-c:v", "rawvideo", "-pix_fmt", "rgba", "-f", "framehash", "-"],
+        check=True, capture_output=True, text=True, timeout=15,
+    )
+    (artifacts / "preview-asset.frames").write_text(result.stdout)
+    if len(re.findall(r"^0,.*?, ([0-9a-f]{64})$", result.stdout, re.M)) != 1:
+        raise RuntimeError("OBS preview PNG did not decode into one frame")
+
+
 def qualify(args: argparse.Namespace) -> None:
     args.artifacts.mkdir(parents=True, exist_ok=False)
     executable = bundle_contract(args)
@@ -517,6 +530,7 @@ def qualify(args: argparse.Namespace) -> None:
     )
     reference_env = reference_environment(args.reference_prefix)
     ffmpeg = args.ffmpeg_prefix / "bin/ffmpeg"
+    verify_preview_asset(executable, ffmpeg, args.artifacts)
     if not args.fixture.is_file() or not args.reference_peer.is_file():
         raise RuntimeError(
             "the module qualification did not produce a fixture and reference peer"

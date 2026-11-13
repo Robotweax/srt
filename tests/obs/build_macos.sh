@@ -23,6 +23,7 @@ work="$(cd "$3" && pwd -P)"
 source_exclusions=(':!plugins/CMakeLists.txt')
 if [[ "$profile" == desktop ]]; then
     source_exclusions+=(':!plugins/obs-ffmpeg/obs-ffmpeg-mpegts.c')
+    source_exclusions+=(':!libobs/util/bmem.c' ':!frontend/OBSApp.cpp' ':!frontend/widgets/OBSBasic_Hotkeys.cpp')
 fi
 [[ -z "$(git -C "$obs_source" status --porcelain --untracked-files=no -- . "${source_exclusions[@]}")" ]]
 for directory in srt-build srt ffmpeg-build ffmpeg obs-build deps evidence; do
@@ -85,13 +86,13 @@ mkdir -p "$work/ffmpeg-build"
     cd "$work/ffmpeg-build"
     "$ffmpeg_source/configure" --prefix="$work/ffmpeg" --libdir="$work/ffmpeg/lib" \
         --disable-autodetect --disable-debug --disable-doc --disable-static \
-        --enable-shared --disable-everything --enable-libsrt \
+        --enable-shared --disable-everything --enable-libsrt --enable-zlib \
         --enable-ffmpeg --enable-ffprobe --enable-avdevice --enable-avfilter \
         --enable-swscale --enable-swresample \
         --enable-encoder=mpeg2video,aac,pcm_s16le,rawvideo,wrapped_avframe \
-        --enable-decoder=h264,aac,mpeg2video,pcm_s16le,wrapped_avframe \
+        --enable-decoder=h264,aac,mpeg2video,pcm_s16le,wrapped_avframe,png \
         --enable-parser=h264,aac,mpegvideo \
-        --enable-demuxer=mpegts \
+        --enable-demuxer=mpegts,image2,image2pipe \
         --enable-muxer=mpegts,framehash,pcm_s16le \
         --enable-protocol=file,pipe,libsrt \
         --enable-filter=testsrc2,sine,aresample,scale,format,aformat,anull,null \
@@ -103,6 +104,8 @@ make -C "$work/ffmpeg-build" REVISION="$(<"$ffmpeg_source/RELEASE")-3acec0a" ins
 
 if [[ "$profile" == desktop ]]; then
     "$repository/tools/python" "$repository/tests/obs/prepare_desktop_lifecycle.py" "$obs_source"
+    "$repository/tools/python" "$repository/tests/obs/prepare_desktop_trace.py" "$obs_source"
+    "$repository/tools/python" "$repository/tests/obs/prepare_desktop_swapchain.py" "$obs_source"
 fi
 "$repository/tools/python" "$repository/tests/obs/prepare_source.py" "$obs_source" \
     --profile "$selection"

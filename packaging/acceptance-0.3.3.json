@@ -1,0 +1,42 @@
+{
+  "version": "0.3.3",
+  "product_commit": "f5948a4b059aa1c8e7aa5e932053f92ff37eb6ff",
+  "decision_date": "2026-11-11",
+  "decision": "Owner accepted proceeding with final qualification with the unresolved macOS identity-rendezvous timeout recorded as a residual risk.",
+  "root_cause_established": false,
+  "timeout_marked_fixed": false,
+  "isolated_rendezvous_passes": 600,
+  "full_sequence_local_cases": 900,
+  "full_sequence_hosted_cases": 900,
+  "full_sequence_retries": 0,
+  "hosted_run": "https://github.com/Robotweax/srt/actions/runs/43035645485",
+  "scope": "Only the historical identity timeout and the additional accepted risk below. All other required release gates must pass.",
+  "previous_product_commit": "4a1e49166bd761d7f065bc5a4b9c924ca73333ea",
+  "linux_baseline": "Ubuntu 26.04",
+  "migration_instruction_date": "2026-11-11",
+  "final_source_instruction_date": "2026-11-12",
+  "additional_accepted_risks": [
+    {
+      "risk": "Intermittent OBS desktop automatic SRT reconnect failure (Windows timeout, macOS zero-byte listener)",
+      "decision_date": "2026-11-12",
+      "decision": "Owner accepted proceeding to merge with the unexplained reconnect timeout recorded as a residual risk.",
+      "root_cause_established": false,
+      "marked_fixed": false,
+      "first_failure": "https://github.com/Robotweax/srt/actions/runs/43232416015/job/131231042658",
+      "observation": "A new reference listener accepted OBS's reconnection, received no data for its 5 second receive timeout and ended with 0 bytes; OBS logged nothing further.",
+      "related_correction": "becfc32 flushes the OBS MPEG-TS I/O context before freeing its URL context (use-after-free confirmed by AddressSanitizer). Not established as the cause.",
+      "passing_full_ci_runs_since": [
+        "https://github.com/Robotweax/srt/actions/runs/43241435093",
+        "https://github.com/Robotweax/srt/actions/runs/43250057217"
+      ],
+      "diagnostic": "The Windows reference receiver records RECEIVE_END with byte count, socket state and SRT error.",
+      "scope": "Only this OBS desktop reconnect fixture failure on Windows and macOS. It is not a waiver of either OBS desktop job.",
+      "mechanism_identified": true,
+      "mechanism": "A failed OBS MPEG-TS writer leaves queued packets behind; the next writer starts before the muxer header is written and passes a stale packet to an uninitialized FFmpeg muxer, which calls a null function pointer. Sampled on macOS in run 43313241961 and reproduced natively in FFmpeg. That a stale packet was queued in either hosted failure is inferred, not observed.",
+      "correction": "f5948a4 frees the previous writer's queue before the next start, in the version-locked OBS lifecycle correction.",
+      "further_failures": [
+        "https://github.com/Robotweax/srt/actions/runs/43313241961"
+      ]
+    }
+  ]
+}

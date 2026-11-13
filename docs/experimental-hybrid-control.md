@@ -2003,7 +2003,11 @@ unauthenticated runtime KM and forward-secrecy limitations remain.
 
 ### Linux compiler and runtime qualification
 
-The same strict soak driver is used on Ubuntu 24.04 ARM64 with GCC 13 Release
+Current Linux CI and release qualification target Ubuntu 26.04. The local VM
+evidence below retains its original environment and does not qualify that migration.
+
+The recorded local qualification used the same strict soak driver on Ubuntu 24.04
+ARM64 with GCC 13 Release
 and Clang 18 sanitizer builds using OpenSSL, in an isolated checkout inside a local Lima Linux VM. This exercises
 the Linux kernel/socket/runtime and libstdc++ paths on ARM64; it is not a second
 physical machine, another CPU architecture or a WAN/separate-network result.

@@ -165,6 +165,14 @@ Wait for `CONNECTED` on both sides before starting the UDP source. The earlier
 `CONNECTING SRT rendezvous` line only announces an attempt, not an established
 connection. Optional AES-CTR works in Rendezvous as described below.
 
+Connection setup is nonblocking internally so SIGINT/SIGTERM (on Windows, Ctrl+C
+or Ctrl+Break) can stop a pending caller or rendezvous attempt without waiting
+for its connection timeout. Blocking
+transfer behavior is restored after connection. `INPUT RESERVED UDP port=...`
+confirms that a sender owns its UDP input before SRT setup; it is not a signal
+to start feeding live media. The loopback fixture holds unused endpoint ports
+until handoff and starts this input owner before the other bridge process.
+
 On separate machines, use an appropriate local bind address (default
 `0.0.0.0`) and the peer's reachable IPv4 address. Firewall/NAT configuration
 must allow the matching UDP endpoints in both directions. Rendezvous is not

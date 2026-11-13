@@ -48,7 +48,7 @@ concurrency:
 jobs:
   changes:
     name: Change classification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -219,7 +219,7 @@ jobs:
 
   dco:
     name: DCO sign-off
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -252,7 +252,7 @@ jobs:
     name: Documentation
     needs: changes
     if: needs.changes.outputs.documentation == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -265,7 +265,7 @@ jobs:
     name: Python harness tests
     needs: changes
     if: needs.changes.outputs.python == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -285,7 +285,7 @@ jobs:
     name: C++ format guard
     needs: changes
     if: needs.changes.outputs.format == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -327,7 +327,7 @@ jobs:
       needs.changes.outputs.cpp == 'true'
       || needs.changes.outputs.examples == 'true'
       || needs.changes.outputs.package == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -390,10 +390,10 @@ jobs:
     name: GCC 15 Release epoll
     needs: changes
     if: needs.changes.outputs.cpp == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     container:
-      image: ubuntu:26.10@sha256:93e29beff5257b2cdf1c024d831f6d2997e53655a653ff76a811fc9e6564a719
+      image: ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
     env:
       CC: gcc-15
       CXX: g++-15
@@ -425,7 +425,7 @@ jobs:
     if: >-
       needs.changes.outputs.timing == 'true'
       && needs.changes.outputs.core_tests != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -547,7 +547,7 @@ jobs:
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-26.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -584,7 +584,7 @@ jobs:
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-26.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -633,7 +633,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-26.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -666,7 +666,7 @@ jobs:
     name: FFmpeg integration
     needs: changes
     if: needs.changes.outputs.ffmpeg == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -742,7 +742,7 @@ jobs:
     name: GStreamer integration
     needs: changes
     if: needs.changes.outputs.gstreamer == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -795,7 +795,7 @@ jobs:
     name: OBS integration
     needs: changes
     if: needs.changes.outputs.obs == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1027,10 +1027,21 @@ jobs:
           ref: ${{ env.FFMPEG_COMMIT }}
           path: ffmpeg-source
           persist-credentials: false
+      - name: Verify macOS core and debugger capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/obs-macos-cores"
+          sudo sysctl -w kern.coredump=1
+          sudo sysctl -w "kern.corefile=$RUNNER_TEMP/obs-macos-cores/core.%P"
+          ulimit -c unlimited
+          python3 tests/obs/macos_core_backtrace.py self-test \
+            "$RUNNER_TEMP/obs-macos-cores" "$RUNNER_TEMP/obs-core-probe.txt"
       - name: Build and qualify OBS Qt desktop on Apple Silicon
         shell: bash
         run: |
           set -euo pipefail
+          ulimit -c unlimited
           xcodebuild -version
           JOBS=3 tests/obs/build_macos.sh \
             "$GITHUB_WORKSPACE/obs-desktop-source" \
@@ -1039,12 +1050,22 @@ jobs:
       - name: Collect failed endpoint crash reports
         if: failure()
         run: python3 tests/obs/collect_macos_failure.py "$RUNNER_TEMP/obs-macos-desktop-qualification/evidence/desktop"
+      - name: Capture failed endpoint debugger backtraces
+        if: failure()
+        run: |
+          python3 tests/obs/macos_core_backtrace.py collect \
+            "$RUNNER_TEMP/obs-macos-cores" \
+            "$RUNNER_TEMP/obs-macos-desktop-qualification/evidence/desktop"
+      - name: Symbolize outstanding OBS allocations
+        if: always()
+        run: python3 tests/obs/symbolize_allocations.py "$RUNNER_TEMP/obs-macos-desktop-qualification/evidence/desktop"
       - name: Preserve macOS OBS desktop text diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: obs-macos-desktop-evidence
           path: |
+            ${{ runner.temp }}/obs-core-probe.txt
             ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/*.log
             ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/*.txt
             ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/desktop/*.log
@@ -1059,7 +1080,7 @@ jobs:
     name: VLC integration
     needs: changes
     if: needs.changes.outputs.vlc == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1113,6 +1134,8 @@ jobs:
             ${{ runner.temp }}/vlc-qualification/evidence/*.log
             ${{ runner.temp }}/vlc-qualification/evidence/*.txt
             ${{ runner.temp }}/vlc-qualification/evidence/*.frames
+            ${{ runner.temp }}/vlc-qualification/evidence/*.ts
+            ${{ runner.temp }}/vlc-qualification/evidence/*.m2v
             ${{ runner.temp }}/vlc-qualification/vlc-build/config.log
             ${{ runner.temp }}/vlc-qualification/gst-build/meson-logs/
           retention-days: 7
@@ -1126,7 +1149,7 @@ jobs:
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-26.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -1233,7 +1256,7 @@ jobs:
     name: Address/undefined sanitizers
     needs: changes
     if: needs.changes.outputs.sanitizers == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
       CFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
@@ -1263,7 +1286,9 @@ jobs:
           cmake --build build --target robotweax_srt_ubsan_canary
           python3 tests/sanitizers/verify_ubsan.py build/robotweax_srt_ubsan_canary
       - name: Build
-        run: cmake --build build --parallel
+        # An unbounded Make job count exhausts the hosted runner's memory
+        # with sanitizer instrumentation and the runner is shut down.
+        run: cmake --build build --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
@@ -1271,7 +1296,7 @@ jobs:
     name: Thread sanitizer
     needs: changes
     if: needs.changes.outputs.thread_sanitizer == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1321,7 +1346,7 @@ jobs:
     name: Fuzz smoke
     needs: changes
     if: needs.changes.outputs.fuzz == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
       UBSAN_OPTIONS: halt_on_error=1
@@ -1394,7 +1419,7 @@ jobs:
     if: >-
       needs.changes.outputs.interop == 'true'
       || needs.changes.outputs.benchmark == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1729,7 +1754,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.changes.outputs.reference_matrix) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     env:
       LD_LIBRARY_PATH: ${{ github.workspace }}/reference-build
@@ -2332,7 +2357,7 @@ jobs:
       - changes
       - reference_interop_prepare
       - reference_interop_shard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Require preparation and every selected shard to pass
@@ -2449,13 +2474,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             backend: openssl
           - os: macos-latest
             backend: openssl
           - os: windows-latest
             backend: openssl
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             backend: mbedtls
           - os: windows-latest
             backend: bcrypt
@@ -2535,7 +2560,7 @@ jobs:
       - reference_interop
       - mbedtls_backend
       - multicast_qualification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       # A successful run plus this successful step proves full selection.

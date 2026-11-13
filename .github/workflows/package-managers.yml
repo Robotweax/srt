@@ -69,8 +69,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-24.04, triplet: x64-linux}
-          - {os: ubuntu-24.04, triplet: x64-linux-dynamic}
+          - {os: ubuntu-26.04, triplet: x64-linux}
+          - {os: ubuntu-26.04, triplet: x64-linux-dynamic}
           - os: windows-2022
             triplet: x64-windows-static
             msvc_runtime: 'MultiThreaded$<$<CONFIG:Debug>:Debug>'

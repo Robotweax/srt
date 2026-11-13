@@ -256,7 +256,10 @@ int main(int argc, char** argv)
                 break;
             }
         }
-        if (bus_failed(bus)) {
+        /* The filtered pop discards every other message. The sender takes
+         * both EOS and errors from its own wait above; a second pop here
+         * could drop an EOS posted between the two calls. */
+        if (!sending && bus_failed(bus)) {
             goto cleanup;
         }
     }

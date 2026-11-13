@@ -4,22 +4,32 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import errno
 import os
 from pathlib import Path
 import queue
+import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 
 
 class Peer:
-    def __init__(self, command: list[str], environment: dict[str, str]) -> None:
+    def __init__(self, command: list[str], environment: dict[str, str],
+                 interruptible: bool = False) -> None:
         self.program = command[0]
+        # Windows has no SIGTERM: terminate() kills the process outright.
+        # Its console stop request is Ctrl+Break, which can only be addressed
+        # to a child that leads its own process group.
+        self.console_break = interruptible and os.name == "nt"
         self.process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, env=environment,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP
+                           if self.console_break else 0),
         )
         self.lines: list[str] = []
         self.events: queue.Queue[str] = queue.Queue()
@@ -52,7 +62,10 @@ class Peer:
 
     def close(self) -> None:
         if self.process.poll() is None:
-            self.process.terminate()
+            if self.console_break:
+                self.process.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                self.process.terminate()
         try:
             self.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -75,6 +88,28 @@ def free_port(excluded: set[int]) -> int:
     raise RuntimeError("cannot allocate distinct loopback ports")
 
 
+def reserve_port(stack):
+    reservation = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+    reservation.bind(("127.0.0.1", 0))
+    return reservation
+
+
+def close_peers(peers):
+    original_failure = sys.exc_info()[0] is not None
+    errors = []
+    for peer in reversed(peers):
+        try:
+            peer.close()
+        except Exception as error:
+            errors.append(str(error))
+    if errors:
+        message = "bridge cleanup: " + "; ".join(errors)
+        if original_failure:
+            print(message, file=sys.stderr)
+        else:
+            raise AssertionError(message)
+
+
 def run_bridge(demo: Path, reverse: bool = False, encrypted: bool = False,
                invalid: bytes | None = None, rendezvous: bool = False,
                multicast: bool = False, restart_sender: bool | None = None,
@@ -84,7 +119,7 @@ def run_bridge(demo: Path, reverse: bool = False, encrypted: bool = False,
     environment[secret_name] = "public-loopback-fixture-only"
     peers: list[Peer] = []
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sink, \
-            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as source:
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as source, ExitStack() as reservations:
         input_host = "239.255.42.1" if multicast else "127.0.0.1"
         output_host = "239.255.42.2" if multicast else "127.0.0.1"
         sink.bind(("0.0.0.0" if multicast else "127.0.0.1", 0))
@@ -96,8 +131,10 @@ def run_bridge(demo: Path, reverse: bool = False, encrypted: bool = False,
             source.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
         sink.settimeout(5)
         output_port = int(sink.getsockname()[1])
-        input_port = free_port({output_port})
-        srt_port = free_port({input_port, output_port})
+        input_reservation = reserve_port(reservations)
+        srt_reservation = reserve_port(reservations)
+        input_port = input_reservation.getsockname()[1]
+        srt_port = srt_reservation.getsockname()[1]
         common = ["--srt-host", "127.0.0.1",
                   "--latency-ms", "40", "--stats-interval-ms", "200",
                   "--input-idle-ms", "400"]
@@ -113,7 +150,8 @@ def run_bridge(demo: Path, reverse: bool = False, encrypted: bool = False,
                             "--srt-mode", "caller" if reverse else "listener",
                             "--srt-port", str(srt_port), *common]
         if rendezvous:
-            second_port = free_port({input_port, output_port, srt_port})
+            second_reservation = reserve_port(reservations)
+            second_port = second_reservation.getsockname()[1]
             rv_common = [*common, "--srt-mode", "rendezvous",
                          "--srt-bind-host", "127.0.0.1"]
             sender_command = [str(demo), "send", "--udp-port", str(input_port),
@@ -132,15 +170,23 @@ def run_bridge(demo: Path, reverse: bool = False, encrypted: bool = False,
             sender_command += ["--udp-interface", "127.0.0.1"]
             receiver_command += ["--udp-interface", "127.0.0.1", "--udp-ttl", "3"]
         try:
-            listener = Peer(sender_command if reverse else receiver_command, environment)
-            peers.append(listener)
-            listener.wait_for("CONNECTING SRT rendezvous" if rendezvous else "READY")
-            caller = Peer(receiver_command if reverse else sender_command, environment)
-            peers.append(caller)
-            listener.wait_for("CONNECTED")
-            caller.wait_for("CONNECTED")
-            sender = listener if reverse else caller
-            receiver = caller if reverse else listener
+            # Start the input owner first. Other endpoints stay reserved until
+            # their owner launches, so an earlier peer cannot acquire them.
+            input_reservation.close()
+            if reverse or rendezvous:
+                srt_reservation.close()
+            sender = Peer(sender_command, environment)
+            peers.append(sender)
+            sender.wait_for("INPUT RESERVED")
+            sender.wait_for("READY" if reverse and not rendezvous else "CONNECTING")
+            if rendezvous:
+                second_reservation.close()
+            elif not reverse:
+                srt_reservation.close()
+            receiver = Peer(receiver_command, environment)
+            peers.append(receiver)
+            sender.wait_for("CONNECTED")
+            receiver.wait_for("CONNECTED")
             if invalid is not None:
                 source.sendto(invalid, (input_host, input_port))
                 if sender.process.wait(timeout=5) != 1:
@@ -230,8 +276,53 @@ def run_bridge(demo: Path, reverse: bool = False, encrypted: bool = False,
                 f"{error}\n" + "\n".join("".join(peer.lines) for peer in peers)
             ) from error
         finally:
-            for peer in reversed(peers):
+            close_peers(peers)
+
+
+def run_setup_shutdown(demo: Path) -> None:
+    """A stop request (SIGTERM, or Ctrl+Break on Windows) must interrupt a
+    real pending rendezvous, not await its timeout."""
+    for role in ("send", "receive"):
+        with ExitStack() as reservations:
+            ports = [reserve_port(reservations) for _ in range(3)]
+            udp, local, remote = [p.getsockname()[1] for p in ports]
+            ports[0].close()
+            ports[1].close()
+            peer = Peer([str(demo), role, "--udp-port", str(udp),
+                         "--srt-mode", "rendezvous", "--srt-host", "127.0.0.1",
+                         "--srt-local-port", str(local), "--srt-port", str(remote),
+                         "--connect-timeout-ms", "60000"], os.environ.copy(),
+                        interruptible=True)
+            try:
+                peer.wait_for("CONNECTING SRT rendezvous")
+                time.sleep(0.15)
+                assert peer.process.poll() is None, "setup was not pending"
+                # Probe each port on the exact address the bridge bound: Windows
+                # lets a default socket bind a specific address beside a
+                # wildcard holder of the same port (and the reverse), so only
+                # an identical address proves the port is still held there.
+                owned = [("0.0.0.0", local)]
+                if role == "send":
+                    owned.append(("127.0.0.1", udp))
+                for host, port in owned:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                        try:
+                            probe.bind((host, port))
+                        except OSError as error:
+                            assert error.errno in (errno.EADDRINUSE, 10048)
+                        else:
+                            raise AssertionError("setup readiness did not retain its port")
+                started = time.monotonic()
                 peer.close()
+                assert time.monotonic() - started < 2, "setup shutdown exceeded 2 seconds"
+                assert peer.process.returncode == 0, ''.join(peer.lines)
+                assert "STOPPED connections=0" in ''.join(peer.lines)
+                # The aborted setup must release its socket and input reservation.
+                for port in (udp, local):
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                        probe.bind(("127.0.0.1", port))
+            finally:
+                close_peers([peer])
 
 
 def run_input_reservation(demo: Path) -> None:
@@ -288,8 +379,7 @@ def run_input_reservation(demo: Path) -> None:
                 + "\n".join("".join(peer.lines) for peer in peers)
             ) from error
         finally:
-            for peer in reversed(peers):
-                peer.close()
+            close_peers(peers)
     # All reservation and relay sockets must also be released on shutdown.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as released:
         released.bind(("127.0.0.1", input_port))
@@ -342,8 +432,7 @@ def run_failure_policy(demo: Path) -> None:
         except Exception as error:
             raise AssertionError(f"{scenario}: {error}\n" + "\n".join("".join(p.lines) for p in peers)) from error
         finally:
-            for peer in reversed(peers):
-                peer.close()
+            close_peers(peers)
 
 
 def main() -> None:
@@ -384,6 +473,7 @@ def main() -> None:
             capture_output=True, timeout=5, env=environment,
         )
         assert rejected.returncode == 1, extra
+    run_setup_shutdown(demo)
     run_input_reservation(demo)
     for reverse, encrypted in ((False, False), (True, False), (False, True)):
         run_bridge(demo, reverse=reverse, encrypted=encrypted)
