@@ -4,12 +4,79 @@ The initial product failed full CI. The owner declared the corrected source fina
 on 12 November 2026 and, after two OBS fixture corrections, declared their result
 final the same day. That product qualified, but its last full CI run exposed a
 race in the GStreamer test peer; the owner directed a third freeze with that
-fixture corrected. Qualification of the current product is recorded below as it
-completes. This record does not authorize publication.
+fixture corrected. Its last full CI run in turn failed the OBS macOS desktop
+reconnect; a crash in the pinned OBS reconnect path was identified and the
+owner directed a fourth freeze on 13 November 2026 with that fixture corrected.
+Qualification of the current product is recorded below as it completes. This
+record does not authorize publication.
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
 ## Current final product
+
+On 13 November 2026 the owner directed a re-freeze after the OBS writer-queue
+correction described under "OBS reconnect follow-up" below. It differs from the
+superseded product only in `tests/obs/prepare_desktop_lifecycle.py`,
+`interop/tests/test_obs_harness.py` and `docs/obs-desktop.md`. Library sources,
+public headers, examples and every other fixture are unchanged.
+
+- Product commit: `f5948a4b059aa1c8e7aa5e932053f92ff37eb6ff`.
+- [Public archive](https://github.com/Robotweax/srt/archive/f5948a4b059aa1c8e7aa5e932053f92ff37eb6ff.tar.gz); 3180482 bytes.
+- SHA-256: `ccc2c409790f0d72bedbc7f87ebeb429fe723716af3b30bdd87f52fbc3d79ec7`.
+- SHA-512: `873bcd6a239e4f34156c1f0bbb1dc0cb24deb0d30a8446e6098fe0df5db9824c6b2e26bc41cd27bc671b60dfdb7ce0bb2a8e5e9301c0764b514630f741a14ec8`.
+- All 958 regular files and executable bits verified against Git; two downloads were byte-identical.
+- [Current identity](source-0.3.3.json); [accepted risk](acceptance-0.3.3.json).
+- `dev/release-0.3.3-product` advertises this commit.
+
+Hosted, package, downstream and soak results on this product are pending and
+will be recorded here.
+
+Open on this product:
+
+- The OBS desktop reconnect correction has a demonstrated mechanism but the
+  failure is intermittent; passing runs do not show it is gone. The accepted
+  risk in [acceptance-0.3.3.json](acceptance-0.3.3.json) stays open and now
+  covers both desktop platforms.
+- The unmeasured first failures recorded under the superseded products carry
+  forward: the macOS group receive timing failure, the macOS UDP bridge
+  connection failure and the `ubuntu-26.04 Debug` runner shutdown.
+- Then the protected annotated tag, independent Windows rebuild/signing and
+  final asset verification.
+
+## Superseded third final product
+
+### OBS reconnect follow-up
+
+[Full CI, 43313241961](https://github.com/Robotweax/srt/actions/runs/43313241961) ran on `6a1bc07`, whose frozen paths
+equal this superseded product. All nine pull-request workflows on that commit
+passed, and every full CI job passed except OBS macOS desktop: after OBS
+reconnected, the new reference listener received no data for its 5 second
+receive timeout and exited with 0 bytes. The job was not rerun.
+
+Evidence from that run and from the pinned OBS source:
+
+- The OBS log shows the reconnect completing and the stream description
+  printed once; the second description, printed when the first packet writes
+  the muxer header, never appears in the following 20 seconds. Passing runs
+  print it within a second.
+- The stack sample of the still-running OBS shows its newest thread at address
+  zero called from libavformat, and every runnable thread at one fixed
+  instruction for the whole sample, as in a task stopped for crash handling.
+- In the pinned source a writer that stops on a write error leaves its packet
+  queue and semaphore counts behind, and the next writer starts before the new
+  muxer header is written. New packets cannot reach it before the header, so
+  only a stale packet can be written then.
+- A native FFmpeg reproduction of `av_interleaved_write_frame` before
+  `avformat_write_header` faults at address zero with the caller in
+  libavformat; with the header written first it returns normally.
+
+That a stale packet was queued in the hosted run is inferred from these points,
+not observed. The Windows desktop reconnect timeout of run 43232416015 has the
+same signature. Corrected in `f5948a4`, which frees the previous writer's queue
+before the next start. The correction was not run inside OBS before this
+freeze; the hosted OBS jobs are its first execution.
+
+### Product record
 
 On 12 November 2026 the owner directed a re-freeze after the GStreamer fixture
 correction described under "GStreamer sender follow-up" below. It differs from
@@ -22,7 +89,7 @@ headers, examples and every other fixture are unchanged.
 - SHA-512: `b10c2c0e867b4ec2babe3964d3cef25f282222bdab1fc13103b671aaecd586622e9697bc05c1e85ef30bed8679f657adac2a84ea444c1e8fd3b6762fd20eb64b`.
 - All 958 regular files and executable bits verified against Git; two downloads were byte-identical.
 - [Current identity](source-0.3.3.json); [accepted risk](acceptance-0.3.3.json).
-- `dev/release-0.3.3-product` advertises this commit.
+- `dev/release-0.3.3-product` advertised this commit.
 
 Recipe commit `084ed25` selects this archive and leaves every frozen path
 unchanged. Results on it:
@@ -58,9 +125,9 @@ the product commit, Release/OpenSSL, CTR and GCM at 30 seconds each.
 Commit `99cb5ad` carries only the soak record; its message also names the
 build-count change and these results, which landed in the following commit.
 
-A complete green full CI run on this product is still pending.
+No complete green full CI run was obtained on this product.
 
-Open on this product:
+Open when this product was superseded:
 
 - The accepted Windows desktop reconnect timeout and the unmeasured macOS group
   receive timing failure, both described under the superseded second final
