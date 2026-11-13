@@ -1149,6 +1149,10 @@ class ObsHarnessTests(unittest.TestCase):
             + lifecycle.CLOSE_URL
             + lifecycle.CLOSE_IO
             + b"}\n"
+            + lifecycle.START
+            + b"void) {\n"
+            + lifecycle.JOIN
+            + b"\treturn true;\n}\n"
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1170,6 +1174,14 @@ class ObsHarnessTests(unittest.TestCase):
                 self.assertLess(fixed.index(b"avio_flush(s);"), fixed.index(b"libsrt_close(h);"))
                 self.assertLess(fixed.index(b"avio_flush(s);"), fixed.index(b"av_freep(&h);"))
                 self.assertEqual(fixed.count(b"avio_flush(s);"), 1)
+                # A failed writer's queue is dropped after it is joined and
+                # before the next writer can see it.
+                self.assertIn(lifecycle.DISCARD, fixed)
+                self.assertLess(
+                    fixed.index(b"pthread_join(stream->write_thread, NULL);"),
+                    fixed.index(b"da_free(stream->packets);"),
+                )
+                self.assertEqual(fixed.count(b"da_free(stream->packets);"), 1)
                 self.assertFalse(lifecycle.prepare(root))
                 target.write_bytes(
                     fixed.replace(lifecycle.CLEAN_FAILURE, lifecycle.FAIL)

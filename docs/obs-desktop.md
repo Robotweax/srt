@@ -29,8 +29,19 @@ It also flushes the custom I/O context before closing and freeing the SRT or
 RIST URL context that the flush writes through. The pinned source frees the URL
 context first; a flush that still holds buffered data then reads and writes
 freed memory, which a native AddressSanitizer reproduction of that function
-confirms. Whether this defect caused the intermittent Windows desktop
-reconnect timeout of hosted run 43232416015 is not established.
+confirms. It is not established as the cause of the intermittent desktop
+reconnect failures.
+Finally, it discards the packets a failed writer left queued. A writer that
+stops on a write error leaves its queue and semaphore counts behind, and the
+next writer starts before the new muxer header is written. It then passes a
+stale packet to an uninitialized FFmpeg muxer, which calls a null function
+pointer; the crashing OBS sends nothing and the new listener times out with
+zero bytes. Hosted run 43313241961 (macOS) sampled that state: the newest OBS
+thread at address zero called from libavformat, all other threads frozen. A
+native FFmpeg reproduction of a write before the header faults the same way.
+The Windows reconnect timeout of hosted run 43232416015 has the same
+signature; that a stale packet was queued in either run is inferred, not
+observed.
 The correction validates the original file's SHA-256, is idempotent, and
 rejects unknown or partially modified source. The headless recipe remains
 unpatched; do not reuse a desktop checkout for it.
