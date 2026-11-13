@@ -7,8 +7,9 @@ race in the GStreamer test peer; the owner directed a third freeze with that
 fixture corrected. Its last full CI run in turn failed the OBS macOS desktop
 reconnect; a crash in the pinned OBS reconnect path was identified and the
 owner directed a fourth freeze on 13 November 2026 with that fixture corrected.
-Qualification of the current product is recorded below as it completes. This
-record does not authorize publication.
+Its hosted, package, downstream and soak qualification passed and is recorded
+below; one accepted residual risk and three unmeasured first failures remain
+recorded. This record does not authorize publication.
 Project version is 0.3.3, ABI is 0.3, compatible API is 1.5.7; all 85 C exports
 from 0.3.2 are preserved. Historical qualification records remain unchanged.
 
@@ -28,8 +29,28 @@ public headers, examples and every other fixture are unchanged.
 - [Current identity](source-0.3.3.json); [accepted risk](acceptance-0.3.3.json).
 - `dev/release-0.3.3-product` advertises this commit.
 
-Hosted, package, downstream and soak results on this product are pending and
-will be recorded here.
+Recipe commit `a3b98ac` selects this archive and leaves every frozen path
+unchanged. Results on it, all successful on the first attempt:
+
+- [Full CI, 43383119151](https://github.com/Robotweax/srt/actions/runs/43383119151) with the Required CI gate and the
+  complete ecosystem suite, including both OBS desktop jobs and GStreamer
+  integration. This was the first execution of the writer-queue correction
+  inside OBS.
+- [Linux packages, 43383300102](https://github.com/Robotweax/srt/actions/runs/43383300102) and
+  [Package managers, 43383300327](https://github.com/Robotweax/srt/actions/runs/43383300327) from the exact archive: DEB,
+  RPM, Homebrew and the six vcpkg profiles.
+- Pull-request CI 43383300070, hybrid control 43383299986, ACP1 43383300076,
+  BCrypt 43383300196, Windows SDK 43383300090, identity timeout 43383300184 and
+  timing diagnostics 43383300094.
+
+Downstream Lab requests on the product commit all succeeded, with Haivision
+`899348d8318eb9a3c5a5b6ec43c4a1114288773a`, Telemetry
+`7a6b8eff65c686ccafa36a0adace148a8b87d3ca`, Doctor
+`88f8e33851f4fa975ab1b708e9f707d27505a399` and the telemetry endpoint profile:
+[smoke](https://github.com/Robotweax/srt_network_lab/actions/runs/43383123557), [interop](https://github.com/Robotweax/srt_network_lab/actions/runs/43383127211), [telemetry](https://github.com/Robotweax/srt_network_lab/actions/runs/43383130965).
+
+[Local macOS hybrid soak](soak-0.3.3-macos.json): passed on a clean checkout of
+the product commit, Release/OpenSSL, CTR and GCM at 30 seconds each.
 
 Open on this product:
 
