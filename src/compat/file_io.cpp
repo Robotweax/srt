@@ -1,6 +1,7 @@
 #include "compat/file_io.hpp"
 
 #include "compat/error_state.hpp"
+#include "compat/file_destination.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -232,7 +233,7 @@ std::int64_t send_file(
 
 static std::int64_t receive_file_impl(SocketRecord* socket,
     std::ostream& output, std::int64_t* offset, std::int64_t size,
-    int block_size, std::ofstream* destination = nullptr,
+    int block_size, FileDestination* destination = nullptr,
     const char* path = nullptr) noexcept;
 
 std::int64_t receive_file(
@@ -247,9 +248,10 @@ std::int64_t receive_file(
     }
 
     try {
-        std::ofstream output;
+        std::ostream output(nullptr);
+        FileDestination destination;
         return receive_file_impl(
-            socket, output, offset, size, block_size, &output, path);
+            socket, output, offset, size, block_size, &destination, path);
     } catch (const std::bad_alloc&) {
         return fail(SRT_ENOBUF);
     } catch (...) {
@@ -259,7 +261,7 @@ std::int64_t receive_file(
 
 static std::int64_t receive_file_impl(SocketRecord* socket,
     std::ostream& output, std::int64_t* offset, std::int64_t size,
-    int block_size, std::ofstream* destination, const char* path) noexcept
+    int block_size, FileDestination* destination, const char* path) noexcept
 {
     if (offset == nullptr || block_size <= 0) {
         return fail(SRT_EINVPARAM);
@@ -288,38 +290,27 @@ static std::int64_t receive_file_impl(SocketRecord* socket,
             return fail(SRT_EINVWROFF);
         }
         if (destination != nullptr) {
-            // Validate before touching the path. Opening with in|out preserves
-            // an existing destination, including for a zero-offset transfer.
-            destination->open(
-                path, std::ios::binary | std::ios::in | std::ios::out);
-            if (!destination->is_open()) {
-                destination->clear();
-                // app creates a missing file without truncating an existing
-                // one if the first open failed for a different reason.
-                destination->open(path, std::ios::binary | std::ios::app);
-                if (!destination->is_open())
-                    return fail(SRT_EWRPERM);
-                destination->close();
-                destination->clear();
-                destination->open(
-                    path, std::ios::binary | std::ios::in | std::ios::out);
-            }
-            if (!destination->is_open())
-                return fail(SRT_EWRPERM);
+            // Open once without truncation; retain identity across the wait.
+            if (!destination->open(path))
+                return file_write_failure(context.runtime);
         }
         if (*offset > 0) {
-            try {
-                output.seekp(
-                    static_cast<std::streamoff>(*offset),
-                    std::ios::beg);
-            } catch (...) {
-                return fail(SRT_EINVWROFF);
-            }
-            if (!output.good()) {
-                return fail(SRT_EINVWROFF);
+            if (destination != nullptr) {
+                if (!destination->seek(*offset))
+                    return fail(SRT_EINVWROFF);
+            } else {
+                try {
+                    output.seekp(
+                        static_cast<std::streamoff>(*offset), std::ios::beg);
+                } catch (...) {
+                    return fail(SRT_EINVWROFF);
+                }
+                if (!output.good()) {
+                    return fail(SRT_EINVWROFF);
+                }
             }
         }
-        if (!output.good()) {
+        if (destination == nullptr && !output.good()) {
             return file_write_failure(context.runtime);
         }
 
@@ -346,20 +337,22 @@ static std::int64_t receive_file_impl(SocketRecord* socket,
             if (destination != nullptr && transferred == 0 && *offset == 0) {
                 // Whole-file replacement begins only after the first payload
                 // arrives. A peer abort before delivery preserves prior data.
-                destination->close();
-                destination->open(path, std::ios::binary | std::ios::out);
-                if (!destination->is_open())
+                if (!destination->truncate())
                     return file_write_failure(context.runtime);
             }
-            try {
-                output.write(
-                    reinterpret_cast<const char*>(buffer.data()),
-                    static_cast<std::streamsize>(result.bytes));
-            } catch (...) {
-                return file_write_failure(context.runtime);
-            }
-            if (!output.good()) {
-                return file_write_failure(context.runtime);
+            if (destination != nullptr) {
+                if (!destination->write(std::span {buffer}.first(result.bytes)))
+                    return file_write_failure(context.runtime);
+            } else {
+                try {
+                    output.write(reinterpret_cast<const char*>(buffer.data()),
+                        static_cast<std::streamsize>(result.bytes));
+                } catch (...) {
+                    return file_write_failure(context.runtime);
+                }
+                if (!output.good()) {
+                    return file_write_failure(context.runtime);
+                }
             }
             remaining -= static_cast<std::int64_t>(
                 result.bytes);
@@ -368,13 +361,18 @@ static std::int64_t receive_file_impl(SocketRecord* socket,
             *offset += static_cast<std::int64_t>(
                 result.bytes);
         }
-        try {
-            output.flush();
-        } catch (...) {
-            return file_write_failure(context.runtime);
-        }
-        if (!output.good()) {
-            return file_write_failure(context.runtime);
+        if (destination != nullptr) {
+            if (!destination->flush())
+                return file_write_failure(context.runtime);
+        } else {
+            try {
+                output.flush();
+            } catch (...) {
+                return file_write_failure(context.runtime);
+            }
+            if (!output.good()) {
+                return file_write_failure(context.runtime);
+            }
         }
         return transferred;
     } catch (const std::bad_alloc&) {

@@ -26,6 +26,12 @@ set(ROBOTWEAX_SRT_INSTALL_CMAKEDIR
 install(FILES cmake/FindMbedTLS.cmake DESTINATION "${ROBOTWEAX_SRT_INSTALL_CMAKEDIR}")
 
 option(ROBOTWEAX_SRT_BUILD_TESTS "Build unit tests" ON)
+set(ROBOTWEAX_SRT_MAX_GROUP_MEMBERS "64" CACHE STRING
+    "Maximum retained members per group, including pending members")
+if(NOT ROBOTWEAX_SRT_MAX_GROUP_MEMBERS MATCHES "^[1-9][0-9]*$"
+    OR ROBOTWEAX_SRT_MAX_GROUP_MEMBERS GREATER 65536)
+    message(FATAL_ERROR "ROBOTWEAX_SRT_MAX_GROUP_MEMBERS must be in 1..65536")
+endif()
 set(ROBOTWEAX_SRT_NATIVE_PROGRAMS_DEFAULT ON)
 if(BUILD_SHARED_LIBS)
     set(ROBOTWEAX_SRT_NATIVE_PROGRAMS_DEFAULT OFF)
@@ -134,6 +140,7 @@ endif()
 find_package(Threads REQUIRED)
 
 add_library(robotweax_srt
+    src/compat/file_destination.cpp
     src/compat/caller_handshake_events.cpp
     src/compat/caller_handshake_exchange.cpp
     src/compat/caller_handshake_sources.cpp
@@ -252,6 +259,8 @@ if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS)
 endif()
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
+target_compile_definitions(robotweax_srt PRIVATE
+    ROBOTWEAX_SRT_MAX_GROUP_MEMBERS=${ROBOTWEAX_SRT_MAX_GROUP_MEMBERS})
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
     target_compile_definitions(robotweax_srt
         PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_MOBILE_PACING)
@@ -577,6 +586,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_standby_rtt_runtime.cpp
         tests/test_compat_message_attempts.cpp)
     target_compile_definitions(robotweax_srt_tests PRIVATE
+        ROBOTWEAX_SRT_MAX_GROUP_MEMBERS=${ROBOTWEAX_SRT_MAX_GROUP_MEMBERS}
         ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
     target_link_libraries(robotweax_srt_tests
         PRIVATE RobotweaxSRT::srt Threads::Threads)

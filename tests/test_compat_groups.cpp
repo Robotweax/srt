@@ -711,6 +711,70 @@ TEST(compat_group_registry_supports_size_queries_and_generation_checked_membersh
     REQUIRE_EQ(srt_close(socket), 0);
 }
 
+TEST(compat_group_membership_cap_counts_pending_and_connected_atomically)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP,
+             ROBOTWEAX_SRT_GTYPE_MULTICAST}) {
+        for (const bool coordinated : {false, true}) {
+            if (coordinated && type != ROBOTWEAX_SRT_GTYPE_MULTICAST)
+                continue;
+            const auto group = srt_create_group(type);
+            REQUIRE(group != SRT_INVALID_SOCK);
+            auto& registry = GroupRegistry::instance();
+            const auto record = registry.find(group);
+            REQUIRE(record != nullptr);
+            record->member_public_options.multicast_coordinated = coordinated;
+            const std::size_t limit = coordinated
+                ? std::min<std::size_t>(ROBOTWEAX_SRT_MAX_GROUP_MEMBERS, 64U)
+                : ROBOTWEAX_SRT_MAX_GROUP_MEMBERS;
+            // Synthetic registry rows exercise accounting without allocating
+            // transport buffers or opening network connections.
+            sockaddr_storage peer {};
+            std::uint64_t generation = 0;
+            std::uint64_t first_generation = 0;
+            for (std::size_t index = 0; index + 1 < limit; ++index) {
+                std::uint64_t member = 0;
+                REQUIRE(registry.add_member(group,
+                    static_cast<SRTSOCKET>(100'000 + index), peer, 1, 0,
+                    generation, member));
+                if (index == 0)
+                    first_generation = member;
+            }
+            if (limit > 1)
+                registry.update_member(group, generation, 100'000,
+                    first_generation, SRTS_CONNECTED, 0);
+            std::atomic<unsigned> accepted {0};
+            std::array<std::future<void>, 8> attempts;
+            for (std::size_t index = 0; index < attempts.size(); ++index) {
+                attempts[index] = std::async(std::launch::async, [&, index] {
+                    std::uint64_t group_generation = 0, member_generation = 0;
+                    if (registry.add_member(group,
+                            static_cast<SRTSOCKET>(200'000 + index), peer, 1, 0,
+                            group_generation, member_generation))
+                        ++accepted;
+                });
+            }
+            for (auto& attempt : attempts)
+                attempt.get();
+            REQUIRE_EQ(accepted.load(), 1U);
+            REQUIRE_EQ(record->members.size(), limit);
+            const auto removed = record->members.back();
+            registry.remove_member(group, record->generation,
+                removed.public_data.id, removed.generation);
+            // A repeated rollback must not release another member's slot.
+            registry.remove_member(group, record->generation,
+                removed.public_data.id, removed.generation);
+            std::uint64_t member = 0;
+            REQUIRE(registry.add_member(
+                group, 300'000, peer, 1, 0, generation, member));
+            REQUIRE(!registry.add_member(
+                group, 300'001, peer, 1, 0, generation, member));
+            REQUIRE_EQ(record->members.size(), limit);
+            REQUIRE_EQ(srt_close(group), 0);
+        }
+    }
+}
+
 TEST(compat_group_registry_coordinates_member_lifecycle_without_owning_cycles)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BACKUP);

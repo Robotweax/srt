@@ -1317,6 +1317,10 @@ SRT_API int64_t srt_sendfile(
  * Invalid arguments and failure before payload delivery do not truncate an
  * existing destination. Later failures may leave a partially written file;
  * this helper is not transactional.
+ * The destination must be a regular file (or a new file); final symlinks and
+ * Windows reparse points are rejected. The caller must authorize the parent
+ * directories. One file handle is retained through the transfer, so renaming
+ * the destination does not redirect subsequent truncation or writes.
  * @param path NUL-terminated destination path borrowed for this call.
  * @param[in,out] offset File offset advanced only by transferred bytes.
  * @param size Maximum bytes to receive.

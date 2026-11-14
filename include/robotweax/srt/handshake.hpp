@@ -266,6 +266,9 @@ public:
     // delayed INDUCTION. Transport owners use this before crypto policy too.
     [[nodiscard]] bool is_stale_induction(
         const HandshakeMessage& message) const noexcept;
+    // Transport owners must apply this before crypto or routing mutations.
+    [[nodiscard]] bool ignores_setup_message(
+        const HandshakeMessage& message) const noexcept;
     [[nodiscard]] bool has_peer_extension_parameters() const noexcept
     {
         return has_peer_extension_parameters_;

@@ -366,7 +366,7 @@ TEST(rendezvous_serial_flow_completes_from_first_conclusion)
     (void)initiator_wave;
 }
 
-TEST(rendezvous_rejects_peer_flow_window_changes_during_establishment)
+TEST(rendezvous_ignores_peer_flow_window_changes_during_establishment)
 {
     auto initiator = make_machine(10U, 200U, SequenceNumber {1000U}, 111U);
     auto responder = make_machine(20U, 100U, SequenceNumber {2000U}, 222U);
@@ -378,11 +378,57 @@ TEST(rendezvous_rejects_peer_flow_window_changes_during_establishment)
 
     auto inconsistent = message_from(sent(responder_attention));
     inconsistent.packet.flow_window = 223U;
-    const auto failed = initiator.receive(inconsistent);
+    const auto previous_state = initiator.state();
+    const auto ignored = initiator.receive(inconsistent);
 
-    REQUIRE(has_action(failed, HandshakeActionKind::failed));
-    REQUIRE_EQ(initiator.state(), RendezvousState::failed);
+    REQUIRE_EQ(ignored.size, 0U);
+    REQUIRE_EQ(initiator.state(), previous_state);
     REQUIRE_EQ(initiator.peer_flow_window(), 222U);
+}
+
+TEST(rendezvous_ignores_unbound_terminal_input_then_completes)
+{
+    auto initiator = make_machine(10U, 200U, SequenceNumber {1000U});
+    auto responder = make_machine(20U, 100U, SequenceNumber {2000U});
+    const auto left = initiator.start();
+    const auto right = responder.start();
+    const auto request = initiator.receive(message_from(sent(right)));
+    (void)responder.receive(message_from(sent(left)));
+    const auto response = responder.receive(message_from(sent(request)));
+    const auto valid = message_from(sent(response));
+    const auto previous = initiator.state();
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        auto unrelated = valid;
+        unrelated.packet.request = static_cast<HandshakeRequest>(1'004);
+        if (variant == 0)
+            unrelated.packet.syn_cookie ^= 1U;
+        else if (variant == 1)
+            ++unrelated.packet.socket_id;
+        else
+            ++unrelated.packet.flow_window;
+        REQUIRE(initiator.ignores_setup_message(unrelated));
+        REQUIRE_EQ(initiator.receive(unrelated).size, 0U);
+        REQUIRE_EQ(initiator.state(), previous);
+        REQUIRE_EQ(initiator.peer_socket_id(), 20U);
+        REQUIRE_EQ(initiator.peer_cookie(), 100U);
+    }
+    const auto agreement = initiator.receive(valid);
+    REQUIRE(has_action(agreement, HandshakeActionKind::connected));
+    REQUIRE(has_action(responder.receive(message_from(sent(agreement))),
+        HandshakeActionKind::connected));
+}
+
+TEST(rendezvous_preserves_bound_rejection_reason)
+{
+    auto initiator = make_machine(10U, 200U, SequenceNumber {1000U});
+    auto responder = make_machine(20U, 100U, SequenceNumber {2000U});
+    (void)initiator.start();
+    auto rejection = message_from(sent(responder.start()));
+    (void)initiator.receive(rejection);
+    rejection.packet.request = static_cast<HandshakeRequest>(1'008);
+    const auto result = initiator.receive(rejection);
+    REQUIRE(has_action(result, HandshakeActionKind::rejected));
+    REQUIRE_EQ(initiator.rejection_reason(), 8);
 }
 
 TEST(rendezvous_rejects_equal_cookies)

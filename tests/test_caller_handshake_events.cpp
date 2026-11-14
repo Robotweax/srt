@@ -113,7 +113,7 @@ TEST(caller_handshake_retry_exhaustion_is_a_timeout)
         CallerHandshakeEventOutcome::timed_out);
 }
 
-TEST(caller_handshake_invalid_peer_progression_is_a_setup_failure)
+TEST(caller_handshake_unrelated_input_leaves_setup_running)
 {
     SendTrace trace;
     CallerHandshakeEventDriver driver {{
@@ -134,5 +134,5 @@ TEST(caller_handshake_invalid_peer_progression_is_a_setup_failure)
                        .message = {},
                    })
                    .outcome,
-        CallerHandshakeEventOutcome::failed);
+        CallerHandshakeEventOutcome::running);
 }

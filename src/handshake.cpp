@@ -371,10 +371,35 @@ bool HandshakeMachine::is_stale_induction(
         && message.packet.request == HandshakeRequest::induction;
 }
 
+bool HandshakeMachine::ignores_setup_message(
+    const HandshakeMessage& message) const noexcept
+{
+    if (configuration_.role != ConnectionRole::caller)
+        return false;
+    const auto& packet = message.packet;
+    const bool rejection = static_cast<std::int32_t>(packet.request) >= 1'000;
+    if (state_ == HandshakeState::awaiting_induction_response) {
+        // Compatible early rejections precede learning a cookie. Endpoint
+        // filtering remains the available binding in this phase.
+        return !rejection
+            && (packet.request != HandshakeRequest::induction
+                || packet.syn_cookie == 0U);
+    }
+    if (state_ == HandshakeState::awaiting_conclusion_response) {
+        // INDUCTION may echo our ID (reference libsrt) or identify a listener,
+        // not the accepted child. Do not pin that ID across CONCLUSION.
+        return (!rejection && packet.request != HandshakeRequest::conclusion)
+            || packet.syn_cookie != cookie_;
+    }
+    return true;
+}
+
 HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noexcept
 {
     HandshakeActions actions;
     const auto& incoming = message.packet;
+    if (ignores_setup_message(message))
+        return actions;
     if (!valid_standby_rtt_configuration()
         || !valid_multicast_source_configuration()) {
         state_ = HandshakeState::failed;
