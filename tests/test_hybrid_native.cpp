@@ -2223,6 +2223,35 @@ TEST(hybrid_receiver_queries_confirm_and_expire_without_requesting_fallback)
     for (const auto& request : f.requests)
         REQUIRE_EQ(request.kind, h::Kind::delivery_query);
 }
+TEST(hybrid_receiver_late_replies_do_not_postpone_refresh_past_freshness_budget)
+{
+    auto c = ReceiverFixture::configuration();
+    // The network fixture's timing ratios, scaled by 1/1000. Both replies
+    // arrive within their round deadline, but waiting a full query interval
+    // after receipt leaves the previous confirmation stale before renewal.
+    c.retry_interval_us = 20;
+    c.round_timeout_us = 120;
+    c.operation_timeout_us = 600;
+    c.query_interval_us = 50;
+    c.confirmation_lifetime_us = 250;
+    ReceiverFixture f(c);
+    f.step();
+    auto reply = f.response();
+    auto due = f.p.clock->value.load() + 110;
+    for (unsigned elapsed = 1; elapsed <= 500; ++elapsed) {
+        f.advance(1);
+        if (f.p.clock->value.load() == due)
+            f.deliver(reply);
+        const auto state = f.receiver->snapshot();
+        if (elapsed >= 110)
+            REQUIRE(state.fresh);
+        if (state.request_serial != reply.request_serial) {
+            reply = f.response();
+            due = f.p.clock->value.load() + 110;
+        }
+    }
+    REQUIRE(f.receiver->snapshot().confirmed >= 3);
+}
 TEST(hybrid_receiver_explicit_fallback_preserves_cursor_and_tracks_commit)
 {
     ReceiverFixture f;
