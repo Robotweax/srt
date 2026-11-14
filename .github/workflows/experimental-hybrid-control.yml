@@ -114,6 +114,15 @@ jobs:
           -C Release
           --no-tests=error
           --output-on-failure
+      - name: Repeat Windows CTR and GCM load gates
+        if: runner.os == 'Windows'
+        run: >-
+          ctest --test-dir build-hybrid
+          -C Release
+          --no-tests=error
+          --output-on-failure
+          --repeat until-fail:10
+          -R "^robotweax_srt_hybrid_load_tests$"
       # Hosted macOS runners do not hold the offered packet rate of the native
       # hybrid cases: two attempts of run 42634228051 failed different timed
       # gates with the sender at 53 to 375 packets per second against targets

@@ -6835,7 +6835,13 @@ struct HybridMultiScenario {
                     + " fresh=" + std::to_string(r.fresh)
                     + " closed=" + std::to_string(r.closed)
                     + " mode=" + std::to_string(static_cast<unsigned>(r.mode))
-                    + " revision=" + std::to_string(r.revision));
+                    + " revision=" + std::to_string(r.revision)
+                    + " confirmation_origin_us="
+                    + std::to_string(r.confirmation_origin_us)
+                    + " now_us=" + std::to_string(HybridFaultLink::now())
+                    + " confirmed=" + std::to_string(r.confirmed)
+                    + " unmatched=" + std::to_string(r.unmatched)
+                    + " exhausted=" + std::to_string(r.exhausted));
             REQUIRE_EQ(srt_getsockstate(peers[index].id), SRTS_CONNECTED);
             ++healthy_checks;
         }

@@ -470,7 +470,13 @@ void ReceiverBridge::finish(Phase phase, std::uint64_t at) noexcept
     active_ = false;
     want_fallback_ = false;
     state_.phase = phase;
-    next_query_ = add(at, configuration_.query_interval_us);
+    // Freshness starts at the request's first enqueue, not reply receipt.
+    // Charge the round trip to the query interval too: waiting a full
+    // interval after a late reply can exhaust the old confirmation before
+    // the next otherwise timely reply. work() sends immediately if overdue.
+    next_query_ =
+        add(phase == Phase::known ? state_.confirmation_origin_us : at,
+            configuration_.query_interval_us);
 }
 void ReceiverBridge::start(bool fallback, std::uint64_t position,
     std::uint64_t at, std::uint64_t origin, std::uint64_t not_after,
