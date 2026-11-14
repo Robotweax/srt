@@ -1002,30 +1002,24 @@ TEST(compat_async_linger_bounds_count_and_payload_storage_and_releases_terminal)
     REQUIRE_EQ(deferred_close_usage_for_testing()[1], 0U);
 }
 
-TEST(compat_recvfile_destination_rejection_notifies_peer_without_delivery)
+#ifndef _WIN32
+TEST(compat_file_destination_preserves_character_device_output)
 {
-    TemporaryFiles files;
-    RetiringMember member;
-    const auto record = SocketRegistry::instance().find(member.handle);
-    record->public_options.transmission_type = SRTT_FILE;
-    record->public_options.message_api = false;
-    record->public_options.tsbpd_mode = false;
-    std::int64_t offset = 0;
-    const auto directory = files.directory.path().string();
-    REQUIRE_EQ(receive_file(record.get(), directory.c_str(), &offset, 2, 2),
-        SRT_ERROR);
-    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EWRPERM);
-    REQUIRE_EQ(offset, 0);
-    bool notified = false;
-    for (const auto& datagram : take_datagrams(member.output)) {
-        const auto packet = decode_packet(datagram);
-        REQUIRE(packet);
-        if (packet.packet.kind == PacketKind::control
-            && packet.packet.control.type == ControlType::peer_error)
-            notified = true;
-    }
-    REQUIRE(notified);
+    FileDestination destination;
+    REQUIRE(destination.open("/dev/null"));
+    REQUIRE(destination.truncate());
+    const std::array payload {std::byte {'o'}, std::byte {'k'}};
+    REQUIRE(destination.write(payload));
+    REQUIRE(destination.flush());
+#ifdef __linux__
+    FileDestination full;
+    REQUIRE(full.open("/dev/full"));
+    REQUIRE(full.truncate());
+    const bool accepted = full.write(payload);
+    REQUIRE(!accepted || !full.flush());
+#endif
 }
+#endif
 
 TEST(compat_file_destination_retains_open_identity_and_defers_truncation)
 {

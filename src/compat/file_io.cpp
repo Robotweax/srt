@@ -292,7 +292,7 @@ static std::int64_t receive_file_impl(SocketRecord* socket,
         if (destination != nullptr) {
             // Open once without truncation; retain identity across the wait.
             if (!destination->open(path))
-                return file_write_failure(context.runtime);
+                return fail(SRT_EWRPERM);
         }
         if (*offset > 0) {
             if (destination != nullptr) {

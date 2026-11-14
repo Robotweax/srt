@@ -57,10 +57,11 @@ bool FileDestination::open(const char* path) noexcept
         return false;
     struct stat information {};
     if (::fstat(descriptor, &information) != 0
-        || !S_ISREG(information.st_mode)) {
+        || (!S_ISREG(information.st_mode) && !S_ISCHR(information.st_mode))) {
         ::close(descriptor);
         return false;
     }
+    regular_file_ = S_ISREG(information.st_mode);
     // fdopen does not truncate the descriptor, unlike fopen("wb").
     file_ = ::fdopen(descriptor, "wb");
     if (file_ == nullptr)
@@ -91,6 +92,10 @@ bool FileDestination::truncate() noexcept
     if (_chsize_s(_fileno(file_), 0) != 0)
         return false;
 #else
+    // Opening character devices with O_TRUNC historically left them intact.
+    // Preserve that behavior, including deferred /dev/full write errors.
+    if (!regular_file_)
+        return true;
     if (::ftruncate(::fileno(file_), 0) != 0)
         return false;
 #endif

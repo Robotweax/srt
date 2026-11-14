@@ -9,7 +9,7 @@ namespace robotweax::srt::compat {
 
 // One file identity from non-destructive open through delayed replacement.
 // Parent-directory authorization belongs to the caller. Final symlinks/reparse
-// points and non-regular files are rejected.
+// points are rejected. POSIX character-device outputs remain supported.
 class FileDestination {
 public:
     FileDestination() = default;
@@ -24,6 +24,7 @@ public:
 
 private:
     std::FILE* file_ = nullptr;
+    bool regular_file_ = true;
 };
 
 } // namespace robotweax::srt::compat
