@@ -51,6 +51,8 @@ option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
     "Enable the Linux sender-drop JSONL diagnostic" OFF)
 option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING
+    "Linux only: read datagrams with recvmmsg (experimental)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable experimental authenticated runtime controls" OFF)
 option(ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD
@@ -290,6 +292,14 @@ if(ROBOTWEAX_SRT_SENDER_DROP_TRACE)
 endif()
 if(ENABLE_MAXREXMITBW)
     target_compile_definitions(robotweax_srt PUBLIC ENABLE_MAXREXMITBW)
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING requires Linux")
+    endif()
+    target_compile_definitions(robotweax_srt
+        PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
 endif()
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_ACP1)

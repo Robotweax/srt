@@ -271,6 +271,22 @@ public:
     // prefix is never returned as valid data: error is buffer_too_small and
     // bytes_transferred is destination.size().
     [[nodiscard]] UdpIoResult receive_from(std::span<std::byte> destination) noexcept;
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
+    /** Most datagrams one receive_batch() call consumes. */
+    static constexpr std::size_t maximum_receive_batch = 64;
+    /**
+     * Experimental (Linux): consumes up to results.size() datagrams with one
+     * system call, never blocking. Datagram i is written to
+     * storage[i * slot_size, (i + 1) * slot_size) and described by
+     * results[i] exactly as receive_from() would describe it, including
+     * buffer_too_small for a datagram larger than its slot. Returns the
+     * number of results written. When it returns zero, terminal holds the
+     * reason no datagram was consumed, such as would_block.
+     */
+    [[nodiscard]] std::size_t receive_batch(std::span<std::byte> storage,
+        std::size_t slot_size, std::span<UdpIoResult> results,
+        UdpIoResult& terminal) noexcept;
+#endif
     /**
      * True when a receive failure reports a per-datagram network condition
      * (an ICMP error for an earlier send, an interrupted call) rather than

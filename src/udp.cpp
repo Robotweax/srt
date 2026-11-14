@@ -1186,6 +1186,66 @@ UdpIoResult UdpSocket::receive_from(std::span<std::byte> destination) noexcept
     }
 }
 
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
+std::size_t UdpSocket::receive_batch(std::span<std::byte> storage,
+    std::size_t slot_size, std::span<UdpIoResult> results,
+    UdpIoResult& terminal) noexcept
+{
+    terminal = {};
+    const std::size_t slots = slot_size == 0U ? 0U : storage.size() / slot_size;
+    const std::size_t count =
+        std::min({results.size(), slots, maximum_receive_batch});
+    if (count == 0U) {
+        terminal = {.error = Error::buffer_too_small};
+        return 0U;
+    }
+    std::array<mmsghdr, maximum_receive_batch> messages {};
+    std::array<iovec, maximum_receive_batch> buffers;
+    std::array<sockaddr_storage, maximum_receive_batch> peers;
+    for (std::size_t index = 0; index < count; ++index) {
+        buffers[index] = {
+            .iov_base = storage.data() + index * slot_size,
+            .iov_len = slot_size,
+        };
+        peers[index].ss_family = AF_UNSPEC;
+        auto& header = messages[index].msg_hdr;
+        header.msg_name = &peers[index];
+        header.msg_namelen = static_cast<SocketLength>(sizeof(peers[index]));
+        header.msg_iov = &buffers[index];
+        header.msg_iovlen = 1;
+    }
+    // The call reports an error only when it consumed nothing; an error that
+    // follows a consumed datagram is reported by the next call.
+    const int received = ::recvmmsg(to_native(native_), messages.data(),
+        static_cast<unsigned int>(count), MSG_DONTWAIT, nullptr);
+    if (received < 0) {
+        const int error = last_socket_error();
+        terminal = {.error = is_would_block(error) ? Error::would_block
+                                                   : Error::io_error,
+            .system_error = error};
+        return 0U;
+    }
+    const auto consumed = static_cast<std::size_t>(received);
+    for (std::size_t index = 0; index < consumed; ++index) {
+        const bool truncated =
+            (messages[index].msg_hdr.msg_flags & MSG_TRUNC) != 0;
+        results[index] = truncated
+            ? UdpIoResult {
+                  .error = Error::buffer_too_small,
+                  .bytes_transferred = slot_size,
+                  .peer = from_sockaddr(peers[index]),
+                  .system_error = EMSGSIZE,
+              }
+            : UdpIoResult {
+                  .bytes_transferred =
+                      static_cast<std::size_t>(messages[index].msg_len),
+                  .peer = from_sockaddr(peers[index]),
+              };
+    }
+    return consumed;
+}
+#endif
+
 bool UdpSocket::is_transient_receive_error(int system_error) noexcept
 {
     return is_transient_receive_system_error(system_error);

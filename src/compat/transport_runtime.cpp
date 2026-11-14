@@ -1592,6 +1592,43 @@ RuntimePollResult DatagramChannel::finish_receive_slice(
 
 RuntimePollResult DatagramChannel::run_once() noexcept
 {
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
+    if (receive_batch_storage_ == nullptr) {
+        receive_batch_storage_.reset(new (std::nothrow)
+                std::byte[maximum_receive_batch * receive_slot_size]);
+    }
+    if (receive_batch_storage_ != nullptr) {
+        const std::span storage {receive_batch_storage_.get(),
+            maximum_receive_batch * receive_slot_size};
+        std::array<UdpIoResult, maximum_receive_batch> results;
+        std::size_t received_count = 0;
+        // As on the single-datagram path, the slice ends at its budget or
+        // at would_block, so a drained socket is always observed as such.
+        while (received_count < maximum_receive_batch) {
+            UdpIoResult terminal;
+            const std::size_t count =
+                socket.receive_batch(storage, receive_slot_size,
+                    std::span {results}.first(
+                        maximum_receive_batch - received_count),
+                    terminal);
+            if (count == 0U) {
+                if (!accept_received(terminal, {})) {
+                    break;
+                }
+                ++received_count;
+                continue;
+            }
+            for (std::size_t index = 0; index < count; ++index) {
+                // A consumed datagram never ends the slice.
+                (void)accept_received(results[index],
+                    storage.subspan(
+                        index * receive_slot_size, receive_slot_size));
+            }
+            received_count += count;
+        }
+        return finish_receive_slice(received_count);
+    }
+#endif
     return run_receive_slice([this](std::span<std::byte> datagram) noexcept {
         return socket.receive_from(datagram);
     });

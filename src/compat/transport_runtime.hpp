@@ -443,6 +443,10 @@ private:
     void notify_work(bool receive_release) noexcept;
 
     // Written and read only by the thread that runs the current slice.
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
+    // Slots for one batched receive, allocated by the first slice.
+    std::unique_ptr<std::byte[]> receive_batch_storage_;
+#endif
     static constexpr int quiet_traffic_intervals = 10;
     bool slice_quiet_ = false;
     std::chrono::steady_clock::time_point last_datagram_time_ {};
