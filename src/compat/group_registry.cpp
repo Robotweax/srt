@@ -1784,6 +1784,11 @@ bool GroupRegistry::add_member(SRTSOCKET group, SRTSOCKET socket,
         if (record->closed) {
             return false;
         }
+        // Pending rows reserve capacity before transport attachment. Keep the
+        // check and insertion under the same lock, including for later joins
+        // which do not consume listener accept backlog capacity.
+        if (record->members.size() >= ROBOTWEAX_SRT_MAX_GROUP_MEMBERS)
+            return false;
         if (record->member_public_options.multicast_coordinated
             && record->members.size() >= GroupSendCoordinator::maximum_members)
             return false;

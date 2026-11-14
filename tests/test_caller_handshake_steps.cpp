@@ -148,6 +148,62 @@ TEST(caller_handshake_steps_update_key_material_only_in_valid_phase)
         caller.set_key_material_request(request, 9U), Error::invalid_state);
 }
 
+TEST(caller_handshake_steps_bind_terminal_input_without_pinning_induction_id)
+{
+    CallerHandshakeSteps caller {
+        {.role = ConnectionRole::caller, .local_socket_id = 100U}};
+    HandshakeMachine listener {{.role = ConnectionRole::listener,
+        .local_socket_id = 200U,
+        .cookie_generator = fixed_cookie}};
+    const auto start = caller.start();
+    const auto induction =
+        listener.receive(message_from(start.actions.values[0]));
+    auto reference_induction = message_from(induction.values[0]);
+    reference_induction.packet.socket_id = 100U;
+    const auto conclusion = caller.receive(reference_induction);
+    const auto response =
+        listener.receive(message_from(conclusion.actions.values[0]));
+    const auto valid = message_from(response.values[0]);
+    const auto original_peer = caller.peer_socket_id();
+    for (const auto request :
+        {HandshakeRequest::conclusion, static_cast<HandshakeRequest>(1'004)}) {
+        auto unrelated = valid;
+        unrelated.packet.request = request;
+        unrelated.packet.syn_cookie ^= 1U;
+        unrelated.packet.socket_id = 300U;
+        REQUIRE_EQ(caller.receive(unrelated).actions.size, 0U);
+        REQUIRE_EQ(
+            caller.state(), HandshakeState::awaiting_conclusion_response);
+        REQUIRE_EQ(caller.peer_socket_id(), original_peer);
+        REQUIRE_EQ(caller.destination_socket_id(), 0U);
+    }
+    REQUIRE_EQ(caller.receive(valid).actions.values[0].kind,
+        HandshakeActionKind::connected);
+    REQUIRE_EQ(caller.peer_socket_id(), 200U);
+    auto late_rejection = valid;
+    late_rejection.packet.request = static_cast<HandshakeRequest>(1'004);
+    REQUIRE_EQ(caller.receive(late_rejection).actions.size, 0U);
+    REQUIRE_EQ(caller.state(), HandshakeState::connected);
+}
+
+TEST(caller_handshake_steps_preserve_bound_rejection_reason)
+{
+    CallerHandshakeSteps caller {
+        {.role = ConnectionRole::caller, .local_socket_id = 100U}};
+    HandshakeMachine listener {{.role = ConnectionRole::listener,
+        .local_socket_id = 200U,
+        .cookie_generator = fixed_cookie}};
+    const auto start = caller.start();
+    const auto induction =
+        listener.receive(message_from(start.actions.values[0]));
+    auto rejection = message_from(induction.values[0]);
+    (void)caller.receive(rejection);
+    rejection.packet.request = static_cast<HandshakeRequest>(1'008);
+    const auto result = caller.receive(rejection);
+    REQUIRE_EQ(result.actions.values[0].kind, HandshakeActionKind::rejected);
+    REQUIRE_EQ(result.actions.values[0].rejection_reason, 8);
+}
+
 TEST(
     caller_handshake_steps_ignore_stale_induction_without_mutating_route_or_retry)
 {

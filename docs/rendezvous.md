@@ -138,7 +138,7 @@ Common configuration and runtime errors include:
 | Mixed local and peer address families | Invalid parameter |
 | Listen requested on a Rendezvous socket | `SRT_ERDVNOSERV`; Rendezvous uses connect, not accept |
 | Identical cookies | `SRT_REJ_RDVCOOKIE` |
-| Peer cookie or socket ID changes during setup | Attempt fails; no coded rejection is guaranteed |
+| Peer cookie, socket ID, or flow window changes after binding | Packet ignored; original attempt continues within its deadline |
 | HSv4 setup packet | `SRT_REJ_VERSION` |
 | Incoherent pre-1.3 HSv5 identity | `SRT_REJ_ROGUE` |
 | Mode, filter, congestion, or crypto mismatch | Compatible setup rejection |

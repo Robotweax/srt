@@ -3,6 +3,7 @@
 
 #include "robotweax/srt/codec.hpp"
 #include "compat/file_io.hpp"
+#include "compat/file_destination.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1000,6 +1001,69 @@ TEST(compat_async_linger_bounds_count_and_payload_storage_and_releases_terminal)
     registry.clear();
     REQUIRE_EQ(deferred_close_usage_for_testing()[1], 0U);
 }
+
+#ifndef _WIN32
+TEST(compat_file_destination_preserves_character_device_output)
+{
+    FileDestination destination;
+    REQUIRE(destination.open("/dev/null"));
+    REQUIRE(destination.truncate());
+    const std::array payload {std::byte {'o'}, std::byte {'k'}};
+    REQUIRE(destination.write(payload));
+    REQUIRE(destination.flush());
+#ifdef __linux__
+    FileDestination full;
+    REQUIRE(full.open("/dev/full"));
+    REQUIRE(full.truncate());
+    const bool accepted = full.write(payload);
+    REQUIRE(!accepted || !full.flush());
+#endif
+}
+#endif
+
+TEST(compat_file_destination_retains_open_identity_and_defers_truncation)
+{
+    TemporaryFiles files;
+    {
+        std::ofstream output(files.destination, std::ios::binary);
+        output << "original-suffix";
+    }
+    const auto contents = [](const std::filesystem::path& path) {
+        std::ifstream input(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), {});
+    };
+    FileDestination destination;
+    REQUIRE(destination.open(files.destination_api_path.c_str()));
+    REQUIRE_EQ(contents(files.destination), "original-suffix");
+    std::filesystem::rename(files.destination, files.source);
+    {
+        std::ofstream output(files.destination, std::ios::binary);
+        output << "replacement";
+    }
+    REQUIRE(destination.truncate());
+    const std::array payload {std::byte {'o'}, std::byte {'k'}};
+    REQUIRE(destination.write(payload));
+    REQUIRE(destination.flush());
+    REQUIRE_EQ(contents(files.source), "ok");
+    REQUIRE_EQ(contents(files.destination), "replacement");
+}
+
+#ifndef _WIN32
+TEST(compat_file_destination_rejects_symlinks_without_modifying_target)
+{
+    TemporaryFiles files;
+    {
+        std::ofstream output(files.source, std::ios::binary);
+        output << "preserved";
+    }
+    std::filesystem::create_symlink(files.source, files.destination);
+    FileDestination destination;
+    REQUIRE(!destination.open(files.destination_api_path.c_str()));
+    std::ifstream input(files.source, std::ios::binary);
+    REQUIRE_EQ(
+        std::string(std::istreambuf_iterator<char>(input), {}), "preserved");
+}
+#endif
 
 TEST(compat_recvfile_preserves_existing_data_before_delivery_and_outside_range)
 {

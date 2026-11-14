@@ -170,6 +170,15 @@ across the 31-bit sequence boundary.
 
 ## Public file-helper API
 
+Receive destinations may be regular files, new files, or POSIX character
+devices. Final symlinks and
+Windows reparse points are rejected. Applications must authorize parent
+directories and their resolution. The helper retains one file handle across
+network waits; a rename after opening cannot redirect truncation or writes.
+Character devices retain their existing write semantics: no truncation is
+attempted, and write failures after payload arrival notify the sender with
+`PEERERROR`. Initial open failures return `SRT_EWRPERM` immediately.
+
 The compatible API exports `srt_sendfile` and `srt_recvfile`. Both helpers:
 
 - transfer through the continuous Stream API;

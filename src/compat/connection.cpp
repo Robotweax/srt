@@ -1948,7 +1948,7 @@ public:
     [[nodiscard]] int validate_peer_protocol(
         const HandshakeMessage& message) noexcept
     {
-        if (driver_.protocol().is_stale_induction(message)) {
+        if (driver_.protocol().ignores_setup_message(message)) {
             return 0;
         }
         if (message.packet.request == HandshakeRequest::induction
@@ -1963,7 +1963,7 @@ public:
     [[nodiscard]] int apply_crypto_policy(const HandshakeMessage& message,
         Clock::time_point overall_deadline) noexcept
     {
-        if (driver_.protocol().is_stale_induction(message)) {
+        if (driver_.protocol().ignores_setup_message(message)) {
             return 0;
         }
         if (message.packet.request == HandshakeRequest::induction
@@ -3237,6 +3237,8 @@ public:
         if (!decoded) {
             return std::nullopt;
         }
+        if (machine_.ignores_setup_message(decoded.message))
+            return std::nullopt;
         peer_maximum_segment_size_ =
             decoded.message.packet.maximum_transmission_unit;
         peer_handshake_timestamp_ = decoded.control.timestamp;
