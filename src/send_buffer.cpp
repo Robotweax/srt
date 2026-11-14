@@ -646,13 +646,16 @@ Error SendBuffer::preserve_protected_payload(SequenceNumber sequence,
 
 bool SendBuffer::has_pending_retransmission() noexcept
 {
-    for (std::size_t index = 0; index < retransmission_size_; ++index) {
-        const auto sequence = retransmission_queue_[
-            (retransmission_head_ + index) % capacity()];
-        const auto* slot = find(sequence);
+    // Entries whose packet was acknowledged or dropped stay in the ring
+    // until they reach the head. Discard them here, as the peek path does,
+    // so a burst of stale entries is walked once instead of on every query.
+    while (retransmission_size_ != 0U) {
+        const auto* slot = find(retransmission_queue_[retransmission_head_]);
         if (slot != nullptr && slot->retransmission_queued) {
             return true;
         }
+        retransmission_head_ = (retransmission_head_ + 1U) % capacity();
+        --retransmission_size_;
     }
     return false;
 }

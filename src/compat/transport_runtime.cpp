@@ -3335,7 +3335,8 @@ bool ConnectionRuntime::send_actions(
             : maximum_loss_ranges_per_report;
         do {
             const auto count = std::min(losses.size(), maximum_ranges);
-            std::array<std::byte, 1500> datagram {};
+            // Only the encoded prefix is submitted.
+            std::array<std::byte, 1500> datagram;
             const auto encoded =
                 encode_reliability_action(action, losses.first(count),
                     PacketTimestamp {static_cast<std::uint32_t>(now)},
@@ -4101,8 +4102,9 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     const bool readable_before = session_.data_ready_at(now);
     const auto delivery_before = session_.next_receive_delivery_time();
     PacketView clear_packet = packet;
-    std::array<std::byte, maximum_data_payload_size>
-        clear_payload{};
+    // Written only as the decryption destination below and read only
+    // through that destination after a successful decryption.
+    std::array<std::byte, maximum_data_payload_size> clear_payload;
     const auto filter_disposition =
         session_.packet_filter_policy().inspect(packet);
     if (filter_disposition
@@ -4856,8 +4858,8 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
 
     if (packet.kind == PacketKind::data
         && fec_decoder_active()) {
-        std::array<std::byte, maximum_data_payload_size>
-            authenticated_payload {};
+        // Read only through the destination of a successful open.
+        std::array<std::byte, maximum_data_payload_size> authenticated_payload;
         std::span<const std::byte> authenticated_plaintext;
         if (packet.data.message_number != 0U && crypto_ != nullptr
             && crypto_->authenticated_data_enabled()) {

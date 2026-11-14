@@ -43,6 +43,8 @@ option(ROBOTWEAX_SRT_BUILD_TOOLS "Build protocol development tools"
     ${ROBOTWEAX_SRT_NATIVE_PROGRAMS_DEFAULT})
 option(ROBOTWEAX_SRT_BUILD_EXAMPLES "Build public API examples" OFF)
 option(ROBOTWEAX_SRT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
+option(ROBOTWEAX_SRT_ENABLE_LTO
+    "Build the library with interprocedural optimization when supported" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING
     "Enable unqualified timer pacing without coarse-timer spinning on Android/iOS" OFF)
 option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
@@ -138,6 +140,17 @@ else()
     message(FATAL_ERROR "Unsupported crypto backend/platform: ${ROBOTWEAX_SRT_CRYPTO_BACKEND}; bcrypt requires Windows")
 endif()
 find_package(Threads REQUIRED)
+
+get_property(ROBOTWEAX_SRT_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT ROBOTWEAX_SRT_MULTI_CONFIG AND NOT CMAKE_BUILD_TYPE)
+    # The default is left to the caller: an empty build type keeps assertions
+    # and whatever flags a packager supplies. It is also unoptimized, which is
+    # not a meaningful basis for throughput or CPU measurements.
+    message(STATUS
+        "Robotweax SRT: CMAKE_BUILD_TYPE is not set; the library is built "
+        "without optimization unless the supplied flags enable it. Use "
+        "-DCMAKE_BUILD_TYPE=Release for deployment and measurements.")
+endif()
 
 add_library(robotweax_srt
     src/compat/file_destination.cpp
@@ -309,6 +322,19 @@ target_link_libraries(
     robotweax_srt PRIVATE ${ROBOTWEAX_SRT_CRYPTO_LIBRARY} Threads::Threads)
 
 target_compile_features(robotweax_srt PUBLIC cxx_std_20)
+if(ROBOTWEAX_SRT_ENABLE_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ROBOTWEAX_SRT_LTO_SUPPORTED
+        OUTPUT ROBOTWEAX_SRT_LTO_DIAGNOSTIC LANGUAGES CXX)
+    if(NOT ROBOTWEAX_SRT_LTO_SUPPORTED)
+        message(FATAL_ERROR
+            "ROBOTWEAX_SRT_ENABLE_LTO is ON but the toolchain does not "
+            "support interprocedural optimization: "
+            "${ROBOTWEAX_SRT_LTO_DIAGNOSTIC}")
+    endif()
+    set_property(TARGET robotweax_srt
+        PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
 target_include_directories(robotweax_srt
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
