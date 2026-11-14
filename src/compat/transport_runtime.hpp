@@ -273,6 +273,14 @@ public:
         IpEndpoint peer) noexcept;
     [[nodiscard]] UdpIoResult try_send_monitoring_datagram(
         std::span<const std::byte> bytes, IpEndpoint peer) noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+    // Submits one connection's due datagrams in order and returns the
+    // accepted prefix length; see UdpSocket::send_batch for `rejection`. The
+    // testing send hook sees every datagram of the prefix, one call each.
+    [[nodiscard]] std::size_t send_datagram_batch(
+        std::span<const std::span<const std::byte>> datagrams, IpEndpoint peer,
+        UdpIoResult& rejection) noexcept;
+#endif
     void set_send_hook_for_testing(
         SendHook hook, void* context) noexcept;
     [[nodiscard]] bool register_connection(
@@ -846,6 +854,36 @@ private:
     [[nodiscard]] bool complete_datagram(std::span<const std::byte> bytes,
         const DatagramCompletion& completion, std::uint64_t now) noexcept;
     [[nodiscard]] bool flush_pending_datagrams(std::uint64_t now) noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+    // DATA that one poll found due is staged here and submitted with one
+    // batch call. Nothing a staged datagram's completion would change has
+    // advanced yet, except the pacer: it is advanced at staging so that only
+    // datagrams that are due share a batch, and each entry keeps the pacer
+    // as it stood before it, to restore if UDP does not accept the entry.
+    struct StagedDatagram {
+        std::size_t size = 0;
+        std::uint64_t now = 0;
+        DatagramCompletion completion {};
+        PacketPacer pacer_before {1, 1};
+    };
+    struct SendStage {
+        static constexpr std::size_t capacity = 64;
+        std::array<StagedDatagram, capacity> entries {};
+        std::size_t size = 0;
+        std::unique_ptr<std::byte[]> bytes;
+    };
+    [[nodiscard]] bool stageable_datagram(
+        const DatagramCompletion& completion) const noexcept;
+    [[nodiscard]] bool stage_datagram(std::span<const std::byte> bytes,
+        const DatagramCompletion& completion, std::uint64_t now) noexcept;
+    [[nodiscard]] bool flush_send_stage() noexcept;
+    [[nodiscard]] bool send_budget_beyond_stage() const noexcept;
+    std::unique_ptr<SendStage> send_stage_;
+    // True only inside the DATA loop of poll_locked(), while mutex_ is held.
+    bool send_stage_open_ = false;
+    // True while a staged datagram completes: its pacing is already counted.
+    bool completing_staged_datagram_ = false;
+#endif
     [[nodiscard]] UdpIoResult send_budgeted_datagram(DatagramChannel&,
         std::span<const std::byte>, const DatagramCompletion&,
         bool& budget_wait) noexcept;

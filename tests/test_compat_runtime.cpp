@@ -9884,13 +9884,14 @@ namespace {
 struct FairnessClock {
     std::uint64_t* now = nullptr;
     std::size_t reads = 0;
+    std::uint64_t advance_per_read = 0;
 };
 
 std::uint64_t fairness_now(void* context) noexcept
 {
     auto& clock = *static_cast<FairnessClock*>(context);
     ++clock.reads;
-    return *clock.now;
+    return *clock.now += clock.advance_per_read;
 }
 
 struct FairnessFixture {
@@ -9933,6 +9934,12 @@ struct FairnessFixture {
     {
         auto clock = std::make_unique<FairnessClock>();
         clock->now = &now;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+        // Staged DATA reaches the send hook only after the whole poll picked
+        // it, so the hook cannot make the next packet due. Time moves on
+        // with every reading instead.
+        clock->advance_per_read = 10;
+#endif
         SocketOptions options;
         REQUIRE_EQ(options.set(SocketOption::send_buffer_packets,
                        messages == 0 ? 4 : 128),

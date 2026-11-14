@@ -1075,4 +1075,61 @@ TEST(udp_socket_receive_batch_keeps_per_datagram_results_in_order)
     REQUIRE_EQ(receiver.receive_batch(storage, 0U, results, terminal), 0U);
     REQUIRE_EQ(terminal.error, Error::buffer_too_small);
 }
+
+TEST(udp_socket_send_batch_delivers_whole_datagrams_in_order)
+{
+    UdpSocket sender;
+    UdpSocket receiver;
+    REQUIRE(sender.valid());
+    REQUIRE(receiver.valid());
+    REQUIRE_EQ(sender.bind(Ipv4Endpoint::loopback()), Error::none);
+    REQUIRE_EQ(receiver.bind(Ipv4Endpoint::loopback()), Error::none);
+    const auto sender_address = sender.local_endpoint();
+    const auto receiver_address = receiver.local_endpoint();
+    REQUIRE(sender_address);
+    REQUIRE(receiver_address);
+
+    // Equal-length runs, a shorter datagram that ends one, a lone datagram
+    // and a longer one: every boundary a segmented submission must respect.
+    const std::array<std::size_t, 9> sizes {
+        100U, 100U, 100U, 40U, 100U, 7U, 200U, 200U, 200U};
+    std::array<std::array<std::byte, 200>, sizes.size()> payloads;
+    std::array<std::span<const std::byte>, sizes.size()> datagrams;
+    for (std::size_t index = 0; index < sizes.size(); ++index) {
+        payloads[index].fill(static_cast<std::byte>(index + 1U));
+        datagrams[index] = std::span {payloads[index]}.first(sizes[index]);
+    }
+    UdpIoResult rejection {.error = Error::io_error};
+    // Twice: a socket that had to give up segmentation still delivers.
+    for (int round = 0; round < 2; ++round) {
+        REQUIRE_EQ(
+            sender.send_batch(datagrams, receiver_address.endpoint, rejection),
+            sizes.size());
+        REQUIRE(rejection);
+        for (std::size_t index = 0; index < sizes.size(); ++index) {
+            REQUIRE(receiver.wait_readable(1000).ready);
+            std::array<std::byte, 256> received;
+            const auto result = receiver.receive_from(received);
+            REQUIRE(result);
+            REQUIRE_EQ(result.peer, sender_address.endpoint);
+            REQUIRE_EQ(result.bytes_transferred, sizes[index]);
+            REQUIRE(std::all_of(received.begin(),
+                received.begin() + static_cast<std::ptrdiff_t>(sizes[index]),
+                [&](std::byte value) {
+                    return value == static_cast<std::byte>(index + 1U);
+                }));
+        }
+    }
+
+    // An empty batch is accepted whole; a rejection names the first
+    // datagram that UDP did not take and leaves the rest unsent.
+    REQUIRE_EQ(sender.send_batch({}, receiver_address.endpoint, rejection), 0U);
+    REQUIRE(rejection);
+    auto wrong_family = receiver_address.endpoint;
+    wrong_family.family = IpAddressFamily::ipv6;
+    REQUIRE_EQ(sender.send_batch(datagrams, wrong_family, rejection), 0U);
+    REQUIRE_EQ(rejection.error, Error::invalid_state);
+    std::array<std::byte, 8> none;
+    REQUIRE_EQ(receiver.receive_from(none).error, Error::would_block);
+}
 #endif

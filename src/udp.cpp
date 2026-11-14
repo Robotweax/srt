@@ -40,6 +40,12 @@
 namespace robotweax::srt {
 namespace {
 
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_SEGMENTATION)
+// UDP_SEGMENT (Linux 4.18). Its defining header, <linux/udp.h>, conflicts
+// with <netinet/udp.h> on some C libraries, so the value is stated here.
+constexpr int udp_segment_option = 103;
+#endif
+
 #if defined(__linux__)
 static_assert(maximum_network_device_name_size == IFNAMSIZ,
     "The compatible SO_BINDTODEVICE ABI requires IFNAMSIZ bytes");
@@ -345,8 +351,10 @@ UdpSocket::UdpSocket(UdpSocket&& other) noexcept
     : native_(std::exchange(other.native_, invalid_native))
     , open_system_error_(std::exchange(other.open_system_error_, 0))
     , last_system_error_(std::exchange(other.last_system_error_, 0))
-    , family_(std::exchange(
-          other.family_, IpAddressFamily::ipv4))
+    , family_(std::exchange(other.family_, IpAddressFamily::ipv4))
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_SEGMENTATION)
+    , segmentation_refused_(std::exchange(other.segmentation_refused_, false))
+#endif
 {
 }
 
@@ -359,6 +367,10 @@ UdpSocket& UdpSocket::operator=(UdpSocket&& other) noexcept
         last_system_error_ = std::exchange(other.last_system_error_, 0);
         family_ = std::exchange(
             other.family_, IpAddressFamily::ipv4);
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_SEGMENTATION)
+        segmentation_refused_ =
+            std::exchange(other.segmentation_refused_, false);
+#endif
     }
     return *this;
 }
@@ -1243,6 +1255,140 @@ std::size_t UdpSocket::receive_batch(std::span<std::byte> storage,
               };
     }
     return consumed;
+}
+
+std::size_t UdpSocket::send_batch(
+    std::span<const std::span<const std::byte>> datagrams,
+    IpEndpoint destination, UdpIoResult& rejection) noexcept
+{
+    rejection = {};
+    if (!valid()) {
+        rejection = {
+            .error = Error::io_error, .system_error = open_system_error_};
+        return 0U;
+    }
+    if (destination.family != family_) {
+        rejection = {
+            .error = Error::invalid_state,
+            .system_error = invalid_address_family_error,
+        };
+        return 0U;
+    }
+    SocketAddress address = to_sockaddr(destination);
+    std::size_t accepted = 0;
+    while (accepted < datagrams.size()) {
+        const std::size_t count =
+            std::min(datagrams.size() - accepted, maximum_send_batch);
+        std::size_t submitted = 0;
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_SEGMENTATION)
+        if (count > 1U && !segmentation_refused_) {
+            // One segmented datagram: at most 64 segments within one UDP
+            // payload, all of the first length except possibly the last.
+            constexpr std::size_t maximum_segmented_payload = 65'000;
+            const std::size_t segment = datagrams[accepted].size();
+            std::array<iovec, maximum_send_batch> segments;
+            std::size_t run = 0;
+            std::size_t total = 0;
+            while (run < count && segment != 0U && segment <= UINT16_MAX) {
+                const auto bytes = datagrams[accepted + run];
+                if (bytes.empty() || bytes.size() > segment
+                    || total + bytes.size() > maximum_segmented_payload) {
+                    break;
+                }
+                segments[run] = {
+                    .iov_base = const_cast<std::byte*>(bytes.data()),
+                    .iov_len = bytes.size(),
+                };
+                total += bytes.size();
+                ++run;
+                if (bytes.size() < segment) {
+                    break;
+                }
+            }
+            if (run > 1U) {
+                alignas(cmsghdr)
+                    std::array<char, CMSG_SPACE(sizeof(std::uint16_t))>
+                        control {};
+                msghdr message {};
+                message.msg_name = &address.value;
+                message.msg_namelen = address.size;
+                message.msg_iov = segments.data();
+                message.msg_iovlen = run;
+                message.msg_control = control.data();
+                message.msg_controllen = control.size();
+                auto* option = CMSG_FIRSTHDR(&message);
+                option->cmsg_level = IPPROTO_UDP;
+                option->cmsg_type = udp_segment_option;
+                option->cmsg_len = CMSG_LEN(sizeof(std::uint16_t));
+                const auto segment_size = static_cast<std::uint16_t>(segment);
+                std::memcpy(
+                    CMSG_DATA(option), &segment_size, sizeof(segment_size));
+                const auto sent =
+                    ::sendmsg(to_native(native_), &message, MSG_DONTWAIT);
+                if (sent >= 0) {
+                    if (static_cast<std::size_t>(sent) != total) {
+                        rejection = {.bytes_transferred =
+                                         static_cast<std::size_t>(sent)};
+                        return accepted;
+                    }
+                    accepted += run;
+                    continue;
+                }
+                // Refused as a whole. Backpressure may still admit a prefix
+                // and any other error needs its class, so the run goes
+                // through the unsegmented path below. A route that cannot
+                // segment (a segment above its MTU, no offload support)
+                // would refuse every later run as well.
+                if (const int error = last_socket_error();
+                    !is_would_block(error) && error != ENOBUFS
+                    && error != ENOMEM && error != EINTR) {
+                    segmentation_refused_ = true;
+                }
+            }
+        }
+#endif
+        if (count > 1U) {
+            std::array<mmsghdr, maximum_send_batch> messages;
+            std::array<iovec, maximum_send_batch> buffers;
+            for (std::size_t index = 0; index < count; ++index) {
+                const auto bytes = datagrams[accepted + index];
+                // The kernel only reads the payload and the address.
+                buffers[index] = {
+                    .iov_base = const_cast<std::byte*>(bytes.data()),
+                    .iov_len = bytes.size(),
+                };
+                messages[index] = {};
+                auto& header = messages[index].msg_hdr;
+                header.msg_name = &address.value;
+                header.msg_namelen = address.size;
+                header.msg_iov = &buffers[index];
+                header.msg_iovlen = 1;
+            }
+            const int sent = ::sendmmsg(to_native(native_), messages.data(),
+                static_cast<unsigned int>(count), MSG_DONTWAIT);
+            submitted = sent > 0 ? static_cast<std::size_t>(sent) : 0U;
+            for (std::size_t index = 0; index < submitted; ++index) {
+                const auto size = datagrams[accepted + index].size();
+                if (messages[index].msg_len != size) {
+                    rejection = {.bytes_transferred = messages[index].msg_len};
+                    return accepted + index;
+                }
+            }
+            accepted += submitted;
+            if (submitted == count) {
+                continue;
+            }
+        }
+        // The batch call reports no error once it accepted a datagram, so
+        // the first one it left behind is submitted alone for its result.
+        const auto single = send_to(datagrams[accepted], destination);
+        if (!single || single.bytes_transferred != datagrams[accepted].size()) {
+            rejection = single;
+            return accepted;
+        }
+        ++accepted;
+    }
+    return accepted;
 }
 #endif
 

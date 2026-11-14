@@ -52,7 +52,9 @@ option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
 option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING
-    "Linux only: read datagrams with recvmmsg (experimental)" OFF)
+    "Linux only: move datagrams with recvmmsg and sendmmsg (experimental)" OFF)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION
+    "Linux only: send equal-length DATA runs with UDP_SEGMENT (experimental)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable experimental authenticated runtime controls" OFF)
 option(ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD
@@ -300,6 +302,15 @@ if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING)
     endif()
     target_compile_definitions(robotweax_srt
         PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION)
+    if(NOT ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING)
+        message(FATAL_ERROR
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION requires "
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING")
+    endif()
+    target_compile_definitions(robotweax_srt
+        PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_UDP_SEGMENTATION)
 endif()
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_ACP1)

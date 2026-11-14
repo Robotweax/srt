@@ -286,6 +286,27 @@ public:
     [[nodiscard]] std::size_t receive_batch(std::span<std::byte> storage,
         std::size_t slot_size, std::span<UdpIoResult> results,
         UdpIoResult& terminal) noexcept;
+    /** Most datagrams one send_batch() system call submits. */
+    static constexpr std::size_t maximum_send_batch = 64;
+    /**
+     * Experimental (Linux): submits the datagrams in order to one
+     * destination, never blocking, and returns the length of the accepted
+     * prefix. When that is shorter than datagrams.size(), rejection is what
+     * send_to() reports for the first datagram that was not accepted: the
+     * datagram is submitted once more on its own to obtain its error class,
+     * and the batch continues if that submission succeeds. A short
+     * submission ends the prefix and is reported with Error::none and the
+     * transferred size.
+     *
+     * With ROBOTWEAX_SRT_EXPERIMENTAL_UDP_SEGMENTATION, a run of
+     * equal-length datagrams (the last may be shorter) is first offered to
+     * the kernel as one segmented datagram, which it takes or refuses as a
+     * whole. A refused run is submitted again without segmentation, and a
+     * socket whose route cannot segment stops trying.
+     */
+    [[nodiscard]] std::size_t send_batch(
+        std::span<const std::span<const std::byte>> datagrams,
+        IpEndpoint destination, UdpIoResult& rejection) noexcept;
 #endif
     /**
      * True when a receive failure reports a per-datagram network condition
@@ -312,6 +333,9 @@ private:
     int open_system_error_ = 0;
     int last_system_error_ = 0;
     IpAddressFamily family_ = IpAddressFamily::ipv4;
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_SEGMENTATION)
+    bool segmentation_refused_ = false;
+#endif
 };
 
 } // namespace robotweax::srt
