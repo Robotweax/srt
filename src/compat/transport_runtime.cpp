@@ -3181,14 +3181,13 @@ bool ConnectionRuntime::stageable_datagram(
     const DatagramCompletion& completion) const noexcept
 {
     // Only DATA whose completion leaves the choice and the bytes of the next
-    // datagram untouched may wait for a batch. Encryption counts packets per
-    // key, FEC and filters emit repair after a source packet, and group
-    // members share budgets and positions: all of those keep the direct path.
+    // datagram untouched may wait for a batch. FEC and filters emit repair
+    // after a source packet, and group members share budgets, positions and
+    // key schedules: all of those keep the direct path.
     if (completion.kind != DatagramKind::data || completion.group_binding
         || completion.unicast_repeat_state || group_send_state_
         || group_data_egress_.mode != GroupDataEgress::Mode::normal
-        || (crypto_ != nullptr && crypto_->enabled()) || fec_encoder_active()
-        || options_.experimental_acp1()) {
+        || fec_encoder_active() || options_.experimental_acp1()) {
         return false;
     }
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
@@ -3243,6 +3242,17 @@ bool ConnectionRuntime::stage_datagram(std::span<const std::byte> bytes,
     entry.pacer_before = pacer_;
     ++send_stage_->size;
     pacer_.on_packet_sent(bytes.size(), now);
+    if (crypto_ != nullptr && !completion.data.retransmitted) {
+        const std::uint64_t overrun_before =
+            crypto_->refresh_overrun_positions();
+        if (crypto_->note_data_packet_sent() != Error::none) {
+            break_locked(0);
+            return false;
+        }
+        statistics_.note_key_refresh_overrun(
+            crypto_->refresh_overrun_positions() - overrun_before);
+        entry.completion.key_use_counted = true;
+    }
     return true;
 }
 
@@ -3428,8 +3438,12 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
         if (!completing_staged_datagram_)
 #endif
             pacer_.on_packet_sent(bytes.size(), now);
-        if (crypto_ != nullptr && !completion.data.retransmitted
-            && !completion.group_binding) {
+        bool count_key_use = crypto_ != nullptr
+            && !completion.data.retransmitted && !completion.group_binding;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+        count_key_use = count_key_use && !completion.key_use_counted;
+#endif
+        if (count_key_use) {
             const std::uint64_t overrun_before =
                 crypto_->refresh_overrun_positions();
             if (crypto_->note_data_packet_sent() != Error::none) {

@@ -834,6 +834,10 @@ private:
         std::uint64_t group_position = 0;
         // Only unicast repairs carry this state, including native retries.
         std::shared_ptr<DispatchTransmitState> unicast_repeat_state {};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+        // Set when staging already counted this packet against its key.
+        bool key_use_counted = false;
+#endif
     };
 
     struct PendingDatagram {
@@ -857,9 +861,12 @@ private:
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
     // DATA that one poll found due is staged here and submitted with one
     // batch call. Nothing a staged datagram's completion would change has
-    // advanced yet, except the pacer: it is advanced at staging so that only
-    // datagrams that are due share a batch, and each entry keeps the pacer
-    // as it stood before it, to restore if UDP does not accept the entry.
+    // advanced yet, with two exceptions. The pacer is advanced at staging so
+    // that only datagrams that are due share a batch, and each entry keeps
+    // the pacer as it stood before it, to restore if UDP does not accept the
+    // entry. An encrypted original is counted against its key at staging,
+    // when its ciphertext exists: the next packet's key preparation needs
+    // that count, and a position counts whether or not UDP takes the packet.
     struct StagedDatagram {
         std::size_t size = 0;
         std::uint64_t now = 0;

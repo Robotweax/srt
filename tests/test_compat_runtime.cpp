@@ -12164,6 +12164,177 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
 
 } // namespace
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+namespace {
+
+// Every reading moves time on, so one poll finds several DATA due and stages
+// them together.
+std::uint64_t batching_now(void* context) noexcept
+{
+    return *static_cast<std::uint64_t*>(context) += 20;
+}
+
+void run_encrypted_send_batches_across_rotations(CryptoMode mode)
+{
+    const auto sender_channel = std::make_shared<DatagramChannel>();
+    const auto receiver_channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams sender_output;
+    CapturedDatagrams receiver_output;
+    sender_channel->set_send_hook_for_testing(capture_datagram, &sender_output);
+    receiver_channel->set_send_hook_for_testing(
+        capture_datagram, &receiver_output);
+    const Ipv4Endpoint sender_endpoint {
+        .address = {192, 0, 2, 97}, .port = 16'201};
+    const Ipv4Endpoint receiver_endpoint {
+        .address = {192, 0, 2, 98}, .port = 16'202};
+    const CryptoConfiguration configuration {
+        .passphrase = "batched key rotation fixture",
+        .mode = mode,
+        .enable_aes_gcm = true,
+        .key_length = 16,
+        .refresh_rate_packets = 200,
+        .preannouncement_packets = 80,
+    };
+    auto sender_crypto = std::make_shared<CryptoSession>(configuration);
+    auto receiver_crypto = std::make_shared<CryptoSession>(configuration);
+    REQUIRE_EQ(sender_crypto->start_initiator(), Error::none);
+    REQUIRE_EQ(receiver_crypto->accept_key_material(
+                   sender_crypto->pending_key_material(), true),
+        Error::none);
+    REQUIRE_EQ(sender_crypto->acknowledge_key_material(
+                   receiver_crypto->key_material_response(), true),
+        Error::none);
+    confirm_directional_test_keys(*sender_crypto, *receiver_crypto);
+
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::send_buffer_packets, 2'048), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::receive_buffer_packets, 2'048), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second,
+                   1'000'000'000),
+        Error::none);
+#ifdef ENABLE_AEAD_API_PREVIEW
+    if (mode == CryptoMode::aes_gcm) {
+        REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+    }
+#endif
+    const SequenceNumber initial_sequence {8'000};
+    const auto origin = ConnectionRuntime::Clock::now();
+    std::uint64_t now = 1'000'000;
+    ConnectionRuntime sender {{
+        .channel = sender_channel,
+        .peer = receiver_endpoint,
+        .peer_socket_id = 940,
+        .initial_sequence = initial_sequence,
+        .flow_window_packets = 2'048,
+        .options = options,
+        .negotiated_options = {.periodic_nak = true, .retransmit_flag = true},
+        .origin = origin,
+        .crypto = sender_crypto,
+        .now_function = batching_now,
+        .now_context = &now,
+    }};
+    ConnectionRuntime receiver {{
+        .channel = receiver_channel,
+        .peer = sender_endpoint,
+        .peer_socket_id = 930,
+        .initial_sequence = initial_sequence,
+        .flow_window_packets = 2'048,
+        .options = options,
+        .negotiated_options = {.periodic_nak = true, .retransmit_flag = true},
+        .origin = origin,
+        .crypto = receiver_crypto,
+        .now_function = batching_now,
+        .now_context = &now,
+    }};
+
+    constexpr std::uint32_t messages = 700;
+    std::uint32_t queued = 0;
+    std::uint32_t delivered = 0;
+    std::size_t largest_batch = 0;
+    std::size_t rotations = 0;
+    std::array<std::byte, 64> message {};
+    std::array<std::byte, 1'500> received {};
+    for (int round = 0; round < 20'000 && delivered < messages; ++round) {
+        for (int burst = 0; burst < 50 && queued < messages; ++burst) {
+            message.fill(static_cast<std::byte>(queued));
+            if (sender.queue_message(message, 0, true, false, 0).status
+                != MessageIoStatus::success) {
+                break;
+            }
+            ++queued;
+        }
+        (void)sender.poll();
+        std::size_t data_in_poll = 0;
+        for (const auto& datagram : take_datagrams(sender_output)) {
+            const auto decoded = decode_packet(datagram);
+            REQUIRE(decoded);
+            if (decoded.packet.kind == PacketKind::data) {
+                ++data_in_poll;
+            }
+            receiver.process_packet(decoded.packet, sender_endpoint);
+        }
+        largest_batch = std::max(largest_batch, data_in_poll);
+        (void)receiver.poll();
+        for (const auto& datagram : take_datagrams(receiver_output)) {
+            const auto decoded = decode_packet(datagram);
+            REQUIRE(decoded);
+            if (decoded.packet.kind == PacketKind::control
+                && decoded.packet.control.type == ControlType::user_defined
+                && decoded.packet.control.subtype
+                    == key_material_response_subtype) {
+                ++rotations;
+            }
+            sender.process_packet(decoded.packet, receiver_endpoint);
+        }
+        for (;;) {
+            const auto got = receiver.receive_message(received, false, 0);
+            if (got.status != MessageIoStatus::success) {
+                break;
+            }
+            // In order, whole, and decrypted with the right key.
+            REQUIRE_EQ(got.bytes, message.size());
+            REQUIRE(std::all_of(received.begin(),
+                received.begin() + static_cast<std::ptrdiff_t>(got.bytes),
+                [&](std::byte value) {
+                    return value == static_cast<std::byte>(delivered);
+                }));
+            ++delivered;
+        }
+        REQUIRE(!sender.broken());
+        REQUIRE(!receiver.broken());
+        // A key never covers more than its refresh period plus one
+        // preannouncement window, however the packets were batched.
+        REQUIRE(sender_crypto->packets_on_active_key() < 400U);
+        now += 200;
+    }
+    REQUIRE_EQ(delivered, messages);
+    REQUIRE(largest_batch > 1U);
+    // 700 packets at a refresh period of 200: each position counted once
+    // gives three rotations. Counting a staged packet twice would give more.
+    REQUIRE_EQ(rotations, 3U);
+    const auto sender_totals = sender.statistics(false, true).total;
+    REQUIRE_EQ(sender_totals.sent_unique.packets, messages);
+    REQUIRE_EQ(sender_totals.sender_key_refresh_overrun_positions, 0U);
+    REQUIRE_EQ(
+        receiver.statistics(false, true).total.receiver_undecryptable.packets,
+        0U);
+}
+
+} // namespace
+
+TEST(compat_runtime_encrypted_send_batches_rotate_keys_ctr)
+{
+    run_encrypted_send_batches_across_rotations(CryptoMode::aes_ctr);
+}
+
+TEST(compat_runtime_encrypted_send_batches_rotate_keys_gcm)
+{
+    run_encrypted_send_batches_across_rotations(CryptoMode::aes_gcm);
+}
+#endif
+
 TEST(compat_runtime_sender_late_drop_spares_packets_that_were_never_sent)
 {
     // The application writes a burst far beyond the paced sending rate, so
