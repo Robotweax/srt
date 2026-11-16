@@ -119,6 +119,9 @@ combining features.
 - [Scheduler shards and staged scaling](scheduler-shards.md)
 - [Same-host UDP group throughput diagnostic](group-throughput.md)
 - [UDP send backpressure](udp-backpressure.md)
+- [UDP I/O backends draft](udp-io-backends.md) — draft contract for batched
+  system calls and segmentation offload (experimental, default off, Linux),
+  and for the unimplemented `io_uring` and Registered I/O backends.
 - [Shared-channel scheduling fairness](channel-fairness.md)
 - [Idle channel readiness](idle-readiness.md)
 - [Incremental SRT epoll readiness](epoll-readiness.md)
