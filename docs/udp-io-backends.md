@@ -1,19 +1,21 @@
 # UDP I/O backends (draft contract)
 
-**Status: draft proposal. Nothing in this document is implemented.** Every
-option name below is provisional. **No throughput or CPU improvement is
-claimed.** The draft exists so that the invariants, the backend boundary and
-the qualification order can be reviewed before any code is written. Items
-marked *open* need a decision. Items marked *assumption* rest on
-operating-system documentation or platform knowledge and have not been tested
-in this repository.
+**Status: draft contract, partly implemented as an experiment.** Steps 1 and
+2 of the qualification order, batched system calls and Linux segmentation
+offload, exist as experimental, default-off Linux build options since pull
+request 398 (merged 2026-11-16). `io_uring` and Registered I/O are not
+implemented. No backend is supported or released, the names of the two
+unimplemented options are provisional, and **no throughput or CPU improvement
+is claimed**; the figures under [Measurements so far](#measurements-so-far)
+are observations with stated limits. Items marked *open* need a decision.
+Items marked *assumption* rest on operating-system documentation or platform
+knowledge and have not been tested in this repository. Items marked
+*implemented* describe what the experimental code does.
 
-An experimental implementation of steps 1 and 2 (batched system calls and
-Linux segmentation offload) is under review in pull request 398 and is not
-merged. Two rules below were changed on 2026-11-16 to match what that
-implementation does; each change is marked *accepted deviation*.
+Two rules were changed on 2026-11-16 to match the experimental
+implementation; each change is marked *accepted deviation*.
 
-Robotweax SRT 0.3.2 moves every datagram with one system call. This draft
+The default build moves every datagram with one system call. This draft
 covers four optional additions, in the order they should be qualified: batched
 system calls and UDP segmentation offload, then an `io_uring` backend on Linux
 and a Registered I/O (RIO) backend on Windows. None of them changes the wire
@@ -77,9 +79,13 @@ Receive:
 3. **Slice budget.** A slice dispatches at most 64 datagrams before
    connections are polled. Unread input requests immediate work.
 4. **Per-datagram routing.** Each datagram is dispatched with its own source
-   endpoint and an ingress time. *Open:* a batch read yields one clock sample
-   per batch unless kernel receive timestamps are requested; the effect on
-   RTT and drift estimation must be measured before one sample is accepted.
+   endpoint and an ingress time. *Implemented:* the batched receive path
+   samples the clock for each datagram when it is dispatched, as the default
+   path does. The sample is therefore the dispatch time, not the arrival
+   time: a datagram late in a batch is stamped later than it arrived, by the
+   time spent dispatching those before it. *Open:* the effect on RTT and
+   drift estimation has not been measured; kernel receive timestamps would
+   remove it.
 5. **Bounded receive storage.** Receive memory is sized when the channel is
    created. Dispatch does not retain the receive buffer, which already holds
    because the buffer is reused for the next datagram.
@@ -165,16 +171,28 @@ model.
 
 - **Receive.** One call fills up to 64 slots. Per-message truncation maps to
   invariant 1. The channel needs 64 slots of 1,500 bytes (96 KiB) instead of
-  one stack buffer. *Open:* allocate the slots only for channels that have
-  completed a full slice.
+  one stack buffer. *Implemented:* the slots are allocated on the channel's
+  first receive slice; if that allocation fails, the channel keeps the
+  single-datagram path. *Open:* allocate the slots only for channels that
+  have completed a full slice.
 - **Send.** The return value is the accepted prefix. The first unsent datagram
   is submitted once more on its own to obtain its error class.
   *Assumption:* an error after at least one accepted message is not reported
-  by the batch call itself.
-- **Where batches form.** A paced live stream usually has one datagram due per
-  poll, so it forms no send batch. Batches form on retransmission bursts, FEC
-  output, File mode and catch-up after a late wake. The receive side of a busy
-  shared listener is expected to gain more than the send side.
+  by the batch call itself. *Implemented:* plain DATA that one poll finds due
+  is staged, at most 64 datagrams, and flushed with one call. Exactly the
+  accepted prefix completes in order and the rest enters the existing retry
+  FIFO. The per-poll budget is charged per real UDP attempt. A connection
+  allocates its 96 KiB of staging storage on its first staged send.
+- **Excluded from send staging.** Connections with FEC or another packet
+  filter, group members, experimental controllers, and retransmissions under
+  a retransmission bandwidth limit keep the direct path. Any datagram that
+  cannot be staged flushes the stage first, which preserves invariant 7.
+- **Where batches form.** Near 1 Gbit/s on one connection a poll found about
+  ten datagrams due at the median. `sendmmsg` alone gave no measurable sender
+  saving there; see [Measurements so far](#measurements-so-far). At ordinary
+  live bitrates a poll usually has one datagram due and forms no batch. The
+  receive side gained more than the send side in the one two-host
+  measurement.
 
 ## Segmentation offload
 
@@ -185,11 +203,16 @@ datagrams to one destination; the last may be shorter.
 - Only a run of equal-length DATA for one peer qualifies. Controls and
   odd-sized datagrams are sent singly.
 - *Assumption:* a segmented call is accepted or rejected as a whole, which
-  would satisfy the prefix rule.
+  would satisfy the prefix rule. *Implemented:* a run is at most 64 segments
+  and 65,000 bytes. A refused run is sent again through `sendmmsg`; a short
+  send is reported as a rejection. After a refusal that is not transient the
+  socket stops offering segmentation for all its peers.
 - The segments leave the host back to back. Invariant 9 limits a run to
-  datagrams that are already due. *Open:* confirm with a capture that wire
-  spacing does not differ from the default path in a way that affects the
-  receiver.
+  datagrams that are already due. A capture on a veth link with device
+  offload off found default and segmented sends indistinguishable: near
+  1 Gbit/s a median gap of 1 to 2 µs, a 99th percentile of 105 to 110 µs and
+  a median burst of 10 packets for both. *Open:* the same check on a physical
+  network card with hardware segmentation.
 
 Linux `UDP_GRO` (Linux 5.0) is a socket option. The kernel may then deliver
 several datagrams in one buffer together with their segment size.
@@ -365,9 +388,32 @@ Each backend needs the following before it can be described as supported:
 
 No numerical improvement is claimed until an isolated comparison passes.
 
+## Measurements so far
+
+All at the experimental implementation of steps 1 and 2, default build
+against the build with both options. None is an isolated comparison under
+the [Performance](performance.md) method, and none is a claim.
+
+| Setting | Sender CPU | Receiver CPU |
+| --- | --- | --- |
+| One Docker VM, loopback and veth, 600,000 packets near 1 Gbit/s | 10 to 14 % less with segmentation; no change with `sendmmsg` alone | kernel time 0.42 s to 0.29 s with `recvmmsg` |
+| Two cloud hosts in two regions, `virtio_net` without hardware UDP segmentation, three cases of 180,000 packets per build | no difference shown (median ratio 0.98, ranges overlap) | about a quarter less (median ratio 0.75, ranges separate) |
+
+- **Under loss.** In a container with 2 % loss and reordering, and with 5 %
+  loss, 16 encrypted transfers per build arrived byte-identical and both
+  builds retransmitted alike.
+- **Limits.** The Docker figures come from one VM on one laptop. The cloud
+  hosts were shared 2-vCPU guests on one day and one path, and both sides ran
+  the same build, so the receiver saving is not separated from the sender's
+  changed burst pattern. No physical network card and no hardware
+  segmentation has been measured. Step 0 of the qualification order, the
+  share of CPU that socket calls cost in the named profiles, has not been
+  recorded.
+
 ## Open decisions
 
-1. One clock sample per receive batch, or kernel receive timestamps.
+1. Dispatch-time clock samples in a receive batch, or kernel receive
+   timestamps.
 2. Lazy allocation of the 64 receive slots.
 3. Receive coalescing: benefit against per-channel memory.
 4. Minimum kernel for `io_uring`: 6.0 or 6.1.
@@ -377,3 +423,5 @@ No numerical improvement is claimed until an isolated comparison passes.
 8. RIO send completion: in-flight state, or acceptance at `RIOSendEx` return.
 9. RIO notification: event or completion port.
 10. Behavior when a selected backend is unavailable on the host.
+11. Whether receive batching is qualified and released on its own, ahead of
+    send segmentation.
