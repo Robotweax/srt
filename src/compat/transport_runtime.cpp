@@ -1541,6 +1541,55 @@ void DatagramChannel::mark_connections_broken(int system_error) noexcept
     }
 }
 
+bool DatagramChannel::accept_received(
+    const UdpIoResult& received, std::span<const std::byte> datagram) noexcept
+{
+    if (received.error == Error::would_block) {
+        return false;
+    }
+    if (received.error == Error::buffer_too_small) {
+        return true;
+    }
+    if (received.error == Error::io_error
+        && UdpSocket::is_transient_receive_error(received.system_error)) {
+        // A queued ICMP report or interrupted call for one peer is not a
+        // fault of the shared socket.
+        return true;
+    }
+    if (!received) {
+        mark_connections_broken(received.system_error);
+        return false;
+    }
+    const auto ingress = std::chrono::steady_clock::now();
+    last_datagram_time_ = ingress;
+    const auto bytes = datagram.first(received.bytes_transferred);
+    const auto decoded = decode_packet(bytes);
+    if (decoded) {
+        dispatch(decoded.packet, bytes, received.peer, ingress);
+    }
+    return true;
+}
+
+RuntimePollResult DatagramChannel::finish_receive_slice(
+    std::size_t received_count) noexcept
+{
+    // Sparse traffic: no datagram for several short-poll intervals. A
+    // readiness wake costs two thread hops, so it only beats the poll when
+    // datagrams are far apart; denser traffic keeps the poll, which
+    // coalesces datagrams into one wake.
+    slice_quiet_ = std::chrono::steady_clock::now() - last_datagram_time_
+        >= quiet_traffic_intervals * idle_wait_;
+    auto result = poll_connections();
+    // A full slice can leave UDP input unread. After would_block, however,
+    // the receive queue is drained: preserve the connection poll deadline
+    // instead of forcing another empty receive and complete route sweep.
+    if (received_count == maximum_receive_batch) {
+        result.immediate_work = true;
+        result.next_work_delay.reset();
+    }
+    return result;
+}
+
 RuntimePollResult DatagramChannel::run_once() noexcept
 {
     return run_receive_slice([this](std::span<std::byte> datagram) noexcept {
@@ -1588,14 +1637,22 @@ RuntimePollResult DatagramChannel::poll_connections(
         // holding the route table across protocol work or nonblocking sends.
         const auto result = runtime->poll(remaining_send_attempts);
         poll_round_immediate_ |= result.immediate_work;
-        const bool can_wait =
-            readiness_available_.load(std::memory_order_acquire)
-            && result.receive_wait_safe;
+        const bool quiet_wait = slice_quiet_ && !result.receive_wait_safe
+            && result.quiet_receive_wait.has_value()
+            && readiness_available_.load(std::memory_order_acquire);
+        const bool can_wait = quiet_wait
+            || (readiness_available_.load(std::memory_order_acquire)
+                && result.receive_wait_safe);
         poll_round_receive_wait_safe_ &= can_wait;
-        if (can_wait && !result.next_work_delay.has_value()) {
+        if (can_wait && !quiet_wait && !result.next_work_delay.has_value()) {
             continue;
         }
-        const auto delay = can_wait
+        const auto delay = quiet_wait
+            ? (result.next_work_delay.has_value()
+                      ? std::min(
+                            *result.next_work_delay, *result.quiet_receive_wait)
+                      : *result.quiet_receive_wait)
+            : can_wait
             ? *result.next_work_delay
             : std::min(result.next_work_delay.value_or(idle_wait_),
                   std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1603,8 +1660,8 @@ RuntimePollResult DatagramChannel::poll_connections(
         // Store an absolute deadline: each continuation must not restart an
         // earlier connection's pacing/backpressure/idle wait.
         const auto relative_deadline = current_time() + delay;
-        const auto deadline = !injected_now.has_value() && clock == nullptr
-                && result.next_work_deadline.has_value()
+        const auto deadline = !quiet_wait && !injected_now.has_value()
+                && clock == nullptr && result.next_work_deadline.has_value()
             ? (can_wait
                       ? *result.next_work_deadline
                       : std::min(*result.next_work_deadline, relative_deadline))
@@ -2857,6 +2914,51 @@ bool ConnectionRuntime::flush_group_budget_datagram(std::uint64_t now) noexcept
     group_budget_pending_.reset();
     send_ready_.notify_all();
     return completed;
+}
+
+std::optional<std::chrono::microseconds> ConnectionRuntime::quiet_receive_wait(
+    std::uint64_t now) noexcept
+{
+    // Buffered DATA normally keeps the channel on its short poll. When every
+    // remaining deadline lies in the future the channel can instead sleep
+    // until the earliest one and let socket readiness report new input. A
+    // deadline that is already due, or a pending key exchange, keeps the
+    // short poll: its completion depends on work this bound does not model.
+    // The cap bounds the wait for anything the list below does not cover.
+    constexpr std::uint64_t maximum_quiet_wait_microseconds = 10'000;
+    if (crypto_ != nullptr && !crypto_->pending_key_material().empty()) {
+        return std::nullopt;
+    }
+    std::uint64_t wait = maximum_quiet_wait_microseconds;
+    bool due = false;
+    const auto bound = [&](std::uint64_t deadline) noexcept {
+        if (deadline <= now) {
+            due = true;
+        } else {
+            wait = std::min(wait, deadline - now);
+        }
+    };
+    bound(session_.next_control_deadline(now));
+    const auto remaining = (std::numeric_limits<std::uint64_t>::max)()
+        - last_peer_activity_microseconds_;
+    bound(last_peer_activity_microseconds_
+        + std::min(remaining, peer_idle_timeout_microseconds_ + 1U));
+    if (const auto deadline = session_.next_sender_retirement_deadline()) {
+        bound(*deadline);
+    }
+    if (const auto deadline = session_.next_sensor_receive_gap_deadline()) {
+        bound(*deadline);
+    }
+    if (const auto deadline = session_.next_receive_delivery_time()) {
+        bound(*deadline);
+    }
+    if (const auto deadline = session_.next_tail_probe_due()) {
+        bound(*deadline);
+    }
+    if (due) {
+        return std::nullopt;
+    }
+    return std::chrono::microseconds {wait};
 }
 
 RuntimePollResult ConnectionRuntime::group_budget_poll_result(
@@ -5503,7 +5605,8 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
                     retirement_delay = probe_delay;
                 }
             }
-            return {.next_work_delay = retirement_delay};
+            return {.next_work_delay = retirement_delay,
+                .quiet_receive_wait = quiet_receive_wait(current)};
         }
         const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
         const auto timeout = last_peer_activity_microseconds_
