@@ -2327,23 +2327,43 @@ Error CryptoSession::open(const DataHeader& header,
     // including when the destination overlaps either input span. Destination
     // bytes outside the inputs are erased.
     const auto reject = [&](Error error) noexcept {
-        const auto contains = [](std::span<const std::byte> input,
-                                  const std::byte* byte) noexcept {
-            const auto address = reinterpret_cast<std::uintptr_t>(byte);
-            const auto begin = reinterpret_cast<std::uintptr_t>(input.data());
-            return address >= begin && address - begin < input.size();
+        // The part of the destination covered by an input, as offsets into
+        // the destination. Two interval intersections replace a per-byte
+        // test so a rejected packet costs no more than an accepted one.
+        struct Overlap {
+            std::size_t first = 0;
+            std::size_t last = 0;
         };
-        std::size_t run = 0;
-        for (std::size_t index = 0; index < plaintext.size(); ++index) {
-            if (contains(ciphertext, plaintext.data() + index)
-                || contains(authentication_tag, plaintext.data() + index)) {
-                if (index != run) {
-                    provider_.secure_erase(plaintext.subspan(run, index - run));
-                }
-                run = index + 1U;
-            }
+        const auto overlap = [&](std::span<const std::byte> input) noexcept {
+            const auto begin =
+                reinterpret_cast<std::uintptr_t>(plaintext.data());
+            const auto input_begin =
+                reinterpret_cast<std::uintptr_t>(input.data());
+            const auto end = begin + plaintext.size();
+            const auto input_end = input_begin + input.size();
+            const auto first = std::max(begin, input_begin);
+            const auto last = std::min(end, input_end);
+            return first < last
+                ? Overlap {.first = first - begin, .last = last - begin}
+                : Overlap {};
+        };
+        Overlap lower = overlap(ciphertext);
+        Overlap upper = overlap(authentication_tag);
+        if (upper.first < lower.first) {
+            std::swap(lower, upper);
         }
-        if (run != plaintext.size()) {
+        std::size_t run = 0;
+        for (const auto& kept : {lower, upper}) {
+            if (kept.first == kept.last) {
+                continue;
+            }
+            if (kept.first > run) {
+                provider_.secure_erase(
+                    plaintext.subspan(run, kept.first - run));
+            }
+            run = std::max(run, kept.last);
+        }
+        if (run < plaintext.size()) {
             provider_.secure_erase(plaintext.subspan(run));
         }
         return error;
@@ -2371,7 +2391,8 @@ Error CryptoSession::open(const DataHeader& header,
     // Providers may write unauthenticated output before reporting failure.
     // Decrypt into bounded scratch and publish plaintext only after a tag
     // verified; the caller's destination may overlap the inputs.
-    std::array<std::byte, maximum_data_payload_size> scratch {};
+    // Only the output prefix is written, published and erased.
+    std::array<std::byte, maximum_data_payload_size> scratch;
     const auto output = std::span {scratch}.first(ciphertext.size());
     const auto attempt = [&](KeySlot& candidate) noexcept {
         const auto iv =

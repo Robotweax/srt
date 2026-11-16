@@ -75,9 +75,33 @@ inline constexpr std::size_t maximum_loss_ranges_per_report =
 struct ReliabilityActions {
     std::array<ReliabilityAction, 4> values{};
     std::size_t size = 0;
+    // Only the first loss_range_storage_size ranges hold values. The rest is
+    // left unwritten: this result is built for every received packet and
+    // every timer poll, and almost none of them carry a loss report.
     std::array<SequenceRange, maximum_loss_ranges_per_report>
-        loss_range_storage{};
+        loss_range_storage;
     std::size_t loss_range_storage_size = 0;
+
+    constexpr ReliabilityActions() noexcept { }
+    constexpr ReliabilityActions(const ReliabilityActions& other) noexcept
+        : values(other.values)
+        , size(other.size)
+        , loss_range_storage_size(other.loss_range_storage_size)
+    {
+        copy_loss_ranges(other);
+    }
+    constexpr ReliabilityActions& operator=(
+        const ReliabilityActions& other) noexcept
+    {
+        if (this != &other) {
+            values = other.values;
+            size = other.size;
+            loss_range_storage_size = other.loss_range_storage_size;
+            copy_loss_ranges(other);
+        }
+        return *this;
+    }
+    constexpr ~ReliabilityActions() = default;
 
     constexpr void push(ReliabilityAction action) noexcept
     {
@@ -110,6 +134,13 @@ struct ReliabilityActions {
             .loss_range_offset = offset,
             .loss_range_count = range_count,
         });
+    }
+
+    constexpr void copy_loss_ranges(const ReliabilityActions& other) noexcept
+    {
+        for (std::size_t index = 0; index < loss_range_storage_size; ++index) {
+            loss_range_storage[index] = other.loss_range_storage[index];
+        }
     }
 
     [[nodiscard]] constexpr std::span<const SequenceRange>

@@ -227,6 +227,11 @@ struct RuntimePollResult {
     bool immediate_work = false;
     std::optional<std::chrono::microseconds> next_work_delay = std::nullopt;
     bool receive_wait_safe = false;
+    // Set when every known deadline lies in the future: the wait until the
+    // earliest one. While traffic is sparse the channel may then wait for
+    // socket readiness this long instead of using the short poll. Dense
+    // traffic ignores it and keeps next_work_delay unchanged.
+    std::optional<std::chrono::microseconds> quiet_receive_wait = std::nullopt;
     bool coarse_timer_probe = false;
     std::optional<std::chrono::steady_clock::time_point> next_work_deadline =
         std::nullopt;
@@ -397,48 +402,26 @@ private:
     [[nodiscard]] RuntimePollResult run_receive_slice(
         Receive&& receive) noexcept
     {
-        constexpr std::size_t maximum_receive_batch = 64;
-        std::array<std::byte, 1500> datagram {};
+        std::array<std::byte, receive_slot_size> datagram {};
         std::size_t received_count = 0;
         for (; received_count < maximum_receive_batch; ++received_count) {
             const UdpIoResult received = receive(datagram);
-            if (received.error == Error::would_block) {
+            if (!accept_received(received, datagram)) {
                 break;
             }
-            if (received.error == Error::buffer_too_small) {
-                continue;
-            }
-            if (received.error == Error::io_error
-                && UdpSocket::is_transient_receive_error(
-                    received.system_error)) {
-                // A queued ICMP report or interrupted call for one peer
-                // is not a fault of the shared socket.
-                continue;
-            }
-            if (!received) {
-                mark_connections_broken(received.system_error);
-                break;
-            }
-            const auto ingress = std::chrono::steady_clock::now();
-            const auto decoded = decode_packet(
-                std::span {datagram}.first(received.bytes_transferred));
-            if (decoded) {
-                dispatch(decoded.packet,
-                    std::span {datagram}.first(received.bytes_transferred),
-                    received.peer, ingress);
-            }
         }
-
-        auto result = poll_connections();
-        // A full slice can leave UDP input unread. After would_block, however,
-        // the receive queue is drained: preserve the connection poll deadline
-        // instead of forcing another empty receive and complete route sweep.
-        if (received_count == maximum_receive_batch) {
-            result.immediate_work = true;
-            result.next_work_delay.reset();
-        }
-        return result;
+        return finish_receive_slice(received_count);
     }
+    static constexpr std::size_t maximum_receive_batch = 64;
+    static constexpr std::size_t receive_slot_size = 1500;
+    // Handles one receive result. Returns false when the slice must stop
+    // receiving: the socket is drained, or it failed and every connection
+    // was marked broken.
+    [[nodiscard]] bool accept_received(const UdpIoResult& received,
+        std::span<const std::byte> datagram) noexcept;
+    // Polls the connections after a slice consumed received_count results.
+    [[nodiscard]] RuntimePollResult finish_receive_slice(
+        std::size_t received_count) noexcept;
     [[nodiscard]] RuntimePollResult poll_connections(
         std::optional<std::chrono::steady_clock::time_point> injected_now =
             std::nullopt,
@@ -459,6 +442,10 @@ private:
     void stop() noexcept;
     void notify_work(bool receive_release) noexcept;
 
+    // Written and read only by the thread that runs the current slice.
+    static constexpr int quiet_traffic_intervals = 10;
+    bool slice_quiet_ = false;
+    std::chrono::steady_clock::time_point last_datagram_time_ {};
     std::mutex send_mutex_;
     std::mutex lifecycle_mutex_;
     std::condition_variable lifecycle_idle_;
@@ -863,6 +850,8 @@ private:
     [[nodiscard]] bool hold_group_budget_datagram(
         std::span<const std::byte>, const DatagramCompletion&) noexcept;
     [[nodiscard]] bool flush_group_budget_datagram(std::uint64_t now) noexcept;
+    [[nodiscard]] std::optional<std::chrono::microseconds> quiet_receive_wait(
+        std::uint64_t now) noexcept;
     [[nodiscard]] RuntimePollResult group_budget_poll_result(
         std::uint64_t now) noexcept;
     [[nodiscard]] bool defer_send_error(
