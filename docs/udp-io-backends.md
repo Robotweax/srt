@@ -8,6 +8,11 @@ marked *open* need a decision. Items marked *assumption* rest on
 operating-system documentation or platform knowledge and have not been tested
 in this repository.
 
+An experimental implementation of steps 1 and 2 (batched system calls and
+Linux segmentation offload) is under review in pull request 398 and is not
+merged. Two rules below were changed on 2026-11-16 to match what that
+implementation does; each change is marked *accepted deviation*.
+
 Robotweax SRT 0.3.2 moves every datagram with one system call. This draft
 covers four optional additions, in the order they should be qualified: batched
 system calls and UDP segmentation offload, then an `io_uring` backend on Linux
@@ -85,6 +90,12 @@ Send:
    wire-send statistics, pacing, FEC source admission, DATA-send timers and
    key packet counts advance, as [UDP send backpressure](udp-backpressure.md)
    defines it.
+   *Accepted deviation:* an encrypted original that waits in a send batch is
+   counted against its key when it joins the batch, which is when its
+   ciphertext exists. Preparing the next packet's key depends on that count.
+   A sequence position counts against its key whether or not UDP accepts the
+   packet, so the totals do not change; only the moment of counting does. All
+   other effects still advance at acceptance.
 7. **Order and prefix.** DATA and nonperiodic controls of one connection reach
    UDP in submission order. A partly accepted batch commits exactly the
    accepted prefix; the rest stays queued with its retry accounting.
@@ -311,6 +322,7 @@ means that the socket stays on the default path. It is not an error.
 - **Build.** Each backend sits behind a default-off CMake option, following
   the existing experimental options:
   `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING`,
+  `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION` (requires batching),
   `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_IO_URING` and
   `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_RIO`.
 - **Runtime.** A process-level setting, `ROBOTWEAX_SRT_UDP_BACKEND`, is read
@@ -319,6 +331,11 @@ means that the socket stays on the default path. It is not an error.
   `io_uring` and `rio`. An unset value selects today's path. An invalid value
   fails the operation that starts the scheduler and never selects another
   backend silently.
+  *Accepted deviation:* batched system calls and segmentation offload are
+  selected at build time only. A build with their options uses them on every
+  channel, and `ROBOTWEAX_SRT_UDP_BACKEND` is not read. The runtime setting is
+  deferred until a backend is going to be released; `io_uring` and RIO still
+  require it.
 - *Open:* a valid backend that the host refuses, such as a blocked `io_uring`.
   Proposed: fail in the same way, because the operator asked for something
   the host cannot provide. Fall back per socket only for an adopted socket
