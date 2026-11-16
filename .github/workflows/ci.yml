@@ -386,6 +386,33 @@ jobs:
           ctest --test-dir build -C Release -L "$pattern" \
             --parallel 1 --no-tests=error --output-on-failure
 
+  udp_batching:
+    name: Experimental UDP batching (Linux)
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare multicast test interface
+        uses: ./.github/actions/multicast-interface
+      # Experimental controllers stay off here: a connection that uses one
+      # keeps the unbatched send path, which the other jobs already cover.
+      - name: Configure recvmmsg, sendmmsg and UDP_SEGMENT
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DROBOTWEAX_SRT_WARNINGS_AS_ERRORS=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION=ON
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
   gcc_release:
     name: GCC 15 Release epoll
     needs: changes
@@ -2541,6 +2568,7 @@ jobs:
       - python_tests
       - format_check
       - linux_release
+      - udp_batching
       - gcc_release
       - live_timing
       - portable_release
@@ -2579,6 +2607,7 @@ jobs:
           PYTHON_TESTS: ${{ needs.python_tests.result }}
           FORMAT_CHECK: ${{ needs.format_check.result }}
           LINUX_RELEASE: ${{ needs.linux_release.result }}
+          UDP_BATCHING: ${{ needs.udp_batching.result }}
           GCC_RELEASE: ${{ needs.gcc_release.result }}
           LIVE_TIMING: ${{ needs.live_timing.result }}
           PORTABLE_RELEASE: ${{ needs.portable_release.result }}
@@ -2608,6 +2637,7 @@ jobs:
           EXPECT_python_tests: ${{ needs.changes.outputs.python == 'true' }}
           EXPECT_format_check: ${{ needs.changes.outputs.format == 'true' }}
           EXPECT_linux_release: ${{ needs.changes.outputs.cpp == 'true' || needs.changes.outputs.examples == 'true' || needs.changes.outputs.package == 'true' }}
+          EXPECT_udp_batching: ${{ needs.changes.outputs.cpp == 'true' }}
           EXPECT_gcc_release: ${{ needs.changes.outputs.cpp == 'true' }}
           EXPECT_live_timing: ${{ needs.changes.outputs.timing == 'true' && needs.changes.outputs.core_tests != 'true' }}
           EXPECT_portable_release: ${{ needs.changes.outputs.portable == 'true' }}
@@ -2637,6 +2667,7 @@ jobs:
             "python-tests=$PYTHON_TESTS" \
             "format-check=$FORMAT_CHECK" \
             "linux-release=$LINUX_RELEASE" \
+            "udp-batching=$UDP_BATCHING" \
             "gcc-release=$GCC_RELEASE" \
             "live-timing=$LIVE_TIMING" \
             "portable-release=$PORTABLE_RELEASE" \

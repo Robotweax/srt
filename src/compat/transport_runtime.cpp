@@ -589,6 +589,28 @@ UdpIoResult DatagramChannel::try_send_monitoring_datagram(
     return socket.send_to(bytes, peer);
 }
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+std::size_t DatagramChannel::send_datagram_batch(
+    std::span<const std::span<const std::byte>> datagrams, IpEndpoint peer,
+    UdpIoResult& rejection) noexcept
+{
+    std::lock_guard lock(send_mutex_);
+    if (send_hook_ == nullptr) {
+        return socket.send_batch(datagrams, peer, rejection);
+    }
+    rejection = {};
+    for (std::size_t index = 0; index < datagrams.size(); ++index) {
+        const auto sent =
+            send_hook_(datagrams[index], peer, send_hook_context_);
+        if (!sent || sent.bytes_transferred != datagrams[index].size()) {
+            rejection = sent;
+            return index;
+        }
+    }
+    return datagrams.size();
+}
+#endif
+
 void DatagramChannel::set_send_hook_for_testing(
     SendHook hook, void* context) noexcept
 {
@@ -1592,6 +1614,43 @@ RuntimePollResult DatagramChannel::finish_receive_slice(
 
 RuntimePollResult DatagramChannel::run_once() noexcept
 {
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
+    if (receive_batch_storage_ == nullptr) {
+        receive_batch_storage_.reset(new (std::nothrow)
+                std::byte[maximum_receive_batch * receive_slot_size]);
+    }
+    if (receive_batch_storage_ != nullptr) {
+        const std::span storage {receive_batch_storage_.get(),
+            maximum_receive_batch * receive_slot_size};
+        std::array<UdpIoResult, maximum_receive_batch> results;
+        std::size_t received_count = 0;
+        // As on the single-datagram path, the slice ends at its budget or
+        // at would_block, so a drained socket is always observed as such.
+        while (received_count < maximum_receive_batch) {
+            UdpIoResult terminal;
+            const std::size_t count =
+                socket.receive_batch(storage, receive_slot_size,
+                    std::span {results}.first(
+                        maximum_receive_batch - received_count),
+                    terminal);
+            if (count == 0U) {
+                if (!accept_received(terminal, {})) {
+                    break;
+                }
+                ++received_count;
+                continue;
+            }
+            for (std::size_t index = 0; index < count; ++index) {
+                // A consumed datagram never ends the slice.
+                (void)accept_received(results[index],
+                    storage.subspan(
+                        index * receive_slot_size, receive_slot_size));
+            }
+            received_count += count;
+        }
+        return finish_receive_slice(received_count);
+    }
+#endif
     return run_receive_slice([this](std::span<std::byte> datagram) noexcept {
         return socket.receive_from(datagram);
     });
@@ -3024,6 +3083,16 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
         break_locked(0);
         return false;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+    if (send_stage_open_ && pending_datagram_size_ == 0U
+        && send_budget_beyond_stage() && stageable_datagram(completion)) {
+        return stage_datagram(bytes, completion, now);
+    }
+    // Anything else leaves after the staged DATA that was submitted first.
+    if (!flush_send_stage()) {
+        return false;
+    }
+#endif
     if (pending_datagram_size_ == 0U
         && (poll_send_budget_ == nullptr || *poll_send_budget_ != 0U)) {
         bool budget_wait = false;
@@ -3107,6 +3176,186 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
     return true;
 }
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+bool ConnectionRuntime::stageable_datagram(
+    const DatagramCompletion& completion) const noexcept
+{
+    // Only DATA whose completion leaves the choice and the bytes of the next
+    // datagram untouched may wait for a batch. FEC and filters emit repair
+    // after a source packet, and group members share budgets, positions and
+    // key schedules: all of those keep the direct path.
+    if (completion.kind != DatagramKind::data || completion.group_binding
+        || completion.unicast_repeat_state || group_send_state_
+        || group_data_egress_.mode != GroupDataEgress::Mode::normal
+        || fec_encoder_active() || options_.experimental_acp1()) {
+        return false;
+    }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+    if (experimental_filter_) {
+        return false;
+    }
+#endif
+#ifdef ENABLE_MAXREXMITBW
+    // The retransmission budget is consumed at completion.
+    if (completion.data.retransmitted) {
+        return false;
+    }
+#endif
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    // A controller may read what completion advances before the next pick.
+    return false;
+#else
+    return true;
+#endif
+}
+
+bool ConnectionRuntime::stage_datagram(std::span<const std::byte> bytes,
+    const DatagramCompletion& completion, std::uint64_t now) noexcept
+{
+    constexpr auto slot = DatagramEnvelope::maximum_size;
+    if (!send_stage_) {
+        send_stage_.reset(new (std::nothrow) SendStage {});
+        if (send_stage_) {
+            send_stage_->bytes.reset(
+                new (std::nothrow) std::byte[SendStage::capacity * slot]);
+        }
+        if (!send_stage_ || !send_stage_->bytes) {
+            send_stage_.reset();
+            break_locked(0);
+            return false;
+        }
+    }
+    if (send_stage_->size == SendStage::capacity && !flush_send_stage()) {
+        return false;
+    }
+    if (pending_datagram_size_ != 0U) {
+        // The flush met backpressure: this datagram joins the FIFO behind it.
+        send_stage_open_ = false;
+        return submit_datagram(bytes, completion, now);
+    }
+    auto& entry = send_stage_->entries[send_stage_->size];
+    std::copy(bytes.begin(), bytes.end(),
+        send_stage_->bytes.get() + send_stage_->size * slot);
+    entry.size = bytes.size();
+    entry.now = now;
+    entry.completion = completion;
+    entry.pacer_before = pacer_;
+    ++send_stage_->size;
+    pacer_.on_packet_sent(bytes.size(), now);
+    if (crypto_ != nullptr && !completion.data.retransmitted) {
+        const std::uint64_t overrun_before =
+            crypto_->refresh_overrun_positions();
+        if (crypto_->note_data_packet_sent() != Error::none) {
+            break_locked(0);
+            return false;
+        }
+        statistics_.note_key_refresh_overrun(
+            crypto_->refresh_overrun_positions() - overrun_before);
+        entry.completion.key_use_counted = true;
+    }
+    return true;
+}
+
+bool ConnectionRuntime::send_budget_beyond_stage() const noexcept
+{
+    // The budget counts UDP attempts and is charged when the stage is
+    // submitted. Until then every staged datagram reserves one attempt.
+    return poll_send_budget_ == nullptr
+        || *poll_send_budget_ > (send_stage_ ? send_stage_->size : 0U);
+}
+
+bool ConnectionRuntime::flush_send_stage() noexcept
+{
+    if (!send_stage_ || send_stage_->size == 0U) {
+        return true;
+    }
+    constexpr auto slot = DatagramEnvelope::maximum_size;
+    auto& stage = *send_stage_;
+    const std::size_t count = std::exchange(stage.size, 0U);
+    const auto datagram = [&](std::size_t index) noexcept {
+        return std::span<const std::byte> {
+            stage.bytes.get() + index * slot, stage.entries[index].size};
+    };
+    const auto release = [&]() noexcept {
+        for (std::size_t index = 0; index < count; ++index) {
+            stage.entries[index].completion = {};
+        }
+    };
+    const auto channel = channel_.lock();
+    if (channel == nullptr) {
+        release();
+        break_locked(0);
+        return false;
+    }
+    std::array<std::span<const std::byte>, SendStage::capacity> datagrams;
+    for (std::size_t index = 0; index < count; ++index) {
+        datagrams[index] = datagram(index);
+    }
+    UdpIoResult rejection;
+    const std::size_t accepted = channel->send_datagram_batch(
+        std::span {datagrams}.first(count), peer_, rejection);
+    if (poll_send_budget_ != nullptr) {
+        // Each accepted datagram and the refused one were UDP attempts; what
+        // was staged behind a refusal was never offered.
+        const std::size_t attempts = accepted + (accepted < count ? 1U : 0U);
+        *poll_send_budget_ -= std::min(*poll_send_budget_, attempts);
+    }
+    // Exactly the accepted prefix completes, in submission order.
+    completing_staged_datagram_ = true;
+    for (std::size_t index = 0; index < accepted; ++index) {
+        const auto& entry = stage.entries[index];
+        if (!complete_datagram(datagram(index), entry.completion, entry.now)) {
+            completing_staged_datagram_ = false;
+            release();
+            return false;
+        }
+    }
+    completing_staged_datagram_ = false;
+    if (accepted == count) {
+        release();
+        return true;
+    }
+    // UDP did not take the rest, so its pacing has not happened either.
+    pacer_ = stage.entries[accepted].pacer_before;
+    if (rejection) {
+        // A short submission stays terminal.
+        release();
+        break_locked(0);
+        return false;
+    }
+    if (!defer_send_error(rejection, stage.entries[count - 1U].now)) {
+        release();
+        return false;
+    }
+    // The existing retry FIFO is empty whenever DATA is staged. It keeps the
+    // unaccepted rest in order and completes each datagram when UDP takes it.
+    for (std::size_t index = accepted; index < count; ++index) {
+        auto pending = std::unique_ptr<PendingDatagram> {
+            new (std::nothrow) PendingDatagram {}};
+        if (pending == nullptr
+            || pending_datagram_size_ == pending_datagram_capacity) {
+            release();
+            break_locked(0);
+            return false;
+        }
+        const auto bytes = datagram(index);
+        std::copy(bytes.begin(), bytes.end(), pending->bytes.begin());
+        pending->size = bytes.size();
+        pending->completion = std::move(stage.entries[index].completion);
+        auto* tail = pending.get();
+        if (pending_datagram_tail_ != nullptr) {
+            pending_datagram_tail_->next = std::move(pending);
+        } else {
+            pending_datagram_head_ = std::move(pending);
+        }
+        pending_datagram_tail_ = tail;
+        ++pending_datagram_size_;
+    }
+    release();
+    return true;
+}
+#endif
+
 bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
     const DatagramCompletion& completion, std::uint64_t now) noexcept
 {
@@ -3185,9 +3434,16 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
 #endif
             session_.note_retransmission_sent(completion.data.sequence, now);
         }
-        pacer_.on_packet_sent(bytes.size(), now);
-        if (crypto_ != nullptr && !completion.data.retransmitted
-            && !completion.group_binding) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+        if (!completing_staged_datagram_)
+#endif
+            pacer_.on_packet_sent(bytes.size(), now);
+        bool count_key_use = crypto_ != nullptr
+            && !completion.data.retransmitted && !completion.group_binding;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+        count_key_use = count_key_use && !completion.key_use_counted;
+#endif
+        if (count_key_use) {
             const std::uint64_t overrun_before =
                 crypto_->refresh_overrun_positions();
             if (crypto_->note_data_packet_sent() != Error::none) {
@@ -5347,8 +5603,35 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         return pending_send_poll_result(now);
     if (group_budget_pending_)
         return group_budget_poll_result(now_microseconds());
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+    // DATA found due below is staged and submitted together after the loop.
+    // Every early return in the loop follows a broken connection, which
+    // discards what is staged.
+    struct SendStageScope {
+        ConnectionRuntime& runtime;
+        ~SendStageScope()
+        {
+            runtime.send_stage_open_ = false;
+            if (runtime.send_stage_) {
+                for (std::size_t staged = 0; staged < runtime.send_stage_->size;
+                    ++staged) {
+                    runtime.send_stage_->entries[staged].completion = {};
+                }
+                runtime.send_stage_->size = 0U;
+            }
+        }
+    } send_stage_scope {*this};
+    send_stage_open_ = true;
+    const auto send_budget_left = [&]() noexcept {
+        return send_budget_beyond_stage();
+    };
+#else
+    const auto send_budget_left = [&]() noexcept {
+        return *poll_send_budget_ != 0U;
+    };
+#endif
     for (std::size_t index = 0;
-        index < maximum_send_batch && *poll_send_budget_ != 0U; ++index) {
+        index < maximum_send_batch && send_budget_left(); ++index) {
         const std::uint64_t packet_time = now_microseconds();
         if (crypto_ != nullptr && crypto_->enabled()) {
             if (!service_key_rotation(packet_time)) {
@@ -5496,6 +5779,12 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             break;
         }
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+    send_stage_open_ = false;
+    if (!flush_send_stage()) {
+        return {};
+    }
+#endif
 
     if (group_budget_pending_)
         return group_budget_poll_result(now_microseconds());
