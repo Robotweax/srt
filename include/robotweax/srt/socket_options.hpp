@@ -117,11 +117,18 @@ public:
     {
         return std::span {trusted_}.first(trusted_size_);
     }
+    // True when the SHA-256 identifier names a pinned key. No public-key work.
+    [[nodiscard]] bool trusts(
+        std::span<const std::byte, 32> identifier) const noexcept;
+    // Erases only the private scalar. A connected socket never signs again,
+    // so its owner drops the scalar once admission has consumed it.
+    void forget_identity() noexcept;
     void clear() noexcept;
 
 private:
     std::array<std::byte, 32> identity_ {};
     std::array<std::byte, 16 * 64> trusted_ {};
+    std::array<std::array<std::byte, 32>, 16> trusted_identifiers_ {};
     std::size_t trusted_size_ = 0;
     bool has_identity_ = false;
 };
@@ -163,6 +170,15 @@ public:
     }
     [[nodiscard]] Error configure_peer_authentication(
         peer_authentication::Exchange& exchange) const noexcept;
+    [[nodiscard]] bool peer_authentication_trusts(
+        std::span<const std::byte, 32> identifier) const noexcept
+    {
+        return peer_authentication_credentials_.trusts(identifier);
+    }
+    void forget_peer_authentication_key() noexcept
+    {
+        peer_authentication_credentials_.forget_identity();
+    }
     void clear_peer_authentication() noexcept
     {
         peer_authentication_required_ = false;

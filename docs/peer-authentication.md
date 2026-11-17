@@ -31,8 +31,12 @@ machine refuses PEERAUTH records rather than accepting them without proof checks
 
 The experimental POLICY, KEY and TRUSTED socket settings are implemented.
 Scalar and point validation happen before replacement; private scalars are
-write-only and erased on replacement, close and destruction. Accepted-child
-configuration copies own independent credentials. REQUIRED rejects incompatible
+write-only and erased on replacement, close and destruction. The options layer
+holds the raw scalar because each admission imports it into a provider handle.
+A provisional child copies its listener's credentials so that a listen callback
+can replace them; the scalar is erased from the child once its admission has
+taken it, and from a caller once it is connected, so only listening and
+unconnected sockets retain it. Policy and the pinned set stay readable. REQUIRED rejects incompatible
 configuration in both setting orders, including group option templates.
 
 A private admission coordinator now owns the proof-to-runtime transition. It
@@ -540,6 +544,25 @@ cached M3 for a matching M2, as session authentication does today. A repeated
 identical M1 gets the cached M2 without new public-key work. An M1 that changes
 any byte of an exchange in progress is ignored.
 
+**What ends a pending attempt.** The two roles differ on purpose:
+
+- A listener child that has answered M1 ends only through its deadline, four
+  M3 messages that cannot be verified, or a valid caller signature with a wrong
+  confirmation tag. Everything else that reaches it unauthenticated is dropped
+  and leaves it pending: a handshake without the record or with a legacy
+  record, and an M3 whose handshake field differs from M1, cost no public-key
+  work and are not counted. A structurally valid M3 with a wrong key length or
+  an invalid signature is counted against the four.
+- A caller ends on the first matched reply that is not a valid proof, including
+  a reply without the record and an explicit rejection. Rejections are
+  unauthenticated, as in the legacy handshake, and honouring them is what lets a
+  caller fail promptly against an OFF or stock listener; tolerating forged M2
+  messages while honouring forged rejections would add nothing.
+
+An attacker who can modify the genuine M3 in transit can still end the attempt,
+for example by replacing `s` with `n - s`, which keeps the signature valid and
+breaks the tag. That attacker can also drop the message; see the non-goals.
+
 **Signature nonces.** The listener signs on demand for callers it has not
 authenticated, so a biased or repeated ECDSA nonce would expose its identity
 key. Implementations should use deterministic nonces
@@ -680,21 +703,25 @@ Public-key work is placed after every cheaper check:
    ([Protocol edge cases](protocol-edge-cases.md)). This is the proof of
    reachability.
 3. The record is parsed and the caller key identifier is checked against the
-   child's pinned set after the listen callback. An unknown identifier is
-   rejected with no public-key operation. Identifiers are public, so this stops
-   scanners, not a determined attacker.
+   child's pinned set after the listen callback. Pinned keys are validated and
+   hashed once, when `SRTO_ROBOTWEAX_PEERAUTH_TRUSTED` is set, so this is a
+   comparison of hashes: an unknown identifier is rejected before the identity
+   key is imported and with no public-key operation. Identifiers are public, so
+   this stops scanners, not a determined attacker.
 4. The existing `ListenerAdmissionBudget` is charged before crypto setup, as it
    is today for every cookie-valid conclusion including repeats: 32 tokens per
    source address refilled at 16 per second, and 128 tokens overall refilled at
    64 per second. Accept capacity is reserved before setup.
-5. Only then does the listener validate one public key, generate one key pair,
-   run one ECDH and produce one signature.
+5. Only then does the listener import its identity key into a provider handle,
+   validate the caller key share, generate one key pair, run one ECDH and
+   produce one signature. The OpenSSL provider repeats the point check inside
+   ECDH and signature verification; pinned keys are not revalidated.
 6. M3 is matched to a pending child by endpoint, socket IDs and cookie. The
    signature is verified before the confirmation tag, for the reason given
    under [Signatures and confirmation](#signatures-and-confirmation), so each
-   M3 that reaches a pending child costs one verification. The private exchange
-   currently fails after four M3 messages with an invalid signature; this limit
-   remains subject to review. A valid signature with an invalid confirmation
+   M3 that reaches a pending child with the handshake field of M1 costs at most
+   one verification. The private exchange fails after four M3 messages that
+   cannot be verified; this limit remains subject to review. A valid signature with an invalid confirmation
    ends the attempt immediately. Identical accepted M3 retries do no new crypto
    work.
 7. PBKDF2 runs only after a valid caller signature, so no unauthenticated
@@ -835,8 +862,10 @@ ACK, NAK or DROPREQ must not rely on peer authentication for it.
 - M1 exposes the caller's claimed key identifier for callback lookup and early
   pin rejection. OFFERED does not identify an authenticated peer.
 - The minimum MSS is 512 and the pinned set holds at most sixteen public keys.
-- Four invalid M3 signatures terminate a pending listener attempt. Matched
-  proof failures use UNSECURE; a wrong password cannot publish a connection.
+- Four unverifiable M3 messages terminate a pending listener attempt; other
+  unauthenticated flights are dropped. A caller ends on the first matched reply
+  that is not a valid proof. Matched proof failures use UNSECURE; a wrong
+  password cannot publish a connection.
 - Both authenticated runtime key directions must finish within the connect
   timeout. Caller queueing time counts toward that deadline. Close cancels
   pending setup and clears its secrets.

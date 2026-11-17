@@ -363,7 +363,14 @@ PeerAuthenticationHandshake::Result PeerAuthenticationHandshake::receive(
         || message.has_path_identifier || message.has_standby_rtt
         || message.has_multicast_dispatch || message.has_session_authentication
         || message.has_key_material_extension) {
-        fail(result, Error::authentication_failure);
+        // A listener child that has answered M1 ends only through its
+        // deadline, the unverified-M3 allowance or a failed confirmation; an
+        // unauthenticated flight without a usable proof record is dropped.
+        // A caller treats one as the listener declining and fails promptly.
+        if (caller_ || state_ == State::discovery)
+            fail(result, Error::authentication_failure);
+        else
+            result.error = Error::authentication_failure;
         return finish(result);
     }
     const auto payload = message.peer_authentication_payload.view();
@@ -376,6 +383,15 @@ PeerAuthenticationHandshake::Result PeerAuthenticationHandshake::receive(
             return finish(result);
         if (transport_.state() != HandshakeState::connected)
             return finish(result); // cookie/transport not admitted
+        // Identifiers are public hashes: reject an unpinned claim before
+        // importing the identity key or doing any other public-key work.
+        pa::Record offered;
+        if (pa::decode_record(message.peer_authentication.view(), offered)
+                != Error::none
+            || !options_.peer_authentication_trusts(offered.key_identifier)) {
+            fail(result, Error::authentication_failure);
+            return finish(result);
+        }
         if (!configure_admission(result, now))
             return finish(result);
         pa::Record record;
@@ -425,7 +441,9 @@ PeerAuthenticationHandshake::Result PeerAuthenticationHandshake::receive(
         std::array<std::byte, handshake_size> header {};
         if (encode_handshake(expected, header) != Error::none
             || !std::equal(header.begin(), header.end(), payload.begin())) {
-            fail(result, Error::authentication_failure);
+            // Unauthenticated and free to check: drop it without ending the
+            // attempt, so the genuine M3 can still complete it.
+            result.error = Error::authentication_failure;
             return finish(result);
         }
         result.error = admission_.accept_confirmation(payload, now);

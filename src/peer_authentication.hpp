@@ -102,8 +102,10 @@ private:
 // handshake payloads, including the generated record. Never change those bytes
 // after sealing; cached() is the only source for retransmission. Errors are
 // internal: the socket layer must use one rejection reason for all M3 failures.
-// An invalid M3 signature consumes the bounded retry allowance; check failed()
-// before rejecting the pending child.
+// An M3 that cannot be verified (malformed, wrong key length or an invalid
+// signature) consumes the bounded allowance and leaves the attempt pending;
+// check failed() before rejecting the pending child. A valid signature with a
+// wrong confirmation tag ends the attempt at once.
 //
 // ready_for_key_exchange() does NOT authenticate the listener's passphrase:
 // the caller must verify its first authenticated KM control before DATA/I/O.
@@ -120,8 +122,12 @@ public:
     Exchange& operator=(const Exchange&) = delete;
     Exchange(Exchange&&) = delete;
     Exchange& operator=(Exchange&&) = delete;
+    // Without identifiers every pin is validated and hashed here. An owner
+    // that validated the pins when they were set passes their SHA-256
+    // identifiers, one per pin in order, and no per-attempt pin work is done.
     [[nodiscard]] Error configure(std::span<const std::byte, 32> identity,
-        std::span<const std::byte> pinned_public_keys) noexcept;
+        std::span<const std::byte> pinned_public_keys,
+        std::span<const Digest> validated_identifiers = {}) noexcept;
     [[nodiscard]] Error prepare_offer(
         std::uint8_t key_length, Record& offer) noexcept;
     [[nodiscard]] Error bind_offer(std::span<const std::byte> offer) noexcept;
@@ -169,6 +175,7 @@ private:
         [[nodiscard]] std::span<const std::byte> view() const noexcept;
     };
     [[nodiscard]] Error fail(Error error) noexcept;
+    [[nodiscard]] Error reject_unverified_confirmation(Error error) noexcept;
     [[nodiscard]] Error select_peer(const Digest& identifier) noexcept;
     [[nodiscard]] Error make_share(Record& record) noexcept;
     [[nodiscard]] Error establish(

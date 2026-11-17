@@ -13,6 +13,10 @@ version returned by `srt_getversion()`.
   See the [draft contract and qualification evidence](docs/peer-authentication.md).
   Independent cryptographic review is pending; groups, rendezvous and additional
   P-256 backends are outside this first version.
+- Peer authentication: check the claimed key identifier before any public-key
+  work and stop revalidating pinned keys per attempt; drop unauthenticated
+  flights on a pending listener child instead of ending it; erase the identity
+  scalar from accepted and connected sockets.
 - Fix unaligned reference binding to packed Linux epoll readiness tokens,
   exposed by the peer-authentication sanitizer job.
 

@@ -473,12 +473,27 @@ Error Exchange::fail(Error error) noexcept
     abort();
     return error;
 }
+Error Exchange::reject_unverified_confirmation(Error error) noexcept
+{
+    // Nothing here has been authenticated, so a sender that can reach the
+    // pending child must not be able to end it with one datagram. Local
+    // failures, and an exhausted allowance, still end the attempt.
+    const bool local = error == Error::cryptographic_failure
+        || error == Error::unsupported || error == Error::invalid_state
+        || error == Error::buffer_too_small;
+    if (local || ++invalid_confirmations_ >= 4)
+        return fail(error);
+    return error;
+}
 Error Exchange::configure(std::span<const std::byte, 32> identity,
-    std::span<const std::byte> pins) noexcept
+    std::span<const std::byte> pins,
+    std::span<const Digest> validated_identifiers) noexcept
 {
     if (state_ != State::fresh)
         return Error::invalid_state;
-    if (pins.empty() || pins.size() % 64 != 0 || pins.size() > 16 * 64)
+    if (pins.empty() || pins.size() % 64 != 0 || pins.size() > 16 * 64
+        || (!validated_identifiers.empty()
+            && validated_identifiers.size() != pins.size() / 64))
         return fail(Error::invalid_key_material);
     auto error = provider_.import_p256_key(identity, identity_);
     if (error != Error::none || !identity_)
@@ -493,6 +508,10 @@ Error Exchange::configure(std::span<const std::byte, 32> identity,
     pin_count_ = pins.size() / 64;
     for (std::size_t i = 0; i < pin_count_; ++i) {
         std::copy_n(pins.data() + i * 64, 64, pins_[i].begin());
+        if (!validated_identifiers.empty()) {
+            pin_identifiers_[i] = validated_identifiers[i];
+            continue;
+        }
         error = provider_.validate_p256_public_key(pins_[i]);
         if (error == Error::none)
             error = provider_.sha256(pins_[i], pin_identifiers_[i]);
@@ -738,22 +757,18 @@ Error Exchange::accept_confirmation(std::span<const std::byte> input,
     Record record;
     std::size_t offset = 0;
     auto error = exchange_message(input, Message::confirmation, record, offset);
-    if (error != Error::none)
-        return fail(error);
-    if (record.key_length != response_.key_length)
-        return fail(Error::invalid_key_material);
+    if (error == Error::none && record.key_length != response_.key_length)
+        error = Error::invalid_key_material;
     Digest hash {}, tag {};
-    error = caller_transcript(
-        provider_, flights_[0].view(), flights_[1].view(), input, hash);
-    if (error != Error::none)
-        return fail(error);
+    if (error == Error::none)
+        error = caller_transcript(
+            provider_, flights_[0].view(), flights_[1].view(), input, hash);
     std::array<std::byte, 160> message {};
-    error = provider_.verify_p256_sha256(
-        peer_, signed_message(true, hash, message), record.signature);
-    if (error == Error::authentication_failure && ++invalid_confirmations_ < 4)
-        return error;
+    if (error == Error::none)
+        error = provider_.verify_p256_sha256(
+            peer_, signed_message(true, hash, message), record.signature);
     if (error != Error::none)
-        return fail(error);
+        return reject_unverified_confirmation(error);
     // Never evaluate a passphrase-dependent proof before the pinned signature.
     error = schedule_.derive_authenticated_keys(
         passphrase, offer_.nonce, response_.nonce, hash, response_.key_length);
@@ -813,6 +828,7 @@ PeerAuthenticationCredentials& PeerAuthenticationCredentials::operator=(
         clear();
         identity_ = other.identity_;
         trusted_ = other.trusted_;
+        trusted_identifiers_ = other.trusted_identifiers_;
         trusted_size_ = other.trusted_size_;
         has_identity_ = other.has_identity_;
     }
@@ -820,10 +836,28 @@ PeerAuthenticationCredentials& PeerAuthenticationCredentials::operator=(
 }
 void PeerAuthenticationCredentials::clear() noexcept
 {
-    default_crypto_provider().secure_erase(identity_);
+    forget_identity();
     trusted_.fill(std::byte {});
+    trusted_identifiers_ = {};
     trusted_size_ = 0;
+}
+void PeerAuthenticationCredentials::forget_identity() noexcept
+{
+    default_crypto_provider().secure_erase(identity_);
     has_identity_ = false;
+}
+bool PeerAuthenticationCredentials::trusts(
+    std::span<const std::byte, 32> identifier) const noexcept
+{
+    bool found = false;
+    for (std::size_t i = 0; i < trusted_size_ / 64; ++i) {
+        unsigned difference = 0;
+        for (std::size_t j = 0; j < identifier.size(); ++j)
+            difference |= std::to_integer<unsigned>(
+                identifier[j] ^ trusted_identifiers_[i][j]);
+        found = found || difference == 0;
+    }
+    return found;
 }
 Error PeerAuthenticationCredentials::set_identity(
     std::span<const std::byte> key) noexcept
@@ -847,12 +881,18 @@ Error PeerAuthenticationCredentials::set_trusted(
 {
     if (keys.empty() || keys.size() > trusted_.size() || keys.size() % 64 != 0)
         return Error::invalid_state;
+    // Validate and hash once here; handshakes reuse the identifiers instead
+    // of repeating public-key checks for every connection attempt.
+    std::array<std::array<std::byte, 32>, 16> identifiers {};
     for (std::size_t i = 0; i < keys.size(); i += 64) {
-        const auto error = default_crypto_provider().validate_p256_public_key(
-            std::span<const std::byte, 64>(keys.data() + i, 64));
+        const std::span<const std::byte, 64> key(keys.data() + i, 64);
+        auto error = default_crypto_provider().validate_p256_public_key(key);
+        if (error == Error::none)
+            error = default_crypto_provider().sha256(key, identifiers[i / 64]);
         if (error != Error::none)
             return error;
     }
+    trusted_identifiers_ = identifiers;
     // memmove also permits replacing the set with a subspan returned by trusted().
     std::memmove(trusted_.data(), keys.data(), keys.size());
     trusted_size_ = keys.size();
@@ -864,7 +904,8 @@ Error PeerAuthenticationCredentials::configure(
 {
     if (!complete())
         return Error::invalid_state;
-    return exchange.configure(identity_, trusted());
+    return exchange.configure(identity_, trusted(),
+        std::span {trusted_identifiers_}.first(trusted_size_ / 64));
 }
 Error SocketOptions::configure_peer_authentication(
     peer_authentication::Exchange& exchange) const noexcept

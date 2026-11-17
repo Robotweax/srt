@@ -1914,12 +1914,174 @@ TEST(peer_auth_transport_adapter_deadline_and_m3_transport_binding)
     REQUIRE_EQ(p.confirmation.size, 2U);
     auto changed = p.confirmation.outgoing[0];
     changed.bytes[packet_header_size + 12] ^= std::byte {1}; // MSS
-    REQUIRE(p.listener.receive(changed.view(), p.now).failed);
+    // An M3 whose header differs from M1 is unauthenticated: it is dropped
+    // without public-key work and without ending the pending attempt.
+    const auto verifications = p.lp.verifications;
+    for (unsigned i = 0; i < 8; ++i) {
+        const auto dropped = p.listener.receive(changed.view(), p.now);
+        REQUIRE(dropped.error != Error::none);
+        REQUIRE(!dropped.failed);
+        REQUIRE_EQ(dropped.size, 0U);
+    }
+    REQUIRE_EQ(p.lp.verifications, verifications);
     REQUIRE_EQ(p.lp.derivations, 0U);
-    REQUIRE_EQ(p.lp.handles, 0U);
+    p.listener_keys =
+        p.listener.receive(p.confirmation.outgoing[0].view(), p.now);
+    REQUIRE(!p.listener_keys.failed);
+    REQUIRE_EQ(p.listener_keys.size, 1U);
+    REQUIRE_EQ(p.lp.derivations, 1U);
+    p.confirm_keys();
+    PacketAdmissionPair expired;
+    expired.discovery();
+    REQUIRE(expired.listener.retry(expired.deadline).failed);
+    REQUIRE_EQ(expired.lp.handles, 0U);
     REQUIRE(p.caller.retry(p.deadline).failed);
     REQUIRE_EQ(p.cp.handles, 0U);
     REQUIRE(!p.caller.release_crypto(p.now));
+}
+
+TEST(peer_auth_transport_adapter_pending_child_drops_unauthenticated_flights)
+{
+    PacketAdmissionPair p;
+    p.discovery();
+    p.response = p.listener.receive(p.offer.outgoing[0].view(), p.now);
+    REQUIRE_EQ(p.response.size, 1U);
+    p.confirmation = p.caller.receive(p.response.outgoing[0].view(), p.now);
+    REQUIRE_EQ(p.confirmation.size, 2U);
+    // A conclusion from the caller's socket without the proof record must not
+    // end the child that already answered M1.
+    const auto decoded = decode_handshake_datagram(p.offer.outgoing[0].view());
+    REQUIRE(decoded);
+    HandshakeAction action {.kind = HandshakeActionKind::send,
+        .packet = decoded.message.packet,
+        .has_handshake_extension = true,
+        .extension_type = HandshakeExtensionType::handshake_request,
+        .extension_parameters = decoded.message.extension_parameters};
+    std::array<std::byte, 1500> bytes {};
+    const auto encoded = encode_handshake_datagram(action, {}, 456, bytes);
+    REQUIRE(encoded);
+    const auto operations = p.lp.operations;
+    for (unsigned i = 0; i < 8; ++i) {
+        const auto dropped = p.listener.receive(
+            std::span {bytes}.first(encoded.bytes_written), p.now);
+        REQUIRE_EQ(dropped.error, Error::authentication_failure);
+        REQUIRE(!dropped.failed);
+        REQUIRE_EQ(dropped.size, 0U);
+    }
+    REQUIRE_EQ(p.lp.operations, operations);
+    p.listener_keys =
+        p.listener.receive(p.confirmation.outgoing[0].view(), p.now);
+    REQUIRE(!p.listener_keys.failed);
+    REQUIRE_EQ(p.listener_keys.size, 1U);
+    p.confirm_keys();
+    // The same flight still fails a caller that is waiting for M2: a reply
+    // without the record is the listener declining peer authentication.
+    PacketAdmissionPair declined;
+    declined.discovery();
+    const auto reply = encode_handshake_datagram(action, {}, 123, bytes);
+    REQUIRE(reply);
+    REQUIRE(declined.caller
+            .receive(std::span {bytes}.first(reply.bytes_written), declined.now)
+            .failed);
+}
+
+TEST(peer_auth_transport_adapter_rejects_unpinned_identifier_without_crypto)
+{
+    auto co = peer_handshake_options(true), lo = peer_handshake_options(false);
+    REQUIRE_EQ(lo.set_peer_authentication_trusted(public_key(3)), Error::none);
+    TrackingProvider cp, lp;
+    PeerHandshake caller(peer_handshake_configuration(true, co), co, cp);
+    PeerHandshake listener(peer_handshake_configuration(false, lo), lo, lp);
+    const PeerHandshake::Time now {};
+    const auto deadline = now + std::chrono::seconds {5};
+    REQUIRE(!listener.start(now, deadline).failed);
+    auto initial = caller.start(now, deadline);
+    auto cookie = listener.receive(initial.outgoing[0].view(), now);
+    auto offer = caller.receive(cookie.outgoing[0].view(), now);
+    REQUIRE_EQ(offer.size, 1U);
+    const auto rejected = listener.receive(offer.outgoing[0].view(), now);
+    REQUIRE(rejected.failed);
+    REQUIRE_EQ(rejected.size, 0U);
+    // No identity import, pin validation, hashing or ephemeral work.
+    REQUIRE_EQ(lp.operations, 0U);
+    REQUIRE_EQ(lp.handles, 0U);
+}
+
+TEST(peer_auth_exchange_prevalidated_pins_skip_per_attempt_validation)
+{
+    PeerAuthenticationCredentials credentials;
+    std::vector<std::byte> pins;
+    for (unsigned i = 2; i < 18; ++i) {
+        const auto key = public_key(i);
+        pins.insert(pins.end(), key.begin(), key.end());
+    }
+    REQUIRE_EQ(credentials.set_identity(scalar(1)), Error::none);
+    REQUIRE_EQ(credentials.set_trusted(pins), Error::none);
+    pa::Digest identifier {};
+    REQUIRE_EQ(
+        default_crypto_provider().sha256(public_key(17), identifier),
+        Error::none);
+    REQUIRE(credentials.trusts(identifier));
+    REQUIRE_EQ(
+        default_crypto_provider().sha256(public_key(18), identifier),
+        Error::none);
+    REQUIRE(!credentials.trusts(identifier));
+    TrackingProvider validating, prevalidated;
+    pa::Exchange slow(validating, true), fast(prevalidated, true);
+    REQUIRE_EQ(slow.configure(scalar(1), pins), Error::none);
+    REQUIRE_EQ(credentials.configure(fast), Error::none);
+    // Sixteen validations and sixteen hashes are no longer paid per attempt.
+    REQUIRE_EQ(validating.operations, prevalidated.operations + 32U);
+    pa::Record record;
+    REQUIRE_EQ(fast.prepare_offer(16, record), Error::none);
+    pa::Exchange mismatched(prevalidated, true);
+    const std::array<pa::Digest, 2> wrong_count {};
+    REQUIRE_EQ(mismatched.configure(scalar(1), pins, wrong_count),
+        Error::invalid_key_material);
+    // Forgetting the scalar keeps the pinned set but ends signing ability.
+    credentials.forget_identity();
+    REQUIRE(!credentials.complete());
+    REQUIRE(equal(credentials.trusted(), pins));
+    pa::Exchange forgotten(default_crypto_provider(), true);
+    REQUIRE_EQ(credentials.configure(forgotten), Error::invalid_state);
+}
+
+TEST(peer_auth_exchange_unverified_confirmations_share_one_allowance)
+{
+    Pair p;
+    p.configure();
+    p.offer(16);
+    p.response();
+    p.confirmation();
+    // Wrong key length in both header and record: structurally valid, never
+    // signed. It consumes the allowance exactly like an invalid signature.
+    auto resized = p.m3;
+    resized[5] = std::byte {4};
+    resized[57] = std::byte {32};
+    auto forged = p.m3;
+    forged[60] ^= std::byte {1};
+    for (const auto* bad : {&resized, &forged, &resized}) {
+        REQUIRE(p.listener.accept_confirmation(*bad, passphrase())
+            != Error::none);
+        REQUIRE(!p.listener.failed());
+        REQUIRE_EQ(p.lp.derivations, 0U);
+    }
+    Pair exhausted;
+    exhausted.configure();
+    exhausted.offer(16);
+    exhausted.response();
+    exhausted.confirmation();
+    resized = exhausted.m3;
+    resized[5] = std::byte {4};
+    resized[57] = std::byte {32};
+    for (unsigned i = 0; i < 4; ++i) {
+        REQUIRE(exhausted.listener.accept_confirmation(resized, passphrase())
+            != Error::none);
+        REQUIRE_EQ(exhausted.listener.failed(), i == 3);
+    }
+    REQUIRE_EQ(exhausted.lp.handles, 0U);
+    REQUIRE_EQ(p.listener.accept_confirmation(p.m3, passphrase()), Error::none);
+    REQUIRE(p.listener.ready_for_key_exchange());
 }
 
 TEST(
@@ -2443,6 +2605,21 @@ TEST(peer_auth_public_sockets_blocking_and_async_bidirectional_data)
                            key.data(), &size),
                 0);
             REQUIRE_EQ(key, public_key(socket == sockets.caller ? 2 : 1));
+            // Connected endpoints keep policy and pins but not the scalar.
+            const auto record = compat::SocketRegistry::instance().find(socket);
+            REQUIRE(record != nullptr);
+            std::lock_guard lock(record->mutex);
+            REQUIRE(record->native_options.peer_authentication_required());
+            REQUIRE(!record->native_options.peer_authentication_configured());
+            REQUIRE(
+                !record->native_options.peer_authentication_trusted().empty());
+        }
+        {
+            const auto record =
+                compat::SocketRegistry::instance().find(sockets.listener);
+            REQUIRE(record != nullptr);
+            std::lock_guard lock(record->mutex);
+            REQUIRE(record->native_options.peer_authentication_configured());
         }
         for (const bool from_caller : {true, false}) {
             const auto sender = from_caller ? sockets.caller : sockets.child;

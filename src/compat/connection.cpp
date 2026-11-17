@@ -2603,6 +2603,8 @@ private:
                 return fail(SRT_ESCLOSED);
             socket_->crypto = std::move(crypto);
             socket_->receiver_key_state = CryptoState::secured;
+            // A connected socket never signs again.
+            socket_->native_options.forget_peer_authentication_key();
             socket_->authenticated_peer = authenticated_peer;
             socket_->has_authenticated_peer = true;
             socket_->peer_connection_initial_sequence =
@@ -5262,6 +5264,10 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         } catch (...) {
             return close_with_error(SRT_ENOBUF);
         }
+        // The adapter owns the only copy admission needs. The child never
+        // signs again, so do not keep the long-term scalar for its lifetime.
+        std::lock_guard lock(accepted->mutex);
+        accepted->native_options.forget_peer_authentication_key();
     }
 #endif
     const auto setup_inbox = create_setup_inbox();
