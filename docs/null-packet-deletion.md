@@ -9,10 +9,19 @@ unregistered. This is not a released feature or a RIST compatibility claim.
 **Identifier change.** Release 0.3.3 assigned `0x7f15`, `0x01000018` and
 `0x01000019` to fixed-source multicast. When this branch was brought up to that
 release, NPD moved to CONFIG command `0x7f19` and options `0x0100001b` and
-`0x0100001c`. Qualification evidence recorded below before that change was
-captured with the earlier values and has not been repeated with the new ones.
-Builds of this branch from before and after the change do not negotiate NPD
-with each other.
+`0x0100001c`. Builds of this branch from before and after the change do not
+negotiate NPD with each other.
+
+Qualification evidence recorded below before that change was captured with the
+earlier values. With the new values, at `84d63d3`, a local macOS/OpenSSL run of
+`interop/run_npd_interop.py` passed 28 separate-process cases: 12 against the
+pinned Haivision public-API peers at `899348d8318eb9a3c5a5b6ec43c4a1114288773a`
+(CTR) and `d99d2e1a3b1a213b03c7dfbea5133898935fdeea` (AEAD), 8 self-peer cases,
+and 8 OFF/OFF comparisons against the v0.3.3 release peer. Both references
+skipped the `0x7f19` offer and omitted an echo. A separate probe with a listener
+built from each pinned reference showed its accepted connection ending 2 ms
+after acceptance on the caller's SHUTDOWN. The Linux container and Network Lab
+records have not been repeated with the new values.
 
 Development remains on the feature branch. Merging to `main` requires explicit
 maintainer approval after feature completion. Remaining release qualification
