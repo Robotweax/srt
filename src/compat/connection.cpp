@@ -2946,8 +2946,16 @@ private:
         const PeerAuthenticationHandshake::Result& result) noexcept
     {
         if (result.failed) {
+            // A listener's own reason (stream refused, application code) is
+            // reported as the legacy handshake reports it. UNSECURE, and any
+            // local proof failure, stay a security failure.
+            const bool peer_reason = result.rejection_reason >= 0
+                && result.rejection_reason != SRT_REJ_UNSECURE;
             finish(Clock::now() >= overall_deadline_
                     ? fail_connect(*socket_, SRT_ENOSERVER)
+                    : peer_reason
+                    ? fail_connect(
+                          *socket_, SRT_ECONNREJ, 0, result.rejection_reason)
                     : fail_connect(
                           *socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE));
             return false;

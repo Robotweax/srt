@@ -368,9 +368,13 @@ PeerAuthenticationHandshake::Result PeerAuthenticationHandshake::receive(
         // deadline, the unverified-M3 allowance or a failed confirmation; an
         // unauthenticated flight without a usable proof record is dropped.
         // A caller treats one as the listener declining and fails promptly.
-        if (caller_ || state_ == State::discovery)
+        if (caller_ || state_ == State::discovery) {
+            const auto request =
+                static_cast<std::int32_t>(message.packet.request);
+            if (caller_ && request >= 1'000)
+                result.rejection_reason = request - 1'000;
             fail(result, Error::authentication_failure);
-        else
+        } else
             result.error = Error::authentication_failure;
         return finish(result);
     }

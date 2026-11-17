@@ -1985,6 +1985,46 @@ TEST(peer_auth_transport_adapter_pending_child_drops_unauthenticated_flights)
             .failed);
 }
 
+TEST(peer_auth_transport_adapter_reports_explicit_listener_rejection)
+{
+    for (const bool after_response : {false, true}) {
+        PacketAdmissionPair p;
+        p.discovery();
+        if (after_response) {
+            p.response = p.listener.receive(p.offer.outgoing[0].view(), p.now);
+            p.confirmation =
+                p.caller.receive(p.response.outgoing[0].view(), p.now);
+            REQUIRE_EQ(p.confirmation.size, 2U);
+        }
+        const auto decoded =
+            decode_handshake_datagram(p.offer.outgoing[0].view());
+        REQUIRE(decoded);
+        HandshakeAction action {
+            .kind = HandshakeActionKind::send, .packet = decoded.message.packet};
+        action.packet.extension_field = 0;
+        action.packet.request = static_cast<HandshakeRequest>(1'000 + 1403);
+        std::array<std::byte, 1500> bytes {};
+        const auto encoded = encode_handshake_datagram(action, {}, 123, bytes);
+        REQUIRE(encoded);
+        const auto rejected = p.caller.receive(
+            std::span {bytes}.first(encoded.bytes_written), p.now);
+        REQUIRE(rejected.failed);
+        REQUIRE_EQ(rejected.rejection_reason, 1403);
+        REQUIRE_EQ(p.cp.handles, 0U);
+        // The same datagram does not end a pending listener child and never
+        // carries a reason there.
+        if (after_response) {
+            const auto readdressed =
+                encode_handshake_datagram(action, {}, 456, bytes);
+            REQUIRE(readdressed);
+            const auto dropped = p.listener.receive(
+                std::span {bytes}.first(readdressed.bytes_written), p.now);
+            REQUIRE(!dropped.failed);
+            REQUIRE_EQ(dropped.rejection_reason, -1);
+        }
+    }
+}
+
 TEST(peer_auth_transport_adapter_rejects_unpinned_identifier_without_crypto)
 {
     auto co = peer_handshake_options(true), lo = peer_handshake_options(false);
@@ -2694,6 +2734,41 @@ TEST(peer_auth_public_caller_rejection_never_publishes_authenticated_peer)
             REQUIRE_EQ(
                 srt_sendmsg(sockets.caller, "blocked", 7, -1, 0), SRT_ERROR);
         }
+}
+
+TEST(peer_auth_public_caller_reports_listener_application_rejection)
+{
+    for (const bool nonblocking : {false, true}) {
+        PublicPeerCallback callback;
+        PublicPeerSockets sockets;
+        auto future = callback.promise.get_future();
+        REQUIRE_EQ(srt_connect_callback(
+                       sockets.caller, PublicPeerCallback::observe, &callback),
+            0);
+        REQUIRE_EQ(srt_listen_callback(
+                       sockets.listener,
+                       +[](void*, SRTSOCKET child, int, const sockaddr*,
+                            const char*) {
+                           (void)srt_setrejectreason(child, SRT_REJC_PREDEFINED + 403);
+                           return -1;
+                       },
+                       nullptr),
+            0);
+        const bool synchronous = !nonblocking;
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVSYN, &synchronous,
+                       sizeof(synchronous)),
+            0);
+        sockets.listen();
+        REQUIRE_EQ(sockets.connect(), nonblocking ? 0 : SRT_ERROR);
+        if (!nonblocking)
+            REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ECONNREJ);
+        REQUIRE(future.wait_for(std::chrono::seconds {3})
+            == std::future_status::ready);
+        const auto result = future.get();
+        REQUIRE_EQ(result.error, SRT_ECONNREJ);
+        REQUIRE(!result.authenticated);
+        REQUIRE_EQ(srt_getrejectreason(sockets.caller), SRT_REJC_PREDEFINED + 403);
+    }
 }
 
 TEST(peer_auth_public_caller_timeout_and_close_cancel_pending_setup)

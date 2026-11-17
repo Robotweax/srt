@@ -205,6 +205,7 @@ policy is the fallback this feature must not have.
 | --- | --- | --- |
 | OFF or stock | OFF or stock | Unchanged handshake, key material and DATA bytes |
 | OFF or stock | REQUIRED | Listener rejects setup |
+| OFF in a build with the option, peer sends a `0x7f16` record | OFF | Setup fails; the record is recognised and never ignored |
 | Session authentication v2 only | REQUIRED | Listener rejects setup; a `0x7f10` offer never substitutes |
 | REQUIRED | REQUIRED | Peer authentication active in both directions |
 | REQUIRED | OFF | Setup fails; the caller receives no response record |
@@ -404,8 +405,18 @@ the prefix fails setup.
 
 Under REQUIRED, a wrong size for the message type, an unknown version, suite or
 message value, nonzero flags or reserved bytes, an all-zero nonce, an invalid
-public key, a duplicate record or a missing CONFIG bit fail decoding. With
-policy OFF the record is not parsed and is skipped like any unknown record.
+public key, a duplicate record or a missing CONFIG bit fail decoding.
+
+A build with the option parses the record whatever the socket's policy is, so
+policy OFF there is not the same as a build without the option:
+
+- A malformed `0x7f16` record makes the whole handshake datagram undecodable,
+  and it is dropped.
+- A well-formed record fails setup on an OFF socket. An OFF listener rejects
+  the caller with UNSECURE, and the ordinary handshake machine of an OFF caller
+  fails instead of treating a proof record as optional metadata.
+
+Only a build without the option skips the record like any unknown record.
 
 ### Transcript
 
@@ -559,6 +570,13 @@ any byte of an exchange in progress is ignored.
   caller fail promptly against an OFF or stock listener; tolerating forged M2
   messages while honouring forged rejections would add nothing.
 
+A caller reports an explicit rejection the way the legacy handshake does:
+`SRT_ECONNREJ` with the listener's reason, so that a refused Stream ID or an
+application code from the listen callback is not mistaken for a failed proof.
+UNSECURE, a reply without the record that is not a rejection, and every local
+proof failure are reported as `SRT_ESECFAIL` with UNSECURE. The reason is
+unauthenticated in every case.
+
 An attacker who can modify the genuine M3 in transit can still end the attempt,
 for example by replacing `s` with `n - s`, which keeps the signature valid and
 breaks the tag. That attacker can also drop the message; see the non-goals.
@@ -573,7 +591,9 @@ provider's random generator. Deterministic and randomized signatures verify
 identically, so the choice is local to each endpoint. The OpenSSL implementation
 requests RFC 6979 when its signature provider advertises the nonce-type
 parameter; otherwise it uses the provider's default nonce generation. It does
-not implement its own nonce generator. Remaining backend *assumptions* from
+not implement its own nonce generator. Its P-256 operations remove the entries
+they add to the calling thread's OpenSSL error queue and leave earlier entries
+in place. Remaining backend *assumptions* from
 library documentation: Mbed TLS 3.6 offers RFC 6979 through
 `MBEDTLS_ECDSA_DETERMINISTIC`; OpenSSL offers it as a signature parameter from
 3.2, later than the 3.0 minimum, and otherwise mixes the private key and digest

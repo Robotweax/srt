@@ -106,6 +106,13 @@ endif()
 
 set(ROBOTWEAX_SRT_CRYPTO_BACKEND "openssl" CACHE STRING "Crypto backend: openssl, mbedtls (3.6.x), or bcrypt (experimental Windows only)")
 set_property(CACHE ROBOTWEAX_SRT_CRYPTO_BACKEND PROPERTY STRINGS openssl bcrypt mbedtls)
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH
+        AND NOT ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl")
+    message(WARNING
+        "Experimental peer authentication has P-256 support only with the "
+        "OpenSSL backend. With ${ROBOTWEAX_SRT_CRYPTO_BACKEND} the key options "
+        "return SRT_EINVOP and no connection can use it.")
+endif()
 if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl")
     set(ROBOTWEAX_SRT_CRYPTO_BACKEND_ID 1)
     find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)

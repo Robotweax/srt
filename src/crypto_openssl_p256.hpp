@@ -10,6 +10,7 @@
 #include <openssl/core_names.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
+#include <openssl/err.h>
 #include <openssl/param_build.h>
 
 #include <algorithm>
@@ -43,6 +44,23 @@ struct ParametersDeleter {
 };
 using Parameters = std::unique_ptr<OSSL_PARAM, ParametersDeleter>;
 
+// Peer-controlled input and rejected option values make these calls fail in
+// normal operation. Remove what they add to the calling thread's error queue
+// and leave earlier entries alone: an application that also uses TLS on this
+// thread reads that queue.
+struct ErrorQueueScope {
+    ErrorQueueScope() noexcept
+    {
+        ERR_set_mark();
+    }
+    ~ErrorQueueScope()
+    {
+        ERR_pop_to_mark();
+    }
+    ErrorQueueScope(const ErrorQueueScope&) = delete;
+    ErrorQueueScope& operator=(const ErrorQueueScope&) = delete;
+};
+
 inline void erase(std::span<std::byte> output) noexcept
 {
     OPENSSL_cleanse(output.data(), output.size());
@@ -61,6 +79,7 @@ inline unsigned char* bytes_ptr(std::span<std::byte, N> output) noexcept
 inline Error import_public(
     std::span<const std::byte, 64> point, Key& result) noexcept
 {
+    const ErrorQueueScope errors;
     result.reset();
     std::array<unsigned char, 65> encoded {};
     encoded[0] = POINT_CONVERSION_UNCOMPRESSED;
@@ -92,6 +111,7 @@ inline Error import_public(
 inline Error import_private(
     std::span<const std::byte, 32> scalar, Key& result) noexcept
 {
+    const ErrorQueueScope errors;
     result.reset();
     Owned<EC_GROUP, EC_GROUP_free> group(
         EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1));
@@ -153,6 +173,7 @@ public:
     }
     Error public_key(std::span<std::byte, 64> output) noexcept override
     {
+        const ErrorQueueScope errors;
         std::array<unsigned char, 65> encoded {};
         std::size_t size = 0;
         if (EVP_PKEY_get_octet_string_param(key_.get(), OSSL_PKEY_PARAM_PUB_KEY,
@@ -170,6 +191,7 @@ public:
     Error agree(std::span<const std::byte, 64> peer,
         std::span<std::byte, 32> output) noexcept override
     {
+        const ErrorQueueScope errors;
         Key peer_key;
         const auto error = import_public(peer, peer_key);
         if (error != Error::none) {
@@ -191,6 +213,7 @@ public:
     Error sign_sha256(std::span<const std::byte> message,
         std::span<std::byte, 64> output) noexcept override
     {
+        const ErrorQueueScope errors;
         Owned<EVP_MD_CTX, EVP_MD_CTX_free> context(EVP_MD_CTX_new());
         std::array<unsigned char, 72> encoded {};
         std::size_t size = encoded.size();
@@ -250,6 +273,7 @@ inline Error own(Key key, std::unique_ptr<P256Key>& output) noexcept
 }
 inline Error generate(std::unique_ptr<P256Key>& output) noexcept
 {
+    const ErrorQueueScope errors;
     output.reset();
     Context context(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
     if (!context || EVP_PKEY_keygen_init(context.get()) != 1
@@ -266,6 +290,7 @@ inline Error verify(std::span<const std::byte, 64> public_key,
     std::span<const std::byte> message,
     std::span<const std::byte, 64> raw) noexcept
 {
+    const ErrorQueueScope errors;
     Key key;
     const auto error = import_public(public_key, key);
     if (error != Error::none)

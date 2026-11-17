@@ -17,6 +17,11 @@ version returned by `srt_getversion()`.
   work and stop revalidating pinned keys per attempt; drop unauthenticated
   flights on a pending listener child instead of ending it; erase the identity
   scalar from accepted and connected sockets.
+- Peer authentication: a caller reports an explicit listener rejection as
+  `SRT_ECONNREJ` with the listener's reason instead of `SRT_ESECFAIL`, except
+  for UNSECURE; P-256 operations no longer leave entries in the calling
+  thread's OpenSSL error queue; the socket options moved to
+  `0x0100001b`-`0x0100001f`.
 
 ## 0.3.3 — Hybrid Multicast and Transport Hardening
 

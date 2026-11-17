@@ -33,6 +33,9 @@ public:
         std::size_t size = 0;
         bool ready = false;
         bool failed = false;
+        // Set with failed on a caller when the peer sent an explicit
+        // rejection. It is unauthenticated, as in the legacy handshake.
+        int rejection_reason = -1;
     };
     PeerAuthenticationHandshake(HandshakeMachine::Configuration configuration,
         const SocketOptions& options,
