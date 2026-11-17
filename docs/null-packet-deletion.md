@@ -127,7 +127,9 @@ retries, requiring a matching confirmation before publishing the connection. A h
 within its MSS budget fails encoding; it is never truncated.
 
 A missing or invalid required record is rejected with `SRT_REJ_ROGUE` (invalid
-handshake parameters). The caller fails locally if the listener omits its echo.
+handshake parameters), as is a valid offer to an OFF listener. The caller fails
+locally if the listener omits its echo. `SRT_REJ_ROGUE` on an NPD deployment
+therefore usually means the two ends hold different policies.
 
 ## DATA payload format
 

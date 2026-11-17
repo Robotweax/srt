@@ -266,7 +266,10 @@ typedef enum SRT_SOCKOPT {
      * together with SRTO_ROBOTWEAX_FECPOLICY = ARQFIRST. */
     SRTO_ROBOTWEAX_TAILPROBE = 0x01000017,
     /* PRE int32_t optional MPEG-TS null deletion; OFF/REQUIRED/IF_OFFERED.
-     * IF_OFFERED is listener-only; groups and Rendezvous are unsupported. */
+     * IF_OFFERED is listener-only; groups and Rendezvous are unsupported.
+     * A non-OFF policy lowers the SRTO_PAYLOADSIZE ceiling by one byte and
+     * reduces a larger value already set. A policy mismatch between the two
+     * ends fails setup with SRT_REJ_ROGUE. */
     SRTO_ROBOTWEAX_NPD_POLICY = 0x01000018,
     /* Read-only cumulative ROBOTWEAX_SRT_NPD_STATS_V1; no clear-on-read. */
     SRTO_ROBOTWEAX_NPD_STATS = 0x01000019,

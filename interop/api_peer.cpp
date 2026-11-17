@@ -2698,9 +2698,9 @@ void usage()
                  " [--expect-connect-error N]"
 #ifdef ROBOTWEAX_SRT_PEER_IDENTITY_VERSION
                  " [--identity-policy 0|1|2] [--expect-peer-identity 0|1|2]"
+#endif
 #ifdef ROBOTWEAX_SRT_NPD_STATS_VERSION
                  " [--npd-policy 0|1|2]"
-#endif
 #endif
                  " [--latency-ms N]"
                  " [--tlpktdrop on|off]"
