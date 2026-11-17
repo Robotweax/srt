@@ -81,6 +81,9 @@ struct PollRecord {
     std::optional<Clock::time_point> next_user_wakeup;
     std::int32_t flags = 0;
     bool released = false;
+    // Sticky and coalescing: set by epoll_wake, taken by the one wait that
+    // returns without events because of it.
+    bool wake_pending = false;
 };
 
 class PollRegistry {
@@ -895,6 +898,10 @@ int epoll_wait(
             if (total != 0) {
                 return total;
             }
+            if (record->wake_pending) {
+                record->wake_pending = false;
+                return fail(SRT_ETIMEOUT);
+            }
         }
 
         const Clock::time_point now = Clock::now();
@@ -911,6 +918,25 @@ int epoll_wait(
         }
         record->observer.wait_until(generation, wake_deadline);
     }
+}
+
+int epoll_wake(int eid) noexcept
+{
+    const auto record = find_poll(eid);
+    if (record == nullptr) {
+        return fail(SRT_EINVPOLLID);
+    }
+    {
+        std::lock_guard lock(record->mutex);
+        if (record->released) {
+            return fail(SRT_EINVPOLLID);
+        }
+        record->wake_pending = true;
+    }
+    // The flag is published before the generation changes, so a waiter that
+    // sampled the old generation cannot sleep past it.
+    record->observer.wake();
+    return 0;
 }
 
 int epoll_uwait(
@@ -974,6 +1000,10 @@ int epoll_uwait(
                         *record, found->second, ready[index].events, true);
                 }
                 return written;
+            }
+            if (record->wake_pending) {
+                record->wake_pending = false;
+                return 0;
             }
         }
 

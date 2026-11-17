@@ -6,6 +6,12 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add `robotweax_srt_epoll_wake`, an additive extension that ends one wait on
+  an epoll instance from another thread. The wake is sticky and coalescing, a
+  wait with events still reports them first, and no descriptor or system-socket
+  polling is involved. `ROBOTWEAX_SRT_EPOLL_WAKE_VERSION` marks headers that
+  declare it. Existing calls behave as before for programs that never call it.
+
 ## 0.3.3 — Hybrid Multicast and Transport Hardening
 
 See the [release notes](docs/release-notes-0.3.3.md) for upgrade behavior and limits.

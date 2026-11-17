@@ -165,14 +165,20 @@ class AeadContractTests(unittest.TestCase):
     def test_release_0_3_1_adds_only_direct_group_udp_adoption(self):
         released = FROZEN_0_3_0_ABI_PATH.read_text().splitlines()
         expected = sorted(released + ["robotweax_srt_connect_group_acquire"])
-        symbols = PUBLIC_SYMBOLS_PATH.read_bytes()
+        # Published snapshots stay frozen when development adds an API.
+        symbols = (ROOT / "cmake/abi/robotweax-srt-0.3.1.txt").read_bytes()
         self.assertEqual(symbols.decode().splitlines(), expected)
         self.assertEqual(CURRENT_ABI_PATH.read_bytes(), symbols)
-        self.assertEqual((ROOT / "cmake/abi/robotweax-srt-0.3.1.txt").read_bytes(), symbols)
-        self.assertEqual(symbols,
-                         (ROOT / "cmake/abi/robotweax-srt-development.txt").read_bytes())
         cmake = CMAKE_PATH.read_text(encoding="utf-8")
         self.assertIn("${ROBOTWEAX_SRT_ABI_BASELINE_FILE})", cmake)
+
+    def test_development_adds_only_the_epoll_wake_extension(self):
+        released = CURRENT_ABI_PATH.read_text().splitlines()
+        expected = sorted(released + ["robotweax_srt_epoll_wake"])
+        symbols = PUBLIC_SYMBOLS_PATH.read_bytes()
+        self.assertEqual(symbols.decode().splitlines(), expected)
+        self.assertEqual(symbols,
+                         (ROOT / "cmake/abi/robotweax-srt-development.txt").read_bytes())
 
     def test_platform_abi_matrix_is_active_for_release_version(self):
         platform = self.manifest["platform_abi"]
