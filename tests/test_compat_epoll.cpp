@@ -1343,7 +1343,7 @@ TEST(compat_epoll_wake_extension_ends_one_empty_wait_and_stays_pending)
     const int eid = srt_epoll_create();
     REQUIRE(eid >= 0);
     REQUIRE_EQ(srt_epoll_set(eid, SRT_EPOLL_ENABLE_EMPTY), 0);
-    std::array<SRT_EPOLL_EVENT, 1> events{};
+    std::array<SRT_EPOLL_EVENT, 1> events {};
     const auto uwait = [&](std::int64_t timeout) {
         return srt_epoll_uwait(
             eid, events.data(), static_cast<int>(events.size()), timeout);
@@ -1379,11 +1379,11 @@ TEST(compat_epoll_wake_extension_ends_one_empty_wait_and_stays_pending)
 
     // The separate-set form reports the same outcome as its own timeout.
     REQUIRE_EQ(robotweax_srt_epoll_wake(eid), 0);
-    std::array<SRTSOCKET, 1> readable{};
+    std::array<SRTSOCKET, 1> readable {};
     int readable_count = static_cast<int>(readable.size());
     started = Clock::now();
-    REQUIRE_EQ(srt_epoll_wait(eid, readable.data(), &readable_count,
-                   nullptr, nullptr, 5'000, nullptr, nullptr, nullptr, nullptr),
+    REQUIRE_EQ(srt_epoll_wait(eid, readable.data(), &readable_count, nullptr,
+                   nullptr, 5'000, nullptr, nullptr, nullptr, nullptr),
         SRT_ERROR);
     REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ETIMEOUT);
     REQUIRE(Clock::now() - started < 1s);
@@ -1391,15 +1391,15 @@ TEST(compat_epoll_wake_extension_ends_one_empty_wait_and_stays_pending)
     // Readiness is reported first and does not consume the pending wake.
     const SRTSOCKET socket = srt_create_socket();
     REQUIRE(socket != SRT_INVALID_SOCK);
-    const Ipv4Endpoint peer{
+    const Ipv4Endpoint peer {
         .address = {198, 51, 100, 21},
         .port = 10'001,
     };
-    const SequenceNumber initial{9'000};
+    const SequenceNumber initial {9'000};
     const auto runtime = attach_test_runtime(socket, peer, initial);
     const int watched = SRT_EPOLL_IN;
     REQUIRE_EQ(srt_epoll_add_usock(eid, socket, &watched), 0);
-    const std::array<std::byte, 1> payload{std::byte{7}};
+    const std::array<std::byte, 1> payload {std::byte {7}};
     runtime->process_packet(single_packet(initial, 1, payload), peer);
     REQUIRE_EQ(robotweax_srt_epoll_wake(eid), 0);
     REQUIRE_EQ(uwait(5'000), 1);
