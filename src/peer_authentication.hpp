@@ -32,6 +32,14 @@ struct Record {
 [[nodiscard]] Error decode_record(
     std::span<const std::byte> content, Record& record) noexcept;
 
+// Signatures on the wire are canonical: s is at most half the group order.
+// A signer replaces a larger s with n - s, which verifies identically; a
+// verifier treats a larger s as an invalid signature. One signature therefore
+// has one encoding, and a third party cannot produce a second valid one.
+[[nodiscard]] bool canonical_signature(
+    std::span<const std::byte, 64> signature) noexcept;
+void canonicalize_signature(std::span<std::byte, 64> signature) noexcept;
+
 // Structural full-payload validation shared with the datagram adapter.
 // Does not authenticate a proof or validate an elliptic-curve point.
 [[nodiscard]] Error validate_payload(

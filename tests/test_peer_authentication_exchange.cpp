@@ -666,6 +666,158 @@ TEST(peer_auth_exchange_valid_ephemeral_mac_cannot_replace_identity_signature)
     REQUIRE_EQ(p.cp.handles, 0U);
 }
 
+namespace {
+// NIST P-256 group order, independent of the implementation's constant.
+constexpr std::array<unsigned char, 32> p256_order {0xff, 0xff, 0xff, 0xff,
+    0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2,
+    0xfc, 0x63, 0x25, 0x51};
+// Replace s with n - s: the other encoding of the same ECDSA signature.
+void negate_s(std::span<std::byte, 64> signature)
+{
+    unsigned borrow = 0;
+    for (std::size_t i = 64; i-- > 32;) {
+        const unsigned value =
+            std::to_integer<unsigned>(signature[i]) + borrow;
+        borrow = p256_order[i - 32] < value ? 1U : 0U;
+        signature[i] = std::byte(
+            static_cast<unsigned char>(p256_order[i - 32] + 256U - value));
+    }
+}
+}
+
+TEST(peer_auth_signature_canonical_form_boundaries)
+{
+    std::array<std::byte, 64> signature {};
+    signature[63] = std::byte {1}; // s = 1
+    REQUIRE(pa::canonical_signature(signature));
+    auto negated = signature;
+    negate_s(negated); // s = n - 1
+    REQUIRE(!pa::canonical_signature(negated));
+    REQUIRE_EQ(std::to_integer<unsigned>(negated[63]), 0x50U);
+    pa::canonicalize_signature(negated);
+    REQUIRE_EQ(negated, signature);
+    pa::canonicalize_signature(negated); // idempotent
+    REQUIRE_EQ(negated, signature);
+    // floor(n / 2) is the largest canonical s; n - floor(n / 2) is one more.
+    std::array<std::byte, 64> half {};
+    unsigned carry = 0;
+    for (std::size_t i = 0; i < 32; ++i) {
+        const unsigned value = carry * 256U + p256_order[i];
+        half[32 + i] = std::byte(static_cast<unsigned char>(value / 2U));
+        carry = value % 2U;
+    }
+    REQUIRE(pa::canonical_signature(half));
+    auto above = half;
+    negate_s(above);
+    REQUIRE(!pa::canonical_signature(above));
+    pa::canonicalize_signature(above);
+    REQUIRE_EQ(above, half);
+    // Plain ECDSA accepts both encodings of one signature; exactly one of
+    // them is canonical. This is what the wire rule removes.
+    const auto verifying_key = public_key(1);
+    std::unique_ptr<P256Key> key;
+    REQUIRE_EQ(
+        default_crypto_provider().import_p256_key(scalar(1), key), Error::none);
+    std::array<std::byte, 64> first {};
+    REQUIRE_EQ(key->sign_sha256(passphrase(), first), Error::none);
+    auto second = first;
+    negate_s(second);
+    for (const auto& encoding : {first, second})
+        REQUIRE_EQ(default_crypto_provider().verify_p256_sha256(
+                       verifying_key, passphrase(), encoding),
+            Error::none);
+    REQUIRE(pa::canonical_signature(first) != pa::canonical_signature(second));
+    // r is not touched, and an out-of-range s is never canonical.
+    std::array<std::byte, 64> filled {};
+    filled.fill(std::byte {0xff});
+    REQUIRE(!pa::canonical_signature(filled));
+    pa::canonicalize_signature(filled);
+    for (std::size_t i = 0; i < 32; ++i)
+        REQUIRE_EQ(filled[i], std::byte {0xff});
+}
+
+TEST(peer_auth_exchange_emits_only_canonical_signatures)
+{
+    // Random nonces vary the signed transcripts, so both raw forms occur.
+    for (unsigned round = 0; round < 24; ++round) {
+        Pair p;
+        p.configure();
+        p.offer();
+        p.response();
+        p.confirmation();
+        REQUIRE(pa::canonical_signature(
+            std::span<const std::byte, 64>(p.m2.data() + 188, 64)));
+        REQUIRE(pa::canonical_signature(
+            std::span<const std::byte, 64>(p.m3.data() + 60, 64)));
+        REQUIRE_EQ(
+            p.listener.accept_confirmation(p.m3, passphrase()), Error::none);
+    }
+}
+
+TEST(peer_auth_exchange_negated_caller_signature_is_an_invalid_signature)
+{
+    Pair p;
+    p.configure();
+    p.offer();
+    p.response();
+    p.confirmation();
+    auto negated = p.m3;
+    negate_s(std::span<std::byte, 64>(negated.data() + 60, 64));
+    // The other encoding verifies under plain ECDSA. It must be rejected as
+    // an invalid signature: no verification, no passphrase work, and the
+    // pending attempt survives for the genuine M3.
+    const auto verifications = p.lp.verifications;
+    for (unsigned i = 0; i < 3; ++i) {
+        REQUIRE_EQ(p.listener.accept_confirmation(negated, passphrase()),
+            Error::authentication_failure);
+        REQUIRE(!p.listener.failed());
+    }
+    REQUIRE_EQ(p.lp.verifications, verifications);
+    REQUIRE_EQ(p.lp.derivations, 0U);
+    REQUIRE_EQ(p.listener.accept_confirmation(p.m3, passphrase()), Error::none);
+    REQUIRE(p.listener.ready_for_key_exchange());
+}
+
+TEST(peer_auth_exchange_negated_listener_signature_is_rejected_unverified)
+{
+    // An attacker who knows the listener's ephemeral scalar can recompute the
+    // confirmation tag over the negated signature, so only the canonical-form
+    // rule stands between this M2 and a successful verification.
+    Pair p;
+    p.lp.fixed_ephemeral = 4;
+    p.configure();
+    p.offer();
+    p.response();
+    pa::Record offer, response;
+    REQUIRE_EQ(
+        pa::decode_record(std::span {p.m1}.subspan(52), offer), Error::none);
+    REQUIRE_EQ(
+        pa::decode_record(std::span {p.m2}.subspan(52), response), Error::none);
+    negate_s(response.signature);
+    REQUIRE(!pa::canonical_signature(response.signature));
+    std::unique_ptr<P256Key> attacker;
+    REQUIRE_EQ(p.lp.real.import_p256_key(scalar(4), attacker), Error::none);
+    pa::Digest shared {}, hash {};
+    REQUIRE_EQ(attacker->agree(offer.public_key, shared), Error::none);
+    REQUIRE_EQ(
+        pa::listener_transcript(p.lp.real, p.m1, p.m2, hash), Error::none);
+    pa::KeySchedule attack(p.lp.real);
+    REQUIRE_EQ(attack.start(shared, hash), Error::none);
+    REQUIRE_EQ(
+        attack.listener_confirmation(response.signature, response.confirmation),
+        Error::none);
+    std::size_t n = 0;
+    REQUIRE_EQ(pa::encode_record(response, std::span {p.m2}.subspan(52), n),
+        Error::none);
+    pa::Record confirmation;
+    REQUIRE_EQ(p.caller.prepare_confirmation(p.m2, confirmation),
+        Error::authentication_failure);
+    REQUIRE_EQ(p.cp.verifications, 0U);
+    REQUIRE_EQ(p.cp.derivations, 0U);
+    REQUIRE(p.caller.failed());
+}
+
 TEST(peer_auth_runtime_directional_keys_and_authenticated_controls)
 {
     for (unsigned length : {16U, 24U, 32U}) {

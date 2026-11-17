@@ -17,6 +17,9 @@ version returned by `srt_getversion()`.
   work and stop revalidating pinned keys per attempt; drop unauthenticated
   flights on a pending listener child instead of ending it; erase the identity
   scalar from accepted and connected sockets.
+- Peer authentication wire change: signatures are canonical low-S. Signers
+  normalize `s` and verifiers reject the other encoding as an invalid
+  signature, so both peers need this revision.
 - Peer authentication: a caller reports an explicit listener rejection as
   `SRT_ECONNREJ` with the listener's reason instead of `SRT_ESECFAIL`, except
   for UNSECURE; P-256 operations no longer leave entries in the calling

@@ -40,6 +40,17 @@ void put32(std::span<std::byte> output, std::uint32_t value) noexcept
     for (unsigned i = 0; i < 4; ++i)
         output[i] = std::byte(value >> (24U - 8U * i));
 }
+// NIST P-256 group order n and floor(n / 2), big-endian.
+constexpr std::array<unsigned char, 32> group_order {
+    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84,
+    0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51};
+constexpr std::array<unsigned char, 32> half_group_order {
+    0x7f, 0xff, 0xff, 0xff, 0x80, 0x00, 0x00, 0x00,
+    0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xde, 0x73, 0x7d, 0x56, 0xd3, 0x8b, 0xcf, 0x42,
+    0x79, 0xdc, 0xe5, 0x61, 0x7e, 0x31, 0x92, 0xa8};
 struct Secret {
     CryptoProvider& provider;
     Digest bytes {};
@@ -178,6 +189,30 @@ Error transcript(CryptoProvider& provider, std::span<const std::byte> offer,
 }
 } // namespace
 
+bool canonical_signature(std::span<const std::byte, 64> signature) noexcept
+{
+    // Signatures are public, so this comparison need not be constant time.
+    const auto s = signature.last<32>();
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const auto value = std::to_integer<unsigned char>(s[i]);
+        if (value != half_group_order[i])
+            return value < half_group_order[i];
+    }
+    return true;
+}
+void canonicalize_signature(std::span<std::byte, 64> signature) noexcept
+{
+    if (canonical_signature(signature))
+        return;
+    const auto s = signature.last<32>();
+    unsigned borrow = 0;
+    for (std::size_t i = s.size(); i-- > 0;) {
+        const unsigned subtrahend = std::to_integer<unsigned>(s[i]) + borrow;
+        borrow = group_order[i] < subtrahend ? 1U : 0U;
+        s[i] = std::byte(
+            static_cast<unsigned char>(group_order[i] + 256U - subtrahend));
+    }
+}
 std::size_t content_size(Message message) noexcept
 {
     switch (message) {
@@ -649,6 +684,8 @@ Error Exchange::seal_response(std::span<std::byte> input) noexcept
             signed_message(false, hash, message), response_.signature);
     identity_.reset();
     if (error == Error::none)
+        canonicalize_signature(response_.signature);
+    if (error == Error::none)
         error = schedule_.listener_confirmation(
             response_.signature, response_.confirmation);
     if (error == Error::none)
@@ -693,6 +730,8 @@ Error Exchange::prepare_confirmation(
         return fail(error);
     if (!same(tag, response_.confirmation))
         return fail(Error::authentication_failure);
+    if (!canonical_signature(response_.signature))
+        return fail(Error::authentication_failure);
     std::array<std::byte, 160> message {};
     error = provider_.verify_p256_sha256(
         peer_, signed_message(false, hash, message), response_.signature);
@@ -734,6 +773,8 @@ Error Exchange::seal_confirmation(
             signed_message(true, hash, message), confirmation_.signature);
     identity_.reset();
     if (error == Error::none)
+        canonicalize_signature(confirmation_.signature);
+    if (error == Error::none)
         error = schedule_.caller_confirmation(
             confirmation_.signature, confirmation_.confirmation);
     if (error == Error::none)
@@ -763,6 +804,10 @@ Error Exchange::accept_confirmation(std::span<const std::byte> input,
     if (error == Error::none)
         error = caller_transcript(
             provider_, flights_[0].view(), flights_[1].view(), input, hash);
+    // A non-canonical s is an invalid signature: it is rejected before the
+    // verification and never reaches the passphrase-dependent tag check.
+    if (error == Error::none && !canonical_signature(record.signature))
+        error = Error::authentication_failure;
     std::array<std::byte, 160> message {};
     if (error == Error::none)
         error = provider_.verify_p256_sha256(

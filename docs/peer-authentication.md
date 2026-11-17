@@ -282,7 +282,8 @@ and is a named review item.
 
 Public keys are 64 bytes: the affine coordinates `X || Y`, each 32 bytes
 big-endian, without the SEC 1 `04` prefix. Signatures are 64 bytes: `r || s`,
-each 32 bytes big-endian. A *key identifier* is SHA-256 over the 64-byte
+each 32 bytes big-endian, in the [canonical form](#signatures-and-confirmation)
+with `s` at most half the group order. A *key identifier* is SHA-256 over the 64-byte
 identity public key. Every received public key is validated as in SP 800-56A
 section 5.6.2.3.3 before use: coordinates in range, on the curve, not the
 point at infinity.
@@ -510,11 +511,22 @@ signed_L  = 64 bytes of 0x20 || "Robotweax SRT peer authentication 1, listener"
             || 0x00 || th_L
 signed_C  = 64 bytes of 0x20 || "Robotweax SRT peer authentication 1, caller"
             || 0x00 || th_C
-sig_L     = ECDSA-P256-SHA256(listener identity key, signed_L)
-sig_C     = ECDSA-P256-SHA256(caller identity key, signed_C)
+sig_L     = low-S(ECDSA-P256-SHA256(listener identity key, signed_L))
+sig_C     = low-S(ECDSA-P256-SHA256(caller identity key, signed_C))
 confirm_L = HMAC-SHA256(hkey(1), th_L || sig_L)
 confirm_C = HMAC-SHA256(key(3),  th_C || sig_C)
 ```
+
+**Canonical signatures.** For every ECDSA signature `(r, s)`, `(r, n - s)`
+verifies as well, where `n` is the P-256 group order. The wire carries only the
+form with `s <= floor(n / 2)`: `low-S` replaces a larger `s` with `n - s` after
+signing, and a verifier treats a larger `s` as an invalid signature before it
+runs the verification. Each signature therefore has exactly one encoding. The
+rule is applied in the protocol code, not in the provider, so it holds for
+every backend and for deterministic and randomized nonces alike. Without it,
+anyone who sees a signature could produce the second encoding without the
+private key; because `confirm_L` and `confirm_C` cover the signature bytes,
+that copy would carry a valid signature and a wrong tag.
 
 Processing, with failure ending setup without fallback except for the bounded
 invalid-M3-signature allowance described below:
@@ -577,9 +589,10 @@ UNSECURE, a reply without the record that is not a rejection, and every local
 proof failure are reported as `SRT_ESECFAIL` with UNSECURE. The reason is
 unauthenticated in every case.
 
-An attacker who can modify the genuine M3 in transit can still end the attempt,
-for example by replacing `s` with `n - s`, which keeps the signature valid and
-breaks the tag. That attacker can also drop the message; see the non-goals.
+A valid caller signature with a wrong tag therefore needs the caller's
+identity key. An M3 altered in transit, including one whose `s` was replaced by
+`n - s`, has an invalid signature and only consumes the allowance. An attacker
+on the path can still drop messages; see the non-goals.
 
 **Signature nonces.** The listener signs on demand for callers it has not
 authenticated, so a biased or repeated ECDSA nonce would expose its identity
@@ -882,6 +895,8 @@ ACK, NAK or DROPREQ must not rely on peer authentication for it.
 - M1 exposes the caller's claimed key identifier for callback lookup and early
   pin rejection. OFFERED does not identify an authenticated peer.
 - The minimum MSS is 512 and the pinned set holds at most sixteen public keys.
+- Signatures are canonical low-S in both directions; a non-canonical signature
+  is an invalid signature.
 - Four unverifiable M3 messages terminate a pending listener attempt; other
   unauthenticated flights are dropped. A caller ends on the first matched reply
   that is not a valid proof. Matched proof failures use UNSECURE; a wrong
@@ -915,6 +930,7 @@ feature remains default-off. Before any support claim it must cover at least:
   step 3;
 - the listener's passphrase proof being deferred to the first key exchange;
 - the transcript definition and the zeroed-field rule;
+- the canonical low-S signature rule and its placement outside the provider;
 - identity binding and role separation;
 - downgrade paths through INDUCTION and through listener policy;
 - nonce and key-share freshness, signature nonce generation and key erasure;
@@ -957,7 +973,8 @@ Qualification evidence must also be reproducible and black-box, as required by
 - Tampering with every byte of M1, M2 and M3 on the wire, including Stream ID,
   filter configuration, MSS and unknown records; each must fail setup.
 - Reflection, replay of recorded handshakes, role swap, substitution of another
-  pinned peer's signature, and invalid curve points.
+  pinned peer's signature, the non-canonical encoding of a valid signature, and
+  invalid curve points.
 - Loss and retry of each message, including a lost AGREEMENT, without new
   public-key work for identical retries.
 - A recorded connection that cannot be decrypted with the passphrase and both
