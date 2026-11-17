@@ -40,18 +40,18 @@ try {
     if (@(Get-SdkUpgradePlan $Installed $Incoming '0.2.8' '0.2.8' 'bcrypt').Count -ne 1) { throw 'Repair rejected' }
     # New public documentation is valid for a fresh install and an upgrade
     # from the released SDK, whose inventory did not contain the new notes.
-    $Documentation = 'share\doc\robotweax_srt\docs\release-notes-0.3.2.md'
+    $Documentation = 'share\doc\robotweax_srt\docs\release-notes-0.3.3.md'
     $WithDocumentation = $NewHashes.Clone()
     $WithDocumentation[$Documentation] = 'a' * 64
     $WithDocumentation | ConvertTo-Json | Set-Content $Incoming
     $Fresh = Join-Path $TestRoot 'fresh'
     New-Item -ItemType Directory $Fresh | Out-Null
-    if (@(Get-SdkUpgradePlan $Fresh $Incoming '' '0.3.2' 'bcrypt').Count -ne 0) { throw 'Fresh documentation install rejected' }
-    if (@(Get-SdkUpgradePlan $Installed $Incoming '0.3.1' '0.3.2' 'bcrypt').Count -ne 1) { throw 'Documentation upgrade rejected' }
+    if (@(Get-SdkUpgradePlan $Fresh $Incoming '' '0.3.3' 'bcrypt').Count -ne 0) { throw 'Fresh documentation install rejected' }
+    if (@(Get-SdkUpgradePlan $Installed $Incoming '0.3.2' '0.3.3' 'bcrypt').Count -ne 1) { throw 'Documentation upgrade rejected' }
     $DocumentPath = Join-Path $Installed $Documentation
     New-Item -ItemType Directory (Split-Path $DocumentPath) -Force | Out-Null
     'user document' | Set-Content $DocumentPath
-    Expect-Rejection { Get-SdkUpgradePlan $Installed $Incoming '0.3.1' '0.3.2' 'bcrypt' } 'overwrite an untracked file'
+    Expect-Rejection { Get-SdkUpgradePlan $Installed $Incoming '0.3.2' '0.3.3' 'bcrypt' } 'overwrite an untracked file'
     if ((Get-Content $DocumentPath -Raw).Trim() -ne 'user document') { throw 'Collision changed user documentation' }
     Remove-Item $DocumentPath
     $NewHashes | ConvertTo-Json | Set-Content $Incoming

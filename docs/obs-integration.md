@@ -39,7 +39,7 @@ system FFmpeg that loads another SRT provider does not establish integration.
 
 ## Build and run the qualification
 
-On Ubuntu 24.04:
+On Ubuntu 26.04:
 
 ```sh
 sudo apt-get install build-essential cmake ninja-build git pkg-config \

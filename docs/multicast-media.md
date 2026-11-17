@@ -1,7 +1,8 @@
 # Live audio and video over multicast dispatch groups
 
 `robotweax_srt_multicast` forwards MPEG-TS from one Listener sender to multiple
-Caller receivers using only the public `<srt/srt.h>` API:
+Caller receivers. Its default mode uses only the public `<srt/srt.h>` API;
+the opt-in hybrid mode below also uses internal experimental APIs:
 
 ```text
 Encoder or FFmpeg --local UDP--> multicast send
@@ -38,6 +39,106 @@ cmake --build build-multicast --parallel --target robotweax_srt_multicast
 The executable is `build-multicast/examples/applications/robotweax_srt_multicast`.
 Multi-config generators add a configuration directory; build with
 `--config Release`. Commands below use POSIX shell syntax and numeric IPv4.
+
+## Hybrid multicast with automatic fallback and return
+
+The same executable accepts `--hybrid` in a **static**, explicitly opted-in
+build. Shared-library and ordinary builds retain the default multicast sample
+and reject `--hybrid` with an explanation. No public C option or wire default
+is changed. This sample hosts the internal
+[experimental hybrid control API](experimental-hybrid-control.md); use matching
+source and library versions, not installed public headers alone.
+
+```sh
+cmake -S . -B build-hybrid-media -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=OFF -DROBOTWEAX_SRT_BUILD_EXAMPLES=ON \
+  -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1=ON \
+  -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL=ON \
+  -DENABLE_AEAD_API_PREVIEW=ON
+cmake --build build-hybrid-media --parallel --target robotweax_srt_multicast
+```
+
+Provision a separate random 32-byte secret for each receiver. A receiver ID
+contains 1–64 ASCII letters, digits, dashes or underscores. The secret is
+encoded as 64 hexadecimal digits. For example, generate Alice's secret once:
+
+```sh
+export ALICE_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+export HYBRID_KEYS="alice=$ALICE_KEY"
+```
+
+Securely provision the same `HYBRID_KEYS` value on Alice's receiver. The sender
+may have up to 16 semicolon-separated entries, such as `alice=<key>;bob=<key>`;
+each receiver must have **only its own entry**. Duplicate IDs, reused secrets,
+zero keys and malformed entries are rejected. The receiver ID is bound through
+Stream ID to the authenticated exchange. Secrets are read from the named
+environment variable, never command-line arguments or diagnostic output.
+These pairwise control credentials are separate from the optional shared media
+passphrase; `--passphrase-env` and `--crypto ctr|gcm` still select media encryption.
+Without a media passphrase, the control exchange is authenticated but media is
+cleartext. Admission fails rather than silently falling back to legacy peers.
+
+Start the sender (same local UDP encoder input as the ordinary example):
+
+```sh
+build-hybrid-media/examples/applications/robotweax_srt_multicast send \
+  --hybrid --hybrid-secret-env HYBRID_KEYS --hybrid-maxbw 1000000 \
+  --endpoint 127.0.0.1:9000 --interface 127.0.0.1 \
+  --multicast 239.255.133.11:10000 --ttl 0 --min-receivers 1 \
+  --media-udp 127.0.0.1:5000 --duration 60
+```
+
+Start Alice's receiver, with its own credential environment:
+
+```sh
+build-hybrid-media/examples/applications/robotweax_srt_multicast receive \
+  --hybrid --hybrid-secret-env HYBRID_KEYS --hybrid-id alice \
+  --endpoint 127.0.0.1:9000 --interface 127.0.0.1 \
+  --media-udp 127.0.0.1:5001 --duration 60
+```
+
+Wait for `media_ready` before feeding MPEG-TS. Startup authenticates both peers
+and confirms unicast delivery before exposing the receiver. Membership joining
+and recovery are bounded. Sustained multicast reception and exact overlap
+coverage permit automatic return; a subsequent multicast stall can request
+unicast originals while multicast continues for the other receivers.
+The sender uses independent-source coordinated multicast and requires a positive
+`--hybrid-maxbw` (default 1,000,000 bytes/s). `--repeat-threshold` must remain 0.
+
+This is a **live catch-up** sample, not lossless failover. At fallback the host
+explicitly discards unread local media up to its last validated DATA position,
+including gaps in that prefix, and uses that locally applied discard as its
+merge cursor. This avoids requesting already-ACKed data that may no longer exist
+at the sender. A `hybrid_discontinuity` event reports the cumulative skipped
+sequence positions. Remaining datagrams preserve their bytes and order, but a
+player may show a gap or wait for its next video keyframe. Neither remote progress
+reports nor a peer-supplied cursor authorize the discard. Sender history,
+latency deadlines and admission budgets can still prevent a transition.
+
+`hybrid_path` reports **confirmed** `unicast`, `overlap`, and `multicast` modes.
+`hybrid_stats` reports controller operations, outcomes, budget exhaustion and
+locally observed multicast/unicast packet counts. Use these receive counters for
+hybrid membership; the older `multicast_stats` receive counters describe the
+ordinary dispatch route.
+Receiver option `--hybrid-cycles` bounds each controller to 1–8 automatic operations (default 4);
+the initial return consumes a return operation. Exhaustion stops new automatic
+requests and leaves the last committed policy in place. Credentials expire after
+the configured sample run and setup allowance. Stop/restart to provision new
+credentials or a new operation budget.
+
+The sample's detector assumes at most 50 ms one-way multicast transit, a 300 ms
+stall interval and 500 ms sustained recovery. These are explicit LAN demonstration
+settings, not network measurements or universal production defaults. Source
+activity reports are refreshed only by actual media admissions; silence does not
+manufacture production evidence. Use a continuous source when demonstrating
+fallback and return, and inspect events rather than assuming a transition occurred.
+
+With tests enabled,
+`ctest --test-dir build-hybrid-media -R hybrid_multicast_sample --output-on-failure`
+exercises two distinct pairwise receivers, a multicast-only
+outage and recovery, CTR/GCM profiles, buffered live catch-up, bad credentials and
+option rejection. The outage injector exists only in the non-installed test
+executable; the shipped sample rejects its test-only option.
 
 ## Local live demonstration
 

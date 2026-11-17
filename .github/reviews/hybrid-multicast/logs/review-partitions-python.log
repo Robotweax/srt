@@ -1,0 +1,846 @@
+.................PASS pinned-haivision-file-gcm-boundary reason=requires-tsbpd
+....................................PASS AES-GCM Broadcast baseline
+PASS AES-GCM Broadcast late join
+PASS AES-GCM Backup baseline
+{"stage": "00-window-128m", "block": "00-baseline-plain", "exit_code": 7, "measurement_contract_pass": false}
+{"stage": "00-window-128m", "block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": false}
+{"stage": "00-window-128m", "block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+.....{"stage": "00-window-128m", "block": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "00-window-128m", "block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "01-long-1g", "block": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "01-long-1g", "block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "01-long-1g", "block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "01-long-1g", "block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "02-ten-streams", "block": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "02-ten-streams", "block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "02-ten-streams", "block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"stage": "02-ten-streams", "block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+...............................................................................................................................................................................................{
+  "tests_pass": true,
+  "synthetic_only": true,
+  "cases": [
+    {
+      "mode": "success",
+      "pass": true,
+      "expected_exit_code": 0,
+      "execution": {
+        "started_ns": 1794152695024257000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp2tneyv8x/driver.py"
+        ],
+        "runner_exit_code": 0,
+        "interruption_signal": null,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 63323,
+        "restored_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": true,
+        "operator_exit_code": 0,
+        "finished_ns": 1794152696055780000
+      },
+      "case_and_peer_stopped": null
+    },
+    {
+      "mode": "runner-failure",
+      "pass": true,
+      "expected_exit_code": 7,
+      "execution": {
+        "started_ns": 1794152696112426000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpdwd8n_x5/driver.py"
+        ],
+        "runner_exit_code": 7,
+        "interruption_signal": null,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 63340,
+        "restored_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": true,
+        "operator_exit_code": 7,
+        "finished_ns": 1794152697065524000
+      },
+      "case_and_peer_stopped": null
+    },
+    {
+      "mode": "SIGINT",
+      "pass": true,
+      "expected_exit_code": 130,
+      "execution": {
+        "started_ns": 1794152697121619000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpaligeep3/driver.py"
+        ],
+        "runner_exit_code": 130,
+        "interruption_signal": 2,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 63357,
+        "restored_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": true,
+        "operator_exit_code": 130,
+        "finished_ns": 1794152701414964000
+      },
+      "case_and_peer_stopped": true
+    },
+    {
+      "mode": "SIGTERM",
+      "pass": true,
+      "expected_exit_code": 143,
+      "execution": {
+        "started_ns": 1794152701476951000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpow5q6lpz/driver.py"
+        ],
+        "runner_exit_code": 143,
+        "interruption_signal": 15,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 63386,
+        "restored_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": true,
+        "operator_exit_code": 143,
+        "finished_ns": 1794152705806687000
+      },
+      "case_and_peer_stopped": true
+    },
+    {
+      "mode": "restore-first-fails",
+      "pass": true,
+      "expected_exit_code": 7,
+      "execution": {
+        "started_ns": 1794152705868954000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpxik1_ib8/driver.py"
+        ],
+        "runner_exit_code": 7,
+        "interruption_signal": null,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 7,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 63409,
+        "restored_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": false,
+        "operator_exit_code": 7,
+        "finished_ns": 1794152706852623000
+      },
+      "case_and_peer_stopped": null
+    }
+  ]
+}
+PASS robotweax-encrypted-fec-rendezvous-cookie-role-coverage roles=initiator,responder
+................PASS robotweax-fec-rendezvous-cookie-role-coverage roles=initiator,responder
+.......................................................PASS ipv6-role-coverage roles=initiator,responder
+.......................{"index": 1, "exit_code": 1, "passed": false, "elapsed_seconds": 6.266683340072632e-05}
+...{"index": 1, "exit_code": 1, "passed": false, "elapsed_seconds": 0.0004997905343770981}
+{"index": 2, "exit_code": 0, "passed": true, "elapsed_seconds": 0.0005385000258684158}
+{"index": 3, "exit_code": 0, "passed": true, "elapsed_seconds": 0.0005097910761833191}
+...{"index": 1, "exit_code": 0, "passed": false, "error": "missing-peer-evidence", "elapsed_seconds": 2.8667040169239044e-05}
+.......................................{"mode": "isolated-before", "passed": true, "status": "completed", "phase_enabled": false, "started_unix_ns": 1794152722165521000, "timeout_seconds": 40, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_diagnostics.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/peer", "--single-case", "--scenario", "group-backup-baseline", "--output-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/out/isolated-before/peers"], "exit_code": 0, "finished_unix_ns": 1794152722166110000, "elapsed_seconds": 0.0004747500643134117}
+{"mode": "matrix-control", "passed": true, "status": "completed", "phase_enabled": false, "started_unix_ns": 1794152722166324000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/out/matrix-control/matrix"], "exit_code": 0, "completed_cases": 15, "finished_unix_ns": 1794152722175554000, "elapsed_seconds": 0.00914154201745987}
+{"mode": "isolated-after", "passed": true, "status": "completed", "phase_enabled": false, "started_unix_ns": 1794152722175801000, "timeout_seconds": 40, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_diagnostics.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/peer", "--single-case", "--scenario", "group-backup-baseline", "--output-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/out/isolated-after/peers"], "exit_code": 0, "finished_unix_ns": 1794152722176428000, "elapsed_seconds": 0.0005250414833426476}
+{"mode": "matrix-phase", "passed": true, "status": "completed", "phase_enabled": true, "started_unix_ns": 1794152722176645000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/out/matrix-phase/matrix"], "exit_code": 0, "completed_cases": 15, "finished_unix_ns": 1794152722189922000, "elapsed_seconds": 0.013183875009417534}
+{"mode": "matrix-strace", "passed": true, "status": "completed", "phase_enabled": true, "started_unix_ns": 1794152722190209000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["strace", "-f", "-ttt", "-T", "-e", "trace=process,network,futex,poll,ppoll,epoll_wait,clock_nanosleep", "-e", "raw=sendto,recvfrom,sendmsg,recvmsg,sendmmsg,recvmmsg,setsockopt,getsockopt", "-o", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/out/matrix-strace/syscalls.log", "/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpbi8z7tlw/out/matrix-strace/matrix"], "exit_code": 0, "completed_cases": 15, "finished_unix_ns": 1794152722202357000, "elapsed_seconds": 0.011957124806940556}
+.{"mode": "isolated-before", "passed": true, "status": "completed", "phase_enabled": false, "started_unix_ns": 1794152722224050000, "timeout_seconds": 40, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_diagnostics.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/peer", "--single-case", "--scenario", "group-backup-baseline", "--output-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/out/isolated-before/peers"], "exit_code": 0, "finished_unix_ns": 1794152722224727000, "elapsed_seconds": 0.0005545001477003098}
+{"mode": "matrix-control", "passed": false, "status": "completed", "phase_enabled": false, "started_unix_ns": 1794152722224914000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/out/matrix-control/matrix"], "exit_code": 1, "finished_unix_ns": 1794152722225033000, "elapsed_seconds": 4.345737397670746e-05}
+{"mode": "isolated-after", "passed": true, "status": "completed", "phase_enabled": false, "started_unix_ns": 1794152722225240000, "timeout_seconds": 40, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_diagnostics.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/peer", "--single-case", "--scenario", "group-backup-baseline", "--output-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/out/isolated-after/peers"], "exit_code": 0, "finished_unix_ns": 1794152722225972000, "elapsed_seconds": 0.0006378330290317535}
+{"mode": "matrix-phase", "passed": false, "status": "completed", "phase_enabled": true, "started_unix_ns": 1794152722226178000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp_ze516c5/out/matrix-phase/matrix"], "exit_code": 1, "finished_unix_ns": 1794152722226316000, "elapsed_seconds": 3.174971789121628e-05}
+.{"mode": "isolated-before", "passed": false, "status": "failed", "phase_enabled": false, "started_unix_ns": 1794152722228647000, "timeout_seconds": 40, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_diagnostics.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/peer", "--single-case", "--scenario", "group-backup-baseline", "--output-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/out/isolated-before/peers"], "exit_code": 0, "error": "incomplete peer evidence", "finished_unix_ns": 1794152722228788000, "elapsed_seconds": 3.137439489364624e-05}
+{"mode": "matrix-control", "passed": false, "status": "failed", "phase_enabled": false, "started_unix_ns": 1794152722228989000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/out/matrix-control/matrix"], "exit_code": 0, "completed_cases": 0, "error": "incomplete matrix evidence", "finished_unix_ns": 1794152722229107000, "elapsed_seconds": 3.245845437049866e-05}
+{"mode": "isolated-after", "passed": false, "status": "failed", "phase_enabled": false, "started_unix_ns": 1794152722229318000, "timeout_seconds": 40, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_diagnostics.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/peer", "--single-case", "--scenario", "group-backup-baseline", "--output-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/out/isolated-after/peers"], "exit_code": 0, "error": "incomplete peer evidence", "finished_unix_ns": 1794152722229437000, "elapsed_seconds": 2.4541281163692474e-05}
+{"mode": "matrix-phase", "passed": false, "status": "failed", "phase_enabled": true, "started_unix_ns": 1794152722229637000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp1a_ye2br/out/matrix-phase/matrix"], "exit_code": 0, "completed_cases": 0, "error": "incomplete matrix evidence", "finished_unix_ns": 1794152722229772000, "elapsed_seconds": 3.1542032957077026e-05}
+...{"mode": "matrix-control", "passed": true, "status": "completed", "phase_enabled": false, "started_unix_ns": 1794152722232979000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/out/matrix-control/matrix"], "exit_code": 0, "completed_cases": 15, "finished_unix_ns": 1794152722242236000, "elapsed_seconds": 0.009140167385339737}
+{"mode": "matrix-strace", "passed": false, "status": "completed", "phase_enabled": true, "started_unix_ns": 1794152722242495000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["strace", "-f", "-ttt", "-T", "-e", "trace=process,network,futex,poll,ppoll,epoll_wait,clock_nanosleep", "-e", "raw=sendto,recvfrom,sendmsg,recvmsg,sendmmsg,recvmmsg,setsockopt,getsockopt", "-o", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/out/matrix-strace/syscalls.log", "/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/out/matrix-strace/matrix"], "exit_code": 1, "finished_unix_ns": 1794152722242627000, "elapsed_seconds": 4.091765731573105e-05}
+{"mode": "matrix-strace-stack", "passed": true, "status": "completed", "phase_enabled": true, "started_unix_ns": 1794152722242846000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["strace", "-k", "--stack-trace-frame-limit=24", "-f", "-ttt", "-T", "-e", "trace=process,network,futex,poll,ppoll,epoll_wait,clock_nanosleep", "-e", "raw=sendto,recvfrom,sendmsg,recvmsg,sendmmsg,recvmmsg,setsockopt,getsockopt", "-o", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/out/matrix-strace-stack/syscalls.log", "/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpq3s33y7w/out/matrix-strace-stack/matrix"], "exit_code": 0, "stack_frame_lines": 1, "stack_coverage": "frames-present", "completed_cases": 15, "finished_unix_ns": 1794152722254487000, "elapsed_seconds": 0.011560166254639626}
+{"mode": "matrix-control", "passed": true, "status": "completed", "phase_enabled": false, "started_unix_ns": 1794152722267517000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/out/matrix-control/matrix"], "exit_code": 0, "completed_cases": 15, "finished_unix_ns": 1794152722277172000, "elapsed_seconds": 0.009498834609985352}
+{"mode": "matrix-strace", "passed": false, "status": "completed", "phase_enabled": true, "started_unix_ns": 1794152722277433000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["strace", "-f", "-ttt", "-T", "-e", "trace=process,network,futex,poll,ppoll,epoll_wait,clock_nanosleep", "-e", "raw=sendto,recvfrom,sendmsg,recvmsg,sendmmsg,recvmmsg,setsockopt,getsockopt", "-o", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/out/matrix-strace/syscalls.log", "/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/out/matrix-strace/matrix"], "exit_code": 1, "finished_unix_ns": 1794152722277566000, "elapsed_seconds": 4.7791749238967896e-05}
+{"mode": "matrix-strace-stack", "passed": false, "status": "failed", "phase_enabled": true, "started_unix_ns": 1794152722277778000, "timeout_seconds": 120, "load_average": [3.7626953125, 3.9169921875, 3.96826171875], "command": ["strace", "-k", "--stack-trace-frame-limit=24", "-f", "-ttt", "-T", "-e", "trace=process,network,futex,poll,ppoll,epoll_wait,clock_nanosleep", "-e", "raw=sendto,recvfrom,sendmsg,recvmsg,sendmmsg,recvmmsg,setsockopt,getsockopt", "-o", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/out/matrix-strace-stack/syscalls.log", "/opt/homebrew/opt/python@3.14/bin/python3.14", "<source>/interop/run_group_interop.py", "--robotweax-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/peer", "--reference-peer", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/peer", "--baseline-only", "--expected-reference-version", "1.5.7", "--evidence-directory", "/private/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp6j81fgu4/out/matrix-strace-stack/matrix"], "exit_code": 0, "stack_frame_lines": 0, "stack_coverage": "missing", "error": "missing strace stack frames", "finished_unix_ns": 1794152722285990000, "elapsed_seconds": 0.008130207657814026}
+..............................................................................................RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+..RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+........RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+...RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+.RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+.RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+.RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+.............Running: ctest --test-dir build -C Debug --parallel 1 --no-tests=error --output-on-failure -E ^(robotweax_srt_crypto_setup_0_0_3)$
+Running: ctest --test-dir build -C Debug --parallel 2 --no-tests=error --output-on-failure -R ^(robotweax_srt_crypto_setup_0_0_3)$
+Running: ctest --test-dir build -C Debug --parallel 1 --no-tests=error --output-on-failure -E ^(robotweax_srt_crypto_setup_0_0_3)$
+Running: ctest --test-dir build -C Debug --parallel 2 --no-tests=error --output-on-failure -R ^(robotweax_srt_crypto_setup_0_0_3)$
+Running: ctest --test-dir build -C Debug --parallel 1 --no-tests=error --output-on-failure -E ^(robotweax_srt_crypto_setup_0_0_3)$
+Running: ctest --test-dir build -C Debug --parallel 2 --no-tests=error --output-on-failure -R ^(robotweax_srt_crypto_setup_0_0_3)$
+Running: ctest --test-dir build -C Debug --parallel 1 --no-tests=error --output-on-failure -E ^(robotweax_srt_crypto_setup_0_0_3)$
+Running: ctest --test-dir build -C Debug --parallel 2 --no-tests=error --output-on-failure -R ^(robotweax_srt_crypto_setup_0_0_3)$
+...................................................................................FRAME_HASHES decoded=20 unique=6
+FRAME_HASHES decoded=20 unique=11
+{"block": "00-baseline-plain", "exit_code": 7, "measurement_contract_pass": false}
+{"block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": false}
+{"block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": false}
+{"block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+..{"block": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+....{"block": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"block": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+.................................................................................................RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+.........RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+...........RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+RELAY_SOCKET_BUFFERS {"receive": {"kernel_bytes": 8388608, "request_status": "accepted"}, "requested_bytes": 8388608, "send": {"kernel_bytes": 8388608, "request_status": "accepted"}}
+..............................usage: python3.14 -m unittest [-h] [--topology {process-isolated,many-socket}]
+                              --robotweax-peer ROBOTWEAX_PEER
+                              [--reference-peer REFERENCE_PEER]
+                              --output OUTPUT
+                              [--profile {haivision-self,haivision-to-robotweax,robotweax-self,robotweax-to-haivision}]
+                              [--scheduler-shards {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64}]
+                              [--connections CONNECTIONS]
+                              [--message-sizes MESSAGE_SIZES]
+                              [--bytes-per-connection BYTES_PER_CONNECTION]
+                              [--iterations ITERATIONS] [--warmup WARMUP]
+                              [--timeout-seconds TIMEOUT_SECONDS]
+                              [--latency-ms LATENCY_MS]
+                              [--shutdown-grace-ms SHUTDOWN_GRACE_MS]
+                              [--sampling-interval-ms SAMPLING_INTERVAL_MS]
+                              [--robotweax-revision ROBOTWEAX_REVISION]
+                              [--reference-revision REFERENCE_REVISION]
+python3.14 -m unittest: error: argument --scheduler-shards: invalid choice: '0' (choose from '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64')
+usage: python3.14 -m unittest [-h] [--topology {process-isolated,many-socket}]
+                              --robotweax-peer ROBOTWEAX_PEER
+                              [--reference-peer REFERENCE_PEER]
+                              --output OUTPUT
+                              [--profile {haivision-self,haivision-to-robotweax,robotweax-self,robotweax-to-haivision}]
+                              [--scheduler-shards {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64}]
+                              [--connections CONNECTIONS]
+                              [--message-sizes MESSAGE_SIZES]
+                              [--bytes-per-connection BYTES_PER_CONNECTION]
+                              [--iterations ITERATIONS] [--warmup WARMUP]
+                              [--timeout-seconds TIMEOUT_SECONDS]
+                              [--latency-ms LATENCY_MS]
+                              [--shutdown-grace-ms SHUTDOWN_GRACE_MS]
+                              [--sampling-interval-ms SAMPLING_INTERVAL_MS]
+                              [--robotweax-revision ROBOTWEAX_REVISION]
+                              [--reference-revision REFERENCE_REVISION]
+python3.14 -m unittest: error: argument --scheduler-shards: invalid choice: '65' (choose from '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64')
+usage: python3.14 -m unittest [-h] [--topology {process-isolated,many-socket}]
+                              --robotweax-peer ROBOTWEAX_PEER
+                              [--reference-peer REFERENCE_PEER]
+                              --output OUTPUT
+                              [--profile {haivision-self,haivision-to-robotweax,robotweax-self,robotweax-to-haivision}]
+                              [--scheduler-shards {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64}]
+                              [--connections CONNECTIONS]
+                              [--message-sizes MESSAGE_SIZES]
+                              [--bytes-per-connection BYTES_PER_CONNECTION]
+                              [--iterations ITERATIONS] [--warmup WARMUP]
+                              [--timeout-seconds TIMEOUT_SECONDS]
+                              [--latency-ms LATENCY_MS]
+                              [--shutdown-grace-ms SHUTDOWN_GRACE_MS]
+                              [--sampling-interval-ms SAMPLING_INTERVAL_MS]
+                              [--robotweax-revision ROBOTWEAX_REVISION]
+                              [--reference-revision REFERENCE_REVISION]
+python3.14 -m unittest: error: argument --scheduler-shards: invalid int value: 'invalid'
+..........................usage: python3.14 -m unittest [-h] --build-manifest BUILD_MANIFEST
+                              --output-directory OUTPUT_DIRECTORY
+                              [--profile {robotweax-self,haivision-self,robotweax-to-haivision,haivision-to-robotweax}]
+                              [--capture {none,cpu,scheduler,transport}]
+                              [--repetitions REPETITIONS] [--warmups WARMUPS]
+                              [--bytes-per-connection BYTES_PER_CONNECTION]
+                              [--connections CONNECTIONS]
+                              [--target-bps TARGET_BPS]
+                              [--pacing-burst-packets PACING_BURST_PACKETS]
+                              [--pending-packets PENDING_PACKETS]
+                              [--udp-buffer UDP_BUFFER]
+                              [--timeout-seconds TIMEOUT_SECONDS]
+                              [--cooldown-seconds COOLDOWN_SECONDS]
+                              [--allow-small-udp-buffers]
+                              [--allow-system-wide]
+python3.14 -m unittest: error: a peer or library changed since the recorded build
+.....usage: python3.14 -m unittest [-h] --build-manifest BUILD_MANIFEST
+                              --output-directory OUTPUT_DIRECTORY
+                              [--profile {robotweax-self,haivision-self,robotweax-to-haivision,haivision-to-robotweax}]
+                              [--capture {none,cpu,scheduler,transport}]
+                              [--repetitions REPETITIONS] [--warmups WARMUPS]
+                              [--bytes-per-connection BYTES_PER_CONNECTION]
+                              [--connections CONNECTIONS]
+                              [--target-bps TARGET_BPS]
+                              [--pacing-burst-packets PACING_BURST_PACKETS]
+                              [--pending-packets PENDING_PACKETS]
+                              [--udp-buffer UDP_BUFFER]
+                              [--timeout-seconds TIMEOUT_SECONDS]
+                              [--cooldown-seconds COOLDOWN_SECONDS]
+                              [--allow-small-udp-buffers]
+                              [--allow-system-wide]
+python3.14 -m unittest: error: perf is not installed; no fallback to an unprofiled success
+.......usage: python3.14 -m unittest [-h] --build-manifest BUILD_MANIFEST
+                              --output-directory OUTPUT_DIRECTORY
+                              [--profile {robotweax-self,haivision-self,robotweax-to-haivision,haivision-to-robotweax}]
+                              [--capture {none,cpu,scheduler,transport}]
+                              [--repetitions REPETITIONS] [--warmups WARMUPS]
+                              [--bytes-per-connection BYTES_PER_CONNECTION]
+                              [--connections CONNECTIONS]
+                              [--target-bps TARGET_BPS]
+                              [--pacing-burst-packets PACING_BURST_PACKETS]
+                              [--pending-packets PENDING_PACKETS]
+                              [--udp-buffer UDP_BUFFER]
+                              [--timeout-seconds TIMEOUT_SECONDS]
+                              [--cooldown-seconds COOLDOWN_SECONDS]
+                              [--allow-small-udp-buffers]
+                              [--allow-system-wide]
+python3.14 -m unittest: error: scheduler capture requires --allow-system-wide on a dedicated test VM
+....................usage: python3.14 -m unittest [-h] --baseline-plain BASELINE_PLAIN
+                              --candidate-plain CANDIDATE_PLAIN
+                              --output-directory OUTPUT_DIRECTORY
+python3.14 -m unittest: error: use the original dedicated Linux ARM64 VM; local smoke is not this qualification
+usage: python3.14 -m unittest [-h] --baseline-plain BASELINE_PLAIN
+                              --candidate-plain CANDIDATE_PLAIN
+                              --output-directory OUTPUT_DIRECTORY
+python3.14 -m unittest: error: use the original dedicated Linux ARM64 VM; local smoke is not this qualification
+....{
+  "tests_pass": true,
+  "synthetic_only": true,
+  "cases": [
+    {
+      "mode": "success",
+      "pass": true,
+      "expected_exit_code": 0,
+      "execution": {
+        "started_ns": 1794152725981285000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpkt8argg7/driver.py"
+        ],
+        "runner_exit_code": 0,
+        "interruption_signal": null,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 64531,
+        "restored_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": true,
+        "operator_exit_code": 0,
+        "finished_ns": 1794152726942949000
+      },
+      "case_and_peer_stopped": null
+    },
+    {
+      "mode": "runner-failure",
+      "pass": true,
+      "expected_exit_code": 7,
+      "execution": {
+        "started_ns": 1794152726998096000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp9i8yvttn/driver.py"
+        ],
+        "runner_exit_code": 7,
+        "interruption_signal": null,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 64549,
+        "restored_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": true,
+        "operator_exit_code": 7,
+        "finished_ns": 1794152727931715000
+      },
+      "case_and_peer_stopped": null
+    },
+    {
+      "mode": "SIGINT",
+      "pass": true,
+      "expected_exit_code": 130,
+      "execution": {
+        "started_ns": 1794152727985836000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp2g162427/driver.py"
+        ],
+        "runner_exit_code": 130,
+        "interruption_signal": 2,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 64569,
+        "restored_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": true,
+        "operator_exit_code": 130,
+        "finished_ns": 1794152732317988000
+      },
+      "case_and_peer_stopped": true
+    },
+    {
+      "mode": "SIGTERM",
+      "pass": true,
+      "expected_exit_code": 143,
+      "execution": {
+        "started_ns": 1794152732383374000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmpesrzv2rr/driver.py"
+        ],
+        "runner_exit_code": 143,
+        "interruption_signal": 15,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 64647,
+        "restored_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": true,
+        "operator_exit_code": 143,
+        "finished_ns": 1794152736716422000
+      },
+      "case_and_peer_stopped": true
+    },
+    {
+      "mode": "SIGHUP",
+      "pass": true,
+      "expected_exit_code": 129,
+      "execution": {
+        "started_ns": 1794152736783533000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmppmspir5_/driver.py"
+        ],
+        "runner_exit_code": 129,
+        "interruption_signal": 1,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 64732,
+        "restored_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": true,
+        "operator_exit_code": 129,
+        "finished_ns": 1794152741061632000
+      },
+      "case_and_peer_stopped": true
+    },
+    {
+      "mode": "restore-first-fails",
+      "pass": true,
+      "expected_exit_code": 7,
+      "execution": {
+        "started_ns": 1794152741121679000,
+        "command": [
+          "/opt/homebrew/opt/python@3.14/bin/python3.14",
+          "/var/folders/2d/n26zdh7d4js6rgw5ncwy94x40000gn/T/tmp0nmie8hy/driver.py"
+        ],
+        "runner_exit_code": 7,
+        "interruption_signal": null,
+        "restoration": [
+          {
+            "key": "net.core.rmem_max",
+            "exit_code": 7,
+            "stdout": "",
+            "stderr": ""
+          },
+          {
+            "key": "net.core.wmem_max",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "uid": 501,
+        "original_sysctls": {
+          "net.core.rmem_max": "212992",
+          "net.core.wmem_max": "212992"
+        },
+        "security_before": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "measurement_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "33554432"
+        },
+        "processes_before": "",
+        "runner_pid": 64754,
+        "restored_sysctls": {
+          "net.core.rmem_max": "33554432",
+          "net.core.wmem_max": "212992"
+        },
+        "security_after": {
+          "kernel.perf_event_paranoid": "4",
+          "kernel.kptr_restrict": "1"
+        },
+        "cleanup_pass": false,
+        "operator_exit_code": 7,
+        "finished_ns": 1794152741996710000
+      },
+      "case_and_peer_stopped": null
+    }
+  ]
+}
+{"name": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"name": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"name": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"name": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+.{"name": "00-baseline-plain", "exit_code": 0, "measurement_contract_pass": false}
+{"name": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"name": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"name": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"name": "00-baseline-plain", "exit_code": 1, "measurement_contract_pass": false}
+{"name": "01-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"name": "02-candidate-plain", "exit_code": 0, "measurement_contract_pass": true}
+{"name": "03-baseline-plain", "exit_code": 0, "measurement_contract_pass": true}
+....{"egress_p99_9_us": 25000, "error": "AEAD timing ipv4-backup-group-path-outage-binary-1200: profile evidence or quality gate failed\negress_deadline_error_microseconds.p99_9: actual=25000; expected <= 20000", "exit_code": 1, "index": 0, "mode": "control", "passed": false, "phase_timing_enabled": false, "release_p99_9_us": 2000}
+{"egress_p99_9_us": 2500.0, "exit_code": 0, "index": 0, "mode": "phase", "passed": true, "phase_timing_enabled": true, "release_p99_9_us": 2000}
+{"egress_p99_9_us": 2500.0, "exit_code": 0, "index": 1, "mode": "control", "passed": true, "phase_timing_enabled": false, "release_p99_9_us": 2000}
+{"egress_p99_9_us": 2500.0, "exit_code": 0, "index": 1, "mode": "phase", "passed": true, "phase_timing_enabled": true, "release_p99_9_us": 2000}
+...................................
+----------------------------------------------------------------------
+Ran 854 tests in 54.199s
+
+OK

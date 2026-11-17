@@ -12,6 +12,29 @@
 
 using namespace robotweax::srt;
 
+namespace {
+// A wire ACK that runs ahead of the group's submission report is not an
+// error, and it retires nothing: an unsubmitted original is never authorized.
+void require_ack_retires_nothing(SendBuffer& history, SequenceNumber next)
+{
+    const auto first = history.first_sequence();
+    const auto size = history.size();
+    REQUIRE_EQ(history.acknowledge_submitted_before(next), Error::none);
+    REQUIRE_EQ(history.first_sequence(), first);
+    REQUIRE_EQ(history.size(), size);
+}
+// The counterpart: once the submission is reported, the same ACK retires the
+// history up to it. Success alone does not show that, an early ACK succeeds
+// too.
+void require_ack_retires_through(SendBuffer& history, SequenceNumber next)
+{
+    const auto size = history.size();
+    REQUIRE_EQ(history.acknowledge_submitted_before(next), Error::none);
+    REQUIRE_EQ(history.first_sequence(), next);
+    REQUIRE(history.size() < size);
+}
+} // namespace
+
 TEST(send_buffer_metadata_copy_preserves_live_clocks_and_partial_tombstones)
 {
     const SequenceNumber initial {SequenceNumber::mask};
@@ -1390,4 +1413,196 @@ TEST(send_buffer_tail_probe_keeps_original_timestamp_and_marks_retransmission)
     REQUIRE_EQ(std::to_integer<int>(probe->payload[3]), 2);
     REQUIRE(!buffer.next_packet(false, true, 48'000).has_value());
     REQUIRE_EQ(buffer.packets_in_flight(), 3U);
+}
+
+TEST(send_buffer_canonical_unicast_requires_its_own_complete_submission)
+{
+    const SequenceNumber first {900};
+    const std::array<std::byte, 3> body {
+        std::byte {1}, std::byte {2}, std::byte {3}};
+    SendBuffer history(first, 4, 32);
+    DataHeader header {.sequence = first,
+        .message_number = 1,
+        .boundary = MessageBoundary::solo,
+        .destination_socket_id = 0x40000058U};
+    REQUIRE_EQ(history.import_group_original(header, body, body.size(),
+                   CryptoMode::automatic, 0, 0, GroupOriginalDelivery::unicast),
+        Error::none);
+    const auto token = history.group_original_submission(first);
+    REQUIRE(token);
+    REQUIRE_EQ(history.pending_group_unicast(), 1U);
+    REQUIRE_EQ(history.packets_in_flight(), 0U);
+    REQUIRE(!history.note_group_original_submitted(*token, 10));
+    require_ack_retires_nothing(history, first.next());
+    auto selected = history.next_packet(true, false, 20);
+    REQUIRE(selected);
+    REQUIRE(selected->canonical_group);
+    REQUIRE_EQ(selected->plaintext_size, body.size());
+    REQUIRE_EQ(history.packets_in_flight(), 1U);
+    history.note_packet_submitted(first);
+    require_ack_retires_nothing(history, first.next());
+    auto stale = *token;
+    ++stale.sequence_position;
+    REQUIRE(!history.note_group_unicast_submitted(stale, 25));
+    REQUIRE_EQ(history.pending_group_unicast(), 1U);
+    REQUIRE(history.note_group_unicast_submitted(*token, 30));
+    REQUIRE(!history.note_group_unicast_submitted(*token, 40));
+    REQUIRE_EQ(history.pending_group_unicast(), 0U);
+    REQUIRE_EQ(history.recover_group_prefix(first.next()).repairs, 1U);
+    auto repair = history.next_packet(true, true, 50);
+    REQUIRE(repair);
+    REQUIRE(repair->canonical_group);
+    REQUIRE(repair->header.retransmitted);
+    REQUIRE(std::equal(body.begin(), body.end(), repair->payload.begin(),
+        repair->payload.end()));
+    require_ack_retires_through(history, first.next());
+}
+
+TEST(
+    send_buffer_overlap_counts_flight_once_and_preserves_pending_copy_through_multicast)
+{
+    const SequenceNumber first {SequenceNumber::mask};
+    const std::array<std::byte, 1> body {std::byte {7}};
+    SendBuffer history(first, 4, 32);
+    DataHeader header {.sequence = first,
+        .message_number = 1,
+        .boundary = MessageBoundary::solo,
+        .destination_socket_id = 0x40000058U};
+    REQUIRE_EQ(history.import_group_original(header, body, body.size(),
+                   CryptoMode::automatic, 0, 0, GroupOriginalDelivery::overlap),
+        Error::none);
+    auto token = history.group_original_submission(first);
+    REQUIRE(token);
+    REQUIRE(history.note_group_original_submitted(*token, 10));
+    REQUIRE_EQ(history.packets_in_flight(), 1U);
+    REQUIRE_EQ(history.new_packet_flow_count(), 0U);
+    auto selected = history.next_packet(true, false, 20);
+    REQUIRE(selected);
+    REQUIRE_EQ(history.packets_in_flight(), 1U);
+    REQUIRE_EQ(history.pending_group_unicast(), 1U);
+    const auto replay = history.recover_group_prefix(first.next());
+    REQUIRE_EQ(replay.error, Error::none);
+    REQUIRE_EQ(replay.originals + replay.repairs, 0U);
+    SendBuffer copy = history;
+    REQUIRE(history.note_group_unicast_submitted(*token, 30));
+    REQUIRE_EQ(history.pending_group_unicast(), 0U);
+    REQUIRE_EQ(copy.pending_group_unicast(), 1U);
+    REQUIRE(copy.note_group_unicast_submitted(*token, 40));
+    require_ack_retires_through(copy, first.next());
+    REQUIRE_EQ(copy.pending_group_unicast(), 0U);
+}
+
+// An overlap original reaches the member twice, once over the group's
+// multicast path and once as this member's unicast copy. Each wire submission
+// is reported once, whichever lands first; the repeat of either report is
+// refused, and the original is authorized and in flight exactly once.
+TEST(send_buffer_overlap_reports_each_wire_submission_once_in_either_order)
+{
+    const SequenceNumber first {700};
+    const std::array<std::byte, 1> body {std::byte {9}};
+    const DataHeader header {.sequence = first,
+        .message_number = 1,
+        .boundary = MessageBoundary::solo,
+        .destination_socket_id = 0x40000058U};
+    for (const bool multicast_first : {true, false}) {
+        SendBuffer history(first, 4, 32);
+        REQUIRE_EQ(
+            history.import_group_original(header, body, body.size(),
+                CryptoMode::automatic, 0, 0, GroupOriginalDelivery::overlap),
+            Error::none);
+        const auto token = history.group_original_submission(first);
+        REQUIRE(token);
+        if (multicast_first)
+            REQUIRE(history.note_group_original_submitted(*token, 10));
+        const auto selected = history.next_packet(true, false, 20);
+        REQUIRE(selected);
+        REQUIRE(selected->canonical_group);
+        REQUIRE_EQ(history.pending_group_unicast(), 1U);
+        REQUIRE(history.note_group_unicast_submitted(*token, 30));
+        REQUIRE_EQ(history.pending_group_unicast(), 0U);
+        if (!multicast_first)
+            REQUIRE(history.note_group_original_submitted(*token, 40));
+        REQUIRE(!history.note_group_original_submitted(*token, 50));
+        REQUIRE(!history.note_group_unicast_submitted(*token, 60));
+        REQUIRE_EQ(history.packets_in_flight(), 1U);
+        REQUIRE_EQ(history.pending_group_unicast(), 0U);
+        REQUIRE_EQ(
+            history.acknowledge_submitted_before(first.next()), Error::none);
+        REQUIRE_EQ(history.packets_in_flight(), 0U);
+    }
+}
+
+TEST(send_buffer_canonical_queue_counters_survive_copy_ttl_and_mixed_preflight)
+{
+    const SequenceNumber first {100};
+    const std::array<std::byte, 1> body {std::byte {7}};
+    SendBuffer history(first, 4, 32);
+    REQUIRE_EQ(
+        history.enqueue_message(body, 1, PacketTimestamp {}, 7), Error::none);
+    REQUIRE_EQ(history.preflight_group_original(
+                   first.next(), body.size(), CryptoMode::automatic),
+        Error::invalid_state);
+    REQUIRE(history.next_packet(true, false, 1));
+    DataHeader header {.sequence = first.next(),
+        .message_number = 2,
+        .boundary = MessageBoundary::solo,
+        .destination_socket_id = 0x40000058U};
+    REQUIRE_EQ(
+        history.import_group_original(header, body, body.size(),
+            CryptoMode::automatic, 0, 10, GroupOriginalDelivery::unicast),
+        Error::none);
+    auto copy = history;
+    auto moved = std::move(copy);
+    REQUIRE_EQ(moved.pending_group_unicast(), 1U);
+    REQUIRE_EQ(
+        moved.first_pending_group_unicast()->header.sequence, first.next());
+    REQUIRE_EQ(history.drop_expired_message(10).packets, 0U);
+    REQUIRE_EQ(history.drop_expired_message(11).packets, 1U);
+    REQUIRE_EQ(history.pending_group_unicast(), 0U);
+    REQUIRE(!history.peek_new_packet());
+    REQUIRE_EQ(
+        history.group_recovery(first.advanced(2)).error, Error::invalid_state);
+    REQUIRE_EQ(moved.pending_group_unicast(), 1U);
+    history.note_packet_submitted(first);
+    require_ack_retires_through(history, first.advanced(2));
+    REQUIRE_EQ(history.preflight_group_original(
+                   first.advanced(2), body.size(), CryptoMode::automatic),
+        Error::none);
+}
+
+TEST(send_buffer_group_recovery_reports_exact_remaining_prefix_expiration)
+{
+    const SequenceNumber first {100};
+    SendBuffer history(first, 4, 32);
+    const std::array<std::byte, 1> body {std::byte {7}};
+    for (unsigned i = 0; i < 3; ++i) {
+        const DataHeader header {.sequence = first.advanced(i),
+            .message_number = i + 1,
+            .boundary = MessageBoundary::solo,
+            .destination_socket_id = 0x40000058U};
+        REQUIRE_EQ(history.import_group_original(header, body, body.size(),
+                       CryptoMode::automatic, 0,
+                       i == 0       ? 10
+                           : i == 1 ? 30
+                                    : 20),
+            Error::none);
+        const auto token = history.group_original_submission(header.sequence);
+        REQUIRE(token);
+        REQUIRE(history.note_group_original_submitted(*token, 1));
+    }
+    REQUIRE_EQ(history.group_recovery(first.advanced(3))
+                   .earliest_expiration_microseconds,
+        10U);
+    REQUIRE_EQ(history.acknowledge_submitted_before(first.next()), Error::none);
+    const auto remaining = history.group_recovery(first.advanced(3));
+    REQUIRE_EQ(remaining.error, Error::none);
+    REQUIRE_EQ(remaining.earliest_expiration_microseconds, 20U);
+    REQUIRE_EQ(history.recover_group_prefix(first.advanced(3))
+                   .earliest_expiration_microseconds,
+        20U);
+    REQUIRE_EQ(history.drop_expired_message(21).packets, 1U);
+    const auto unavailable = history.group_recovery(first.advanced(3));
+    REQUIRE_EQ(unavailable.error, Error::invalid_state);
+    REQUIRE_EQ(unavailable.earliest_expiration_microseconds, 0U);
+    REQUIRE_EQ(unavailable.originals + unavailable.repairs, 0U);
 }

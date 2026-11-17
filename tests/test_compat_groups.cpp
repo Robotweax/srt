@@ -711,6 +711,70 @@ TEST(compat_group_registry_supports_size_queries_and_generation_checked_membersh
     REQUIRE_EQ(srt_close(socket), 0);
 }
 
+TEST(compat_group_membership_cap_counts_pending_and_connected_atomically)
+{
+    for (const auto type : {SRT_GTYPE_BROADCAST, SRT_GTYPE_BACKUP,
+             ROBOTWEAX_SRT_GTYPE_MULTICAST}) {
+        for (const bool coordinated : {false, true}) {
+            if (coordinated && type != ROBOTWEAX_SRT_GTYPE_MULTICAST)
+                continue;
+            const auto group = srt_create_group(type);
+            REQUIRE(group != SRT_INVALID_SOCK);
+            auto& registry = GroupRegistry::instance();
+            const auto record = registry.find(group);
+            REQUIRE(record != nullptr);
+            record->member_public_options.multicast_coordinated = coordinated;
+            const std::size_t limit = coordinated
+                ? std::min<std::size_t>(ROBOTWEAX_SRT_MAX_GROUP_MEMBERS, 64U)
+                : ROBOTWEAX_SRT_MAX_GROUP_MEMBERS;
+            // Synthetic registry rows exercise accounting without allocating
+            // transport buffers or opening network connections.
+            sockaddr_storage peer {};
+            std::uint64_t generation = 0;
+            std::uint64_t first_generation = 0;
+            for (std::size_t index = 0; index + 1 < limit; ++index) {
+                std::uint64_t member = 0;
+                REQUIRE(registry.add_member(group,
+                    static_cast<SRTSOCKET>(100'000 + index), peer, 1, 0,
+                    generation, member));
+                if (index == 0)
+                    first_generation = member;
+            }
+            if (limit > 1)
+                registry.update_member(group, generation, 100'000,
+                    first_generation, SRTS_CONNECTED, 0);
+            std::atomic<unsigned> accepted {0};
+            std::array<std::future<void>, 8> attempts;
+            for (std::size_t index = 0; index < attempts.size(); ++index) {
+                attempts[index] = std::async(std::launch::async, [&, index] {
+                    std::uint64_t group_generation = 0, member_generation = 0;
+                    if (registry.add_member(group,
+                            static_cast<SRTSOCKET>(200'000 + index), peer, 1, 0,
+                            group_generation, member_generation))
+                        ++accepted;
+                });
+            }
+            for (auto& attempt : attempts)
+                attempt.get();
+            REQUIRE_EQ(accepted.load(), 1U);
+            REQUIRE_EQ(record->members.size(), limit);
+            const auto removed = record->members.back();
+            registry.remove_member(group, record->generation,
+                removed.public_data.id, removed.generation);
+            // A repeated rollback must not release another member's slot.
+            registry.remove_member(group, record->generation,
+                removed.public_data.id, removed.generation);
+            std::uint64_t member = 0;
+            REQUIRE(registry.add_member(
+                group, 300'000, peer, 1, 0, generation, member));
+            REQUIRE(!registry.add_member(
+                group, 300'001, peer, 1, 0, generation, member));
+            REQUIRE_EQ(record->members.size(), limit);
+            REQUIRE_EQ(srt_close(group), 0);
+        }
+    }
+}
+
 TEST(compat_group_registry_coordinates_member_lifecycle_without_owning_cycles)
 {
     const SRTSOCKET group = srt_create_group(SRT_GTYPE_BACKUP);
@@ -8955,4 +9019,53 @@ TEST(compat_backup_probe_rotation_keeps_healthy_authority_and_priority)
     f.send();
     f.expect(better, SRT_INVALID_SOCK);
     REQUIRE_EQ(lower_runtime->sender_buffer_status().packets, 0U);
+}
+
+TEST(investigation_hybrid_source_port_and_original_data_merge)
+{
+    using namespace robotweax::srt;
+    TestClock clock;
+    clock.channel = std::make_shared<compat::DatagramChannel>();
+    clock.channel->set_send_hook_for_testing(accept_test_datagram, nullptr);
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+    ConnectionRuntime receiver {ConnectionRuntime::Configuration {
+        .channel = clock.channel,
+        .peer = IpEndpoint::loopback(9000),
+        .peer_socket_id = 77,
+        .initial_sequence = SequenceNumber {42},
+        .peer_initial_sequence = SequenceNumber {42},
+        .has_distinct_peer_initial_sequence = true,
+        .options = options,
+        .now_function = read_test_clock,
+        .now_context = &clock,
+    }};
+    const std::array payload {std::byte {'x'}};
+    PacketView data;
+    data.kind = PacketKind::data;
+    data.data.sequence = SequenceNumber {42};
+    data.data.message_number = 1;
+    data.data.boundary = MessageBoundary::solo;
+    data.data.in_order = true;
+    data.data.destination_socket_id = 0x40000001U;
+    data.payload = payload;
+    receiver.process_packet(data, IpEndpoint::loopback(9001));
+    REQUIRE_EQ(receiver.foreign_peer_packets(), 1U);
+    std::array<std::byte, 8> output {};
+    REQUIRE_EQ(receiver.receive_message(output, false, 0).status,
+        compat::MessageIoStatus::would_block);
+    // Simulate original DATA arriving through the existing unicast route.
+    // No retransmission flag, new handshake or sequence reset is necessary.
+    for (unsigned i = 0; i < 16; ++i) {
+        data.data.sequence = SequenceNumber {42 + i};
+        data.data.message_number = 1 + i;
+        receiver.process_packet(data, IpEndpoint::loopback(9000));
+        receiver.process_packet(data, IpEndpoint::loopback(9000));
+        const auto got = receiver.receive_message(output, false, 0);
+        REQUIRE_EQ(got.status, compat::MessageIoStatus::success);
+        REQUIRE_EQ(got.bytes, 1U);
+        REQUIRE_EQ(output[0], std::byte {'x'});
+        REQUIRE_EQ(receiver.receive_message(output, false, 0).status,
+            compat::MessageIoStatus::would_block);
+    }
 }

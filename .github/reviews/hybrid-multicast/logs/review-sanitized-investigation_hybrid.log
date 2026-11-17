@@ -1,0 +1,17 @@
+[RUN] investigation_hybrid_blackout_needs_a_new_data_horizon
+[PASS] investigation_hybrid_blackout_needs_a_new_data_horizon
+[RUN] investigation_hybrid_source_port_and_original_data_merge
+[PASS] investigation_hybrid_source_port_and_original_data_merge
+[RUN] investigation_hybrid_wire_plain
+1794147982717195/0x1fbd5e180W:socket: UDP receive buffer: requested=12288000 effective=8388608 kernel=8388608 bytes; attempts=1 fallback=no
+[PASS] investigation_hybrid_wire_plain
+[RUN] investigation_hybrid_wire_ctr
+1794147985419304/0x1fbd5e180W:socket: UDP receive buffer: requested=12288000 effective=8388608 kernel=8388608 bytes; attempts=1 fallback=no
+[PASS] investigation_hybrid_wire_ctr
+[RUN] investigation_hybrid_wire_gcm
+1794147988108713/0x1fbd5e180W:socket: UDP receive buffer: requested=12288000 effective=8388608 kernel=8388608 bytes; attempts=1 fallback=no
+[PASS] investigation_hybrid_wire_gcm
+[RUN] investigation_hybrid_one_receiver_falls_back_while_other_keeps_multicast
+1794147990790653/0x1fbd5e180W:socket: UDP receive buffer: requested=12288000 effective=8388608 kernel=8388608 bytes; attempts=1 fallback=no
+[PASS] investigation_hybrid_one_receiver_falls_back_while_other_keeps_multicast
+6/6 tests passed

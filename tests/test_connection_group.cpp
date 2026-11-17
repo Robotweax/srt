@@ -344,3 +344,100 @@ TEST(multicast_dispatch_decoder_rejects_malformed_wire_content)
     six_tampered[content + 28] = std::byte {1};
     REQUIRE(!decode_bytes(six_tampered));
 }
+
+TEST(multicast_source_codec_golden_offer_and_address_roundtrips)
+{
+    std::array<std::byte, 36> bytes {};
+    REQUIRE(encode_multicast_source({}, bytes));
+    const std::array<unsigned, 16> prefix {
+        0x7f, 0x15, 0, 8, 0x52, 0x57, 0x53, 1, 1, 0, 0, 0, 0, 0, 0, 0};
+    for (std::size_t i = 0; i < prefix.size(); ++i)
+        REQUIRE_EQ(std::to_integer<unsigned>(bytes[i]), prefix[i]);
+    for (std::size_t i = prefix.size(); i < bytes.size(); ++i)
+        REQUIRE_EQ(bytes[i], std::byte {});
+    for (const auto endpoint :
+        {IpEndpoint::loopback(5001), IpEndpoint::ipv6_loopback(6001)}) {
+        const MulticastSource source {.kind = MulticastSourceKind::announcement,
+            .group_id = group_handle_mask | 93U,
+            .endpoint = endpoint};
+        const auto encoded = encode_multicast_source(source, bytes);
+        REQUIRE(encoded);
+        REQUIRE_EQ(encoded.bytes_written, bytes.size());
+        const auto extension = decode_extension(bytes);
+        REQUIRE(extension);
+        const auto decoded = decode_multicast_source(extension.extension);
+        REQUIRE(decoded);
+        REQUIRE_EQ(decoded.source, source);
+    }
+}
+
+TEST(
+    multicast_source_codec_rejects_malformed_lengths_versions_padding_and_offers)
+{
+    std::array<std::byte, 64> storage {};
+    REQUIRE(encode_multicast_source({}, storage));
+    const auto offer = storage;
+    for (std::size_t length = 0; length <= storage.size(); ++length) {
+        if (length == multicast_source_content_size)
+            continue;
+        REQUIRE(
+            !decode_multicast_source({HandshakeExtensionType::multicast_source,
+                std::span {storage}.first(length)}));
+    }
+    REQUIRE(
+        !decode_multicast_source({HandshakeExtensionType::multicast_dispatch,
+            std::span {storage}.subspan(4, multicast_source_content_size)}));
+    // Every byte of a canonical offer is fixed, including zero endpoint fields.
+    for (std::size_t i = 4; i < 36; ++i) {
+        storage = offer;
+        storage[i] ^= std::byte {0x80};
+        REQUIRE(
+            !decode_multicast_source({HandshakeExtensionType::multicast_source,
+                std::span {storage}.subspan(
+                    4, multicast_source_content_size)}));
+    }
+    const MulticastSource source {.kind = MulticastSourceKind::announcement,
+        .group_id = group_handle_mask | 93U,
+        .endpoint = IpEndpoint::loopback(5001)};
+    REQUIRE(encode_multicast_source(source, storage));
+    const auto announcement = storage;
+    for (const auto offset : {9U, 20U, 21U, 31U, 32U, 33U, 34U, 35U}) {
+        storage = announcement;
+        storage[offset] = std::byte {0xff};
+        REQUIRE(
+            !decode_multicast_source({HandshakeExtensionType::multicast_source,
+                std::span {storage}.subspan(
+                    4, multicast_source_content_size)}));
+    }
+    REQUIRE(!encode_multicast_source(source, std::span {storage}.first(35)));
+}
+
+TEST(multicast_source_codec_rejects_invalid_source_configuration)
+{
+    const MulticastSource source {.kind = MulticastSourceKind::announcement,
+        .group_id = group_handle_mask | 93U,
+        .endpoint = IpEndpoint::loopback(5001)};
+    std::array<std::byte, 36> bytes {};
+    for (const auto endpoint : {IpEndpoint::any(5001), IpEndpoint::loopback(),
+             IpEndpoint {.address = {239, 1, 1, 1}, .port = 5001},
+             IpEndpoint::ipv6_any(5001), IpEndpoint::ipv6_loopback(5001, 1),
+             IpEndpoint {.address = {0xff, 2},
+                 .port = 5001,
+                 .family = IpAddressFamily::ipv6}}) {
+        auto invalid = source;
+        invalid.endpoint = endpoint;
+        REQUIRE(!encode_multicast_source(invalid, bytes));
+    }
+    auto invalid = source;
+    invalid.group_id = 93;
+    REQUIRE(!encode_multicast_source(invalid, bytes));
+    invalid = source;
+    invalid.endpoint.address[15] = 1;
+    REQUIRE(!encode_multicast_source(invalid, bytes));
+    invalid = source;
+    invalid.endpoint.family = static_cast<IpAddressFamily>(99);
+    REQUIRE(!encode_multicast_source(invalid, bytes));
+    invalid = source;
+    invalid.kind = MulticastSourceKind::offer;
+    REQUIRE(!encode_multicast_source(invalid, bytes));
+}

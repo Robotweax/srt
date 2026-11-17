@@ -47,7 +47,9 @@ inline void check_ts(const char* bytes, int size)
 
 inline void media_stream(SRTSOCKET group, const Arguments& args, bool sender,
     const std::function<void(int)>& hook = {},
-    const std::function<void()>& report_hook = {})
+    const std::function<void()>& report_hook = {},
+    const std::function<void()>& tick_hook = {},
+    const std::function<void(const SRT_MSGCTRL&)>& delivered_hook = {})
 {
     const int seconds = args.integer("--duration", 20, 3, 3600);
     DatagramSocket udp;
@@ -79,6 +81,8 @@ inline void media_stream(SRTSOCKET group, const Arguments& args, bool sender,
     event("\"event\":\"media_ready\",\"role\":\""
         + std::string(sender ? "send" : "receive") + "\"");
     while (!media_stopping && Clock::now() < deadline) {
+        if (tick_hook)
+            tick_hook();
         std::array<char, 1317> bytes {};
         int size = 0;
         if (sender) {
@@ -102,6 +106,8 @@ inline void media_stream(SRTSOCKET group, const Arguments& args, bool sender,
                 auto control = srt_msgctrl_default;
                 if (srt_sendmsg2(group, bytes.data(), size, &control) != size)
                     fail("send media");
+                if (delivered_hook)
+                    delivered_hook(control);
             }
         } else {
             auto control = srt_msgctrl_default;
@@ -114,6 +120,8 @@ inline void media_stream(SRTSOCKET group, const Arguments& args, bool sender,
                 size = 0;
             } else {
                 check_ts(bytes.data(), size);
+                if (delivered_hook)
+                    delivered_hook(control);
                 if (::sendto(udp.id, bytes.data(), size, 0,
                         reinterpret_cast<const sockaddr*>(&endpoint),
                         sizeof(endpoint))

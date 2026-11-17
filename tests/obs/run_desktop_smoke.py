@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import ctypes
 import importlib.util
 import json
 import os
@@ -123,6 +124,7 @@ def desktop_command(prefix, root):
         QT_QPA_PLATFORM="xcb",
         LIBGL_ALWAYS_SOFTWARE="1",
         LC_ALL="C",
+        ROBOTWEAX_OBS_TRACE_HOTKEYS="1",
     )
     return [
         str(prefix / "bin/obs"),
@@ -177,14 +179,88 @@ def stop_desktop(child, log, baseline=None):
     return check_shutdown(child.wait(timeout=15), log.read_text(), baseline)
 
 
+def unmodified_keycode(key):
+    """Resolve the base XKB level; libxdo can choose an Alt-modified alias."""
+    x11 = ctypes.CDLL("libX11.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
+    x11.XStringToKeysym.restype = ctypes.c_ulong
+    x11.XDisplayKeycodes.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+                                   ctypes.POINTER(ctypes.c_int)]
+    x11.XkbKeycodeToKeysym.argtypes = [ctypes.c_void_p, ctypes.c_ubyte,
+                                     ctypes.c_int, ctypes.c_int]
+    x11.XkbKeycodeToKeysym.restype = ctypes.c_ulong
+    display = x11.XOpenDisplay(None)
+    if not display:
+        raise RuntimeError("cannot open X11 display for OBS hotkey")
+    try:
+        symbol = x11.XStringToKeysym(key.encode("ascii"))
+        low, high = ctypes.c_int(), ctypes.c_int()
+        x11.XDisplayKeycodes(display, ctypes.byref(low), ctypes.byref(high))
+        if symbol:
+            for code in range(low.value, high.value + 1):
+                if x11.XkbKeycodeToKeysym(display, code, 0, 0) == symbol:
+                    return code
+        raise RuntimeError(f"no unmodified XKB keycode for {key}")
+    finally:
+        x11.XCloseDisplay(display)
+
+
 def hotkey(key):
-    subprocess.run(["xdotool", "keydown", key], check=True, timeout=5)
+    # Numeric keycodes bypass libxdo's keysym/modifier selection entirely.
+    code = str(unmodified_keycode(key))
+    subprocess.run(["xdotool", "keydown", code], check=True, timeout=5)
     try:
         # libobs polls X11 keys every 25 ms. Hold the key like a human press;
         # an instantaneous injected down/up pair can be missed completely.
         time.sleep(0.2)
     finally:
-        subprocess.run(["xdotool", "keyup", key], check=True, timeout=5)
+        subprocess.run(["xdotool", "keyup", code], check=True, timeout=5)
+
+
+def frontend_hotkey(desktop, log, key):
+    acknowledgement = {
+        "F9": "Starting stream due to hotkey",
+        "F10": "Stopping stream due to hotkey",
+    }[key]
+    windows = subprocess.run(
+        # xdotool otherwise ORs PID and title, including unrelated windows.
+        ["xdotool", "search", "--all", "--sync", "--onlyvisible", "--pid",
+         str(desktop.pid), "--name", "OBS"],
+        check=True, capture_output=True, text=True, timeout=10,
+    ).stdout.split()
+    if len(windows) != 1:
+        raise RuntimeError(f"expected one visible OBS window for pid {desktop.pid}: {windows}")
+    window = int(windows[0], 0)
+    subprocess.run(["xdotool", "windowfocus", "--sync", str(window)],
+                   check=True, timeout=5)
+    focused = int(subprocess.run(
+        ["xdotool", "getwindowfocus"], check=True, capture_output=True,
+        text=True, timeout=5,
+    ).stdout.strip(), 0)
+    evidence = log.with_suffix(".controls.jsonl")
+    event = dict(pid=desktop.pid, window=window, focused_window=focused,
+                 key=key, acknowledged=False)
+    try:
+        if focused != window:
+            raise RuntimeError(f"OBS focus mismatch: expected {window}, got {focused}")
+        # Byte offset excludes acknowledgements from any earlier command.
+        offset = log.stat().st_size
+        hotkey(key)
+
+        def acknowledged():
+            with log.open("rb") as stream:
+                stream.seek(offset)
+                return acknowledgement in stream.read().decode("utf-8", errors="replace")
+
+        media.wait_for(desktop, log, acknowledged,
+                       f"frontend {key} acknowledgement missing", timeout=5)
+        event["acknowledged"] = True
+    finally:
+        with evidence.open("a") as output:
+            output.write(json.dumps(event) + "\n")
 
 
 def wait_decoded(desktop, receiver, ffmpeg, output, artifacts, label, offset=0):
@@ -339,24 +415,6 @@ def qualify(args):
                     timeout=40,
                 )
                 verify_maps(desktop, args, artifacts / f"{label}-maps.txt")
-                windows = subprocess.run(
-                    [
-                        "xdotool",
-                        "search",
-                        "--sync",
-                        "--onlyvisible",
-                        "--pid",
-                        str(desktop.pid),
-                        "--name",
-                        "OBS",
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                ).stdout.strip()
-                if not windows:
-                    raise RuntimeError("no visible OBS desktop window")
                 source = None
                 if network:
                     gst.wait_listener(desktop, incoming)
@@ -372,7 +430,7 @@ def qualify(args):
                         )
                     )
                 # Exercise real frontend hotkeys, not a substitute libobs driver.
-                hotkey("F9")
+                frontend_hotkey(desktop, log, "F9")
                 wait_decoded(desktop, receiver, ffmpeg, output, artifacts, label)
                 if encrypted and not network:
                     for cycle in range(args.reconnect_cycles):
@@ -419,7 +477,7 @@ def qualify(args):
                     raise RuntimeError(
                         "stream stopped before the frontend stop command"
                     )
-                hotkey("F10")
+                frontend_hotkey(desktop, log, "F10")
                 media.wait_for(
                     desktop,
                     log,

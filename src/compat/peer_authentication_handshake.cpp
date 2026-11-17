@@ -361,7 +361,8 @@ PeerAuthenticationHandshake::Result PeerAuthenticationHandshake::receive(
     }
     if (!message.has_peer_authentication || message.has_group_membership
         || message.has_path_identifier || message.has_standby_rtt
-        || message.has_multicast_dispatch || message.has_session_authentication
+        || message.has_multicast_dispatch || message.has_multicast_source
+        || message.has_session_authentication
         || message.has_key_material_extension) {
         // A listener child that has answered M1 ends only through its
         // deadline, the unverified-M3 allowance or a failed confirmation; an

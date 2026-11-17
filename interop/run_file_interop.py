@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from interop_common import (
@@ -508,7 +508,7 @@ def ipv6_rendezvous_scenario_matrix(
             sender_chunk_size=32_768,
             receiver_size=997,
             byte_count=transfer_bytes,
-            fault=common_fault,
+            fault=replace(common_fault, suppress_until_nak=True),
             recovery="NAK",
         ),
         RendezvousScenario(
@@ -595,6 +595,7 @@ def rendezvous_resilience_scenario_matrix(
                         action="drop",
                         direction="sender_to_receiver",
                         occurrence=RENDEZVOUS_SINGLE_LOSS_OCCURRENCE,
+                        suppress_until_nak=robotweax_sends,
                     ),
                     recovery=recovery,
                     **common,
@@ -603,7 +604,7 @@ def rendezvous_resilience_scenario_matrix(
                     name=f"filecc-rendezvous-{burst_name}-{label}",
                     seed=seed + 1,
                     byte_count=transfer_bytes,
-                    fault=burst,
+                    fault=tuple(replace(f, suppress_until_nak=robotweax_sends) for f in burst),
                     recovery=recovery,
                     **common,
                 ),
@@ -1451,6 +1452,13 @@ def validate_fault_plan(
         loss_report_preceded_retransmission = (
             matching_loss_report_precedes_retransmission(observation)
         )
+        if fault.suppress_until_nak and (
+            observation.get("suppress_until_nak") is not True
+            or observation.get("loss_report_forwarded") is not True
+            or type(observation.get("suppressed_retransmissions")) is not int
+            or not 0 <= observation["suppressed_retransmissions"] <= 16
+        ):
+            raise RuntimeError(f"{scenario.name}: incomplete bounded NAK loss-window evidence")
         if scenario.recovery == "NAK" and not (
             observation.get("loss_report_observed") is True
             and loss_report_preceded_retransmission

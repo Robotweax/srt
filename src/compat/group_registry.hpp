@@ -28,11 +28,17 @@ namespace robotweax::srt {
 struct TsbpdClockState;
 }
 namespace robotweax::srt::compat {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace hybrid {
+struct StartupOptions;
+}
+#endif
 
 template <typename T> class ProcessOwned;
 class ConnectionRuntime;
 class DatagramChannel;
 class GroupReceiveRetention;
+class GroupSendCoordinator;
 
 // Numeric identities plus generations deliberately replace reciprocal owning
 // pointers between sockets and groups.  The coordinator introduced by the
@@ -42,6 +48,9 @@ struct GroupMemberSnapshot {
     std::uint64_t generation = 0;
     // Receive activity survives send-path idling and logical deduplication.
     bool received_data = false;
+    std::uint64_t coordinator_member = 0;
+    bool coordinator_detached = false;
+    std::uint64_t coordinator_status_revision = 0;
     // Member retransmissions already folded into the group counters.
     PacketByteCounter retransmitted_folded;
     // This caller member accepted GroupRecord::peer_group during its own
@@ -110,9 +119,12 @@ struct DispatchGroupState {
     std::int32_t multicast_time_to_live = 1;
     // Whether this record is the sending (Listener) side. The Caller side
     // has exactly one member and a multicast receive channel. The sender
-    // transmits from the Listener's own channel socket, so no extra socket
-    // is held here.
+    // uses the Listener's control channel in the legacy profile; the fixed-
+    // source profile retains a dedicated send-only channel below.
     bool sender = false;
+    // Independent source profile: shared Listener transmitter, group-owned
+    // reference. No receive watch, runtime routes or permanent transport thread.
+    std::shared_ptr<DatagramChannel> transmit_channel;
     // Caller side only: the channel over the socket joined to the group,
     // routing datagrams addressed to `ingress_group_id` (the Listener's
     // dispatch group handle) into the member session.
@@ -125,6 +137,7 @@ struct DispatchGroupState {
     // Listener side only, when the listener encrypts: the one traffic-key
     // schedule every member session of this sender draws from.
     std::shared_ptr<SharedTransmitKeySchedule> key_schedule;
+    std::shared_ptr<GroupSendCoordinator> coordinator;
     // Listener side only: repeat tally and multicast-path counters.
     std::shared_ptr<DispatchTransmitState> transmit;
     // SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD; 0 keeps every repeat unicast.
@@ -207,6 +220,9 @@ struct GroupRecord {
     // normal socket validation and normalization, without an unbounded map.
     SocketOptions member_native_options;
     PublicSocketOptions member_public_options;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::shared_ptr<const hybrid::StartupOptions> hybrid_startup_options;
+#endif
     // Observation bookkeeping uses the process monotonic clock, independently
     // of the injectable coordinator clock. Protected by mutex, no policy use.
     std::uint64_t send_authority_revision = 0;
@@ -245,6 +261,9 @@ public:
         std::int32_t peer_idle_timeout_milliseconds = 5'000;
         SocketOptions member_native_options;
         PublicSocketOptions member_public_options;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        std::shared_ptr<const hybrid::StartupOptions> hybrid_startup_options;
+#endif
     };
 
     struct MirrorDescription {
@@ -326,6 +345,12 @@ public:
     [[nodiscard]] bool prepare_dispatch(SRTSOCKET listener,
         std::string_view admission_key, std::uint64_t admission_domain,
         std::uint32_t initial_sequence, DispatchDescription& output) noexcept;
+    [[nodiscard]] bool activate_coordinated_member(SRTSOCKET group,
+        std::uint64_t generation, SRTSOCKET socket,
+        std::uint64_t member_generation,
+        const std::shared_ptr<ConnectionRuntime>&) noexcept;
+    static void refresh_coordinated_members(
+        const std::shared_ptr<GroupRecord>&) noexcept;
     // Non-authorizing, allocation-free preflight for a full listener. Only
     // existing live bonding mirrors in this listener/bond qualify; callback
     // domain and extension checks still apply during prepare_mirror.

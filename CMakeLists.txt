@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(robotweax_srt VERSION 0.3.2 LANGUAGES C CXX)
+project(robotweax_srt VERSION 0.3.3 LANGUAGES C CXX)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -26,6 +26,12 @@ set(ROBOTWEAX_SRT_INSTALL_CMAKEDIR
 install(FILES cmake/FindMbedTLS.cmake DESTINATION "${ROBOTWEAX_SRT_INSTALL_CMAKEDIR}")
 
 option(ROBOTWEAX_SRT_BUILD_TESTS "Build unit tests" ON)
+set(ROBOTWEAX_SRT_MAX_GROUP_MEMBERS "64" CACHE STRING
+    "Maximum retained members per group, including pending members")
+if(NOT ROBOTWEAX_SRT_MAX_GROUP_MEMBERS MATCHES "^[1-9][0-9]*$"
+    OR ROBOTWEAX_SRT_MAX_GROUP_MEMBERS GREATER 65536)
+    message(FATAL_ERROR "ROBOTWEAX_SRT_MAX_GROUP_MEMBERS must be in 1..65536")
+endif()
 set(ROBOTWEAX_SRT_NATIVE_PROGRAMS_DEFAULT ON)
 if(BUILD_SHARED_LIBS)
     set(ROBOTWEAX_SRT_NATIVE_PROGRAMS_DEFAULT OFF)
@@ -37,16 +43,29 @@ option(ROBOTWEAX_SRT_BUILD_TOOLS "Build protocol development tools"
     ${ROBOTWEAX_SRT_NATIVE_PROGRAMS_DEFAULT})
 option(ROBOTWEAX_SRT_BUILD_EXAMPLES "Build public API examples" OFF)
 option(ROBOTWEAX_SRT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
+option(ROBOTWEAX_SRT_ENABLE_LTO
+    "Build the library with interprocedural optimization when supported" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING
     "Enable unqualified timer pacing without coarse-timer spinning on Android/iOS" OFF)
 option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
     "Enable the Linux sender-drop JSONL diagnostic" OFF)
 option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
     "Install opt-in srt.pc metadata for libsrt-compatible consumers" OFF)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING
+    "Linux only: move datagrams with recvmmsg and sendmmsg (experimental)" OFF)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION
+    "Linux only: send equal-length DATA runs with UDP_SEGMENT (experimental)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable experimental authenticated runtime controls" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH
     "Enable experimental pinned-key caller/listener authentication (unreviewed)" OFF)
+option(ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD
+    "On Windows, hold a one millisecond timer period while the runtime scheduler exists" ON)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL
+    "Build staged hybrid control authentication components (no socket activation)" OFF)
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL AND NOT ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
+    message(FATAL_ERROR "Experimental hybrid control requires experimental ACP1 explicitly enabled")
+endif()
 option(ROBOTWEAX_SRT_BUILD_EXTENSION_PROTOTYPES
     "Build private controller components and contract tests (no socket integration)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS
@@ -154,7 +173,19 @@ else()
 endif()
 find_package(Threads REQUIRED)
 
+get_property(ROBOTWEAX_SRT_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT ROBOTWEAX_SRT_MULTI_CONFIG AND NOT CMAKE_BUILD_TYPE)
+    # The default is left to the caller: an empty build type keeps assertions
+    # and whatever flags a packager supplies. It is also unoptimized, which is
+    # not a meaningful basis for throughput or CPU measurements.
+    message(STATUS
+        "Robotweax SRT: CMAKE_BUILD_TYPE is not set; the library is built "
+        "without optimization unless the supplied flags enable it. Use "
+        "-DCMAKE_BUILD_TYPE=Release for deployment and measurements.")
+endif()
+
 add_library(robotweax_srt
+    src/compat/file_destination.cpp
     src/compat/caller_handshake_events.cpp
     src/compat/caller_handshake_exchange.cpp
     src/compat/caller_handshake_sources.cpp
@@ -176,6 +207,7 @@ add_library(robotweax_srt
     src/compat/logging.cpp
     src/compat/message_io.cpp
     src/compat/platform_networking.cpp
+    src/compat/platform_timer.cpp
     src/compat/process_state.cpp
     src/compat/readiness.cpp
     src/compat/socket_readiness.cpp
@@ -191,6 +223,25 @@ add_library(robotweax_srt
     src/compat/statistics.cpp
     src/compat/srt_api.cpp
     src/compat/transport_runtime.cpp
+    src/compat/group_multicast_emitter.cpp
+    src/compat/group_packet_encoder.cpp
+    src/compat/group_runtime_admission.cpp
+    src/compat/group_send_coordinator.cpp
+    src/compat/hybrid/hybrid_control.cpp
+    src/compat/hybrid/hybrid_admission.cpp
+    src/compat/hybrid/hybrid_exchange.cpp
+    src/compat/hybrid/hybrid_conclusions.cpp
+    src/compat/hybrid/hybrid_native.cpp
+    src/compat/hybrid/hybrid_bridge.cpp
+    src/compat/hybrid/hybrid_receiver.cpp
+    src/compat/hybrid/hybrid_return.cpp
+    src/compat/hybrid/hybrid_automatic.cpp
+    src/compat/hybrid/hybrid_automatic_return.cpp
+    src/compat/hybrid/hybrid_membership.cpp
+    src/compat/hybrid/hybrid_setup.cpp
+    src/compat/hybrid/hybrid_detector.cpp
+    src/compat/hybrid/hybrid_reporting.cpp
+    src/compat/hybrid/hybrid_progress.cpp
     src/compat/standby_rtt_service.cpp
     src/control.cpp
     src/connection_group.cpp
@@ -259,6 +310,8 @@ if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH)
 endif()
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
+target_compile_definitions(robotweax_srt PRIVATE
+    ROBOTWEAX_SRT_MAX_GROUP_MEMBERS=${ROBOTWEAX_SRT_MAX_GROUP_MEMBERS})
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
     target_compile_definitions(robotweax_srt
         PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_MOBILE_PACING)
@@ -276,8 +329,28 @@ endif()
 if(ENABLE_MAXREXMITBW)
     target_compile_definitions(robotweax_srt PUBLIC ENABLE_MAXREXMITBW)
 endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING requires Linux")
+    endif()
+    target_compile_definitions(robotweax_srt
+        PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION)
+    if(NOT ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING)
+        message(FATAL_ERROR
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION requires "
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING")
+    endif()
+    target_compile_definitions(robotweax_srt
+        PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_UDP_SEGMENTATION)
+endif()
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_ACP1)
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
+    target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL)
 endif()
 if(ENABLE_AEAD_API_PREVIEW)
     target_compile_definitions(robotweax_srt
@@ -293,11 +366,30 @@ if(WIN32)
     target_compile_definitions(robotweax_srt
         PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(robotweax_srt PRIVATE ws2_32)
+    if(ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD)
+        target_link_libraries(robotweax_srt PRIVATE winmm)
+    else()
+        target_compile_definitions(robotweax_srt
+            PRIVATE ROBOTWEAX_SRT_NO_WINDOWS_TIMER_PERIOD)
+    endif()
 endif()
 target_link_libraries(
     robotweax_srt PRIVATE ${ROBOTWEAX_SRT_CRYPTO_LIBRARY} Threads::Threads)
 
 target_compile_features(robotweax_srt PUBLIC cxx_std_20)
+if(ROBOTWEAX_SRT_ENABLE_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ROBOTWEAX_SRT_LTO_SUPPORTED
+        OUTPUT ROBOTWEAX_SRT_LTO_DIAGNOSTIC LANGUAGES CXX)
+    if(NOT ROBOTWEAX_SRT_LTO_SUPPORTED)
+        message(FATAL_ERROR
+            "ROBOTWEAX_SRT_ENABLE_LTO is ON but the toolchain does not "
+            "support interprocedural optimization: "
+            "${ROBOTWEAX_SRT_LTO_DIAGNOSTIC}")
+    endif()
+    set_property(TARGET robotweax_srt
+        PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
 target_include_directories(robotweax_srt
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -552,6 +644,24 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_group_acquire.cpp
         tests/test_compat_groups.cpp
         tests/test_multicast_dispatch.cpp
+        tests/test_group_multicast_emitter.cpp
+        tests/test_group_packet_encoder.cpp
+        tests/test_group_admission.cpp
+        tests/test_group_emission_outcomes.cpp
+        tests/test_group_runtime_admission.cpp
+        tests/test_group_send_coordinator.cpp
+        tests/test_group_unicast_budget.cpp
+        tests/test_hybrid_control.cpp
+        tests/test_hybrid_admission.cpp
+        tests/test_hybrid_exchange.cpp
+        tests/test_hybrid_conclusions.cpp
+        tests/test_hybrid_native.cpp
+        tests/test_hybrid_setup.cpp
+        tests/test_hybrid_fault_link.cpp
+        tests/test_hybrid_return.cpp
+        tests/test_hybrid_detector.cpp
+        tests/test_hybrid_reporting.cpp
+        tests/test_hybrid_progress.cpp
         tests/test_arq_transport.cpp
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
@@ -561,6 +671,7 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             tests/test_peer_authentication_p256.cpp tests/test_peer_authentication_exchange.cpp)
     endif()
     target_compile_definitions(robotweax_srt_tests PRIVATE
+        ROBOTWEAX_SRT_MAX_GROUP_MEMBERS=${ROBOTWEAX_SRT_MAX_GROUP_MEMBERS}
         ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
     target_link_libraries(robotweax_srt_tests
         PRIVATE RobotweaxSRT::srt Threads::Threads)
@@ -631,7 +742,32 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
             srt_compat_group_pathid_
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late
             stale_drop_coverage stale_nak standby_rtt_native_runtime_ compat_group_connect_joins_with_unread_messages_across_rollover
-            tsbpd_rtt multicast_dispatch compat_idle_readiness_ arq_transport_)
+            tsbpd_rtt multicast_dispatch hybrid_ hybrid_network_ hybrid_key_network_ hybrid_load_network_ hybrid_soak_network_ hybrid_harness_network_ compat_idle_readiness_ arq_transport_
+            compat_group_ platform_timing_report)
+    # Reports sleep and timed-wait granularity of the host. Its own gate so a
+    # workflow can print it with `ctest -V -R` without repeating other cases.
+    add_test(NAME robotweax_srt_platform_timing_report
+        COMMAND robotweax_srt_tests --include platform_timing_report)
+    set_tests_properties(robotweax_srt_platform_timing_report
+        PROPERTIES LABELS "unit;diagnostic")
+    # The canonical group unit cases are a third of the aggregate's time; they
+    # run in their own bounded process so neither sits near its budget on a
+    # slow Debug or instrumented runner. Same ownership rules as above.
+    add_test(NAME robotweax_srt_group_unit_tests
+        COMMAND robotweax_srt_tests --include compat_group_ --exclude srt_compat_
+            tsbpd_rtt compat_group_closed_member_retains_bounded_copy
+            compat_group_connect_joins_with_unread_messages_across_rollover)
+    set_tests_properties(robotweax_srt_group_unit_tests PROPERTIES LABELS "unit;group")
+    add_test(NAME robotweax_srt_hybrid_model_tests
+        COMMAND robotweax_srt_tests --include hybrid_ --exclude multicast_dispatch
+            investigation_hybrid_ hybrid_network_ hybrid_key_network_
+            hybrid_load_network_ hybrid_soak_network_ hybrid_harness_network_
+            hybrid_return_lag_network_ srt_compat_ compat_runtime_ acp1)
+    set_tests_properties(robotweax_srt_hybrid_model_tests PROPERTIES LABELS "unit;hybrid")
+    add_test(NAME robotweax_srt_hybrid_investigation_tests
+        COMMAND robotweax_srt_tests --include investigation_hybrid_)
+    set_tests_properties(robotweax_srt_hybrid_investigation_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid")
     add_test(NAME robotweax_srt_arq_transport_tests
         COMMAND robotweax_srt_tests --include arq_transport_)
     set_tests_properties(robotweax_srt_arq_transport_tests
@@ -639,7 +775,105 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     # Real multicast and idle-watcher waits have their own bounded budgets;
     # do not charge all platform setup costs to the aggregate unit timeout.
     add_test(NAME robotweax_srt_multicast_dispatch_tests
-        COMMAND robotweax_srt_tests --include multicast_dispatch)
+        COMMAND robotweax_srt_tests --include multicast_dispatch --exclude
+            multicast_dispatch_independent_ multicast_dispatch_coordinated_
+            multicast_dispatch_native_)
+    # Each serial partition owns complete cases and its own 30-second process
+    # budget. The full direct selector remains available to qualification tools.
+    set_tests_properties(robotweax_srt_multicast_dispatch_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+    add_test(NAME robotweax_srt_multicast_independent_tests
+        COMMAND robotweax_srt_tests --include multicast_dispatch_independent_)
+    set_tests_properties(robotweax_srt_multicast_independent_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+    # The two slow-receiver lifecycle cases deliberately wait for sequential
+    # live playout and detachment. Give them separate bounded processes so
+    # their cumulative waits cannot consume the other coordinated cases' budget.
+    # Each native case still runs exactly once, with the same assertions.
+    add_test(NAME robotweax_srt_multicast_coordinated_tests
+        COMMAND robotweax_srt_tests --include multicast_dispatch_coordinated_
+            --exclude multicast_dispatch_coordinated_slow_receiver_
+            multicast_dispatch_coordinated_detached_member_)
+    set_tests_properties(robotweax_srt_multicast_coordinated_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+    add_test(NAME robotweax_srt_multicast_slow_receiver_tests
+        COMMAND robotweax_srt_tests --include multicast_dispatch_coordinated_slow_receiver_)
+    set_tests_properties(robotweax_srt_multicast_slow_receiver_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+    add_test(NAME robotweax_srt_multicast_detachment_tests
+        COMMAND robotweax_srt_tests --include multicast_dispatch_coordinated_detached_member_)
+    set_tests_properties(robotweax_srt_multicast_detachment_tests PROPERTIES
+        TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;multicast")
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
+        add_test(NAME robotweax_srt_multicast_startup_tests
+            COMMAND robotweax_srt_tests --include multicast_dispatch_native_startup_)
+        set_tests_properties(robotweax_srt_multicast_startup_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;multicast")
+        add_test(NAME robotweax_srt_multicast_conclusions_tests
+            COMMAND robotweax_srt_tests --include multicast_dispatch_native_conclusions_)
+        set_tests_properties(robotweax_srt_multicast_conclusions_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;multicast")
+        add_test(NAME robotweax_srt_multicast_control_tests
+            COMMAND robotweax_srt_tests --include multicast_dispatch_native_ --exclude
+                multicast_dispatch_native_startup_ multicast_dispatch_native_conclusions_
+                multicast_dispatch_native_source_error_ multicast_dispatch_native_rejoin_)
+        set_tests_properties(robotweax_srt_multicast_control_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;multicast")
+        add_test(NAME robotweax_srt_multicast_source_error_tests
+            COMMAND robotweax_srt_tests --include multicast_dispatch_native_source_error_)
+        set_tests_properties(robotweax_srt_multicast_source_error_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;multicast")
+        add_test(NAME robotweax_srt_multicast_rejoin_tests
+            COMMAND robotweax_srt_tests --include multicast_dispatch_native_rejoin_)
+        set_tests_properties(robotweax_srt_multicast_rejoin_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;multicast")
+        add_test(NAME robotweax_srt_hybrid_harness_tests
+            COMMAND robotweax_srt_tests --include hybrid_harness_network_)
+        set_tests_properties(robotweax_srt_hybrid_harness_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection;lifecycle"
+            ENVIRONMENT "ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS=4")
+        add_test(NAME robotweax_srt_hybrid_network_tests
+            COMMAND robotweax_srt_tests --include hybrid_network_ --exclude hybrid_network_multi_receiver_)
+        set_tests_properties(robotweax_srt_hybrid_network_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_multi_control_tests
+            COMMAND robotweax_srt_tests --include hybrid_network_multi_receiver_control_loss_)
+        set_tests_properties(robotweax_srt_hybrid_multi_control_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_multi_quota_tests
+            COMMAND robotweax_srt_tests --include hybrid_network_multi_receiver_stale_control_)
+        set_tests_properties(robotweax_srt_hybrid_multi_quota_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_key_timing_tests
+            COMMAND robotweax_srt_tests --include hybrid_key_network_delayed_reordered_requests_)
+        set_tests_properties(robotweax_srt_hybrid_key_timing_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;key-management;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_key_response_tests
+            COMMAND robotweax_srt_tests --include hybrid_key_network_old_response_)
+        set_tests_properties(robotweax_srt_hybrid_key_response_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;key-management;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_key_multi_receiver_tests
+            COMMAND robotweax_srt_tests --include hybrid_key_network_multi_receiver_pending_response_)
+        set_tests_properties(robotweax_srt_hybrid_key_multi_receiver_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;key-management;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_key_admission_tests
+            COMMAND robotweax_srt_tests --include hybrid_key_network_multi_receiver_late_admission_)
+        set_tests_properties(robotweax_srt_hybrid_key_admission_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;key-management;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_return_lag_tests
+            COMMAND robotweax_srt_tests --include hybrid_return_lag_network_)
+        set_tests_properties(robotweax_srt_hybrid_return_lag_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_load_tests
+            COMMAND robotweax_srt_tests --include hybrid_load_network_)
+        set_tests_properties(robotweax_srt_hybrid_load_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;load;fault-injection")
+        add_test(NAME robotweax_srt_hybrid_soak_tests
+            COMMAND robotweax_srt_tests --include hybrid_soak_network_)
+        set_tests_properties(robotweax_srt_hybrid_soak_tests PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE LABELS "network;integration;hybrid;soak;fault-injection"
+            ENVIRONMENT "ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS=4")
+    endif()
     add_test(NAME robotweax_srt_idle_readiness_tests
         COMMAND robotweax_srt_tests --include compat_idle_readiness_)
     set_tests_properties(robotweax_srt_multicast_dispatch_tests
@@ -768,8 +1002,17 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     add_test(NAME robotweax_srt_delayed_key_response_tests
         COMMAND robotweax_srt_tests
             compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late)
-    add_test(NAME robotweax_srt_rotation_tests
-        COMMAND robotweax_srt_tests compat_runtime_rotation_)
+    # Clock-driven rotation matrices are pure CPU work; sanitizer builds ran
+    # the combined set close to the 30-second budget, so each matrix is its
+    # own partition. The exclusions in the aggregates above still cover all.
+    add_test(NAME robotweax_srt_rotation_ctr_tests
+        COMMAND robotweax_srt_tests compat_runtime_rotation_loss_ctr_)
+    add_test(NAME robotweax_srt_rotation_gcm_tests
+        COMMAND robotweax_srt_tests compat_runtime_rotation_loss_gcm_)
+    add_test(NAME robotweax_srt_rotation_transition_tests
+        COMMAND robotweax_srt_tests compat_runtime_rotation_transitions_)
+    add_test(NAME robotweax_srt_rotation_blackout_tests
+        COMMAND robotweax_srt_tests compat_runtime_rotation_control_blackout_)
     add_test(NAME robotweax_srt_group_retention_prefix_tests
         COMMAND robotweax_srt_tests
             compat_group_closed_member_retains_bounded_copy_prefix)
@@ -777,16 +1020,22 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         COMMAND robotweax_srt_tests
             compat_group_closed_member_retains_bounded_copy_after_oversized_message)
     set_tests_properties(
-        robotweax_srt_tests robotweax_srt_tsbpd_rtt_tests robotweax_srt_socket_api_tests
-        robotweax_srt_multicast_dispatch_tests robotweax_srt_idle_readiness_tests
+        robotweax_srt_tests robotweax_srt_group_unit_tests
+        robotweax_srt_tsbpd_rtt_tests robotweax_srt_socket_api_tests
+        robotweax_srt_hybrid_model_tests robotweax_srt_idle_readiness_tests
         robotweax_srt_transport_runtime_tests
         robotweax_srt_group_join_rollover_tests
-        robotweax_srt_rotation_tests robotweax_srt_key_length_tests
+        robotweax_srt_rotation_ctr_tests robotweax_srt_rotation_gcm_tests
+        robotweax_srt_rotation_transition_tests
+        robotweax_srt_rotation_blackout_tests robotweax_srt_key_length_tests
         robotweax_srt_delayed_key_response_tests
         robotweax_srt_group_retention_prefix_tests
-        robotweax_srt_group_retention_oversized_tests PROPERTIES TIMEOUT 30)
+        robotweax_srt_group_retention_oversized_tests
+        robotweax_srt_platform_timing_report PROPERTIES TIMEOUT 30)
     set_tests_properties(robotweax_srt_delayed_key_response_tests PROPERTIES LABELS "encryption")
-    set_tests_properties(robotweax_srt_rotation_tests PROPERTIES LABELS "encryption")
+    set_tests_properties(robotweax_srt_rotation_ctr_tests
+        robotweax_srt_rotation_gcm_tests robotweax_srt_rotation_transition_tests
+        robotweax_srt_rotation_blackout_tests PROPERTIES LABELS "encryption")
     set_tests_properties(robotweax_srt_key_length_tests PROPERTIES LABELS "encryption")
     add_test(NAME robotweax_srt_rejects_empty_test_selection
         COMMAND robotweax_srt_tests robotweax_nonexistent_test_filter)
@@ -1118,6 +1367,36 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
                     PROPERTIES TIMEOUT 45 LABELS "example;application;multicast;media;integration")
             endif()
         endforeach()
+        if(TARGET robotweax_srt_multicast_test)
+            foreach(mode IN LISTS multicast_example_modes)
+                add_test(NAME robotweax_srt_hybrid_multicast_sample_${mode}
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_hybrid_multicast.py
+                        --binary $<TARGET_FILE:robotweax_srt_multicast_test> --crypto ${mode})
+                set_tests_properties(robotweax_srt_hybrid_multicast_sample_${mode}
+                    PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE LABELS "example;hybrid;network;multicast")
+            endforeach()
+            add_test(NAME robotweax_srt_hybrid_multicast_sample_buffered
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_hybrid_multicast.py
+                    --binary $<TARGET_FILE:robotweax_srt_multicast_test> --latency-ms 1000)
+            add_test(NAME robotweax_srt_hybrid_multicast_sample_wrong_key
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_hybrid_multicast.py
+                    --binary $<TARGET_FILE:robotweax_srt_multicast> --wrong-key)
+            set_tests_properties(robotweax_srt_hybrid_multicast_sample_buffered
+                robotweax_srt_hybrid_multicast_sample_wrong_key
+                PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE LABELS "example;hybrid;network;multicast")
+            set(hybrid_sample_validation enabled)
+        else()
+            set(hybrid_sample_validation disabled)
+        endif()
+        add_test(NAME robotweax_srt_hybrid_multicast_sample_options
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/examples/applications/test_hybrid_multicast.py
+                --binary $<TARGET_FILE:robotweax_srt_multicast> --validation ${hybrid_sample_validation})
+        set_tests_properties(robotweax_srt_hybrid_multicast_sample_options
+            PROPERTIES TIMEOUT 20 LABELS "example;hybrid;security")
         add_test(NAME robotweax_srt_demo_terminal_output
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/examples/test_demo_terminal_output.py
@@ -1342,6 +1621,24 @@ if(ROBOTWEAX_SRT_BUILD_BENCHMARKS)
     target_link_libraries(robotweax_srt_send_buffer_benchmark
         PRIVATE RobotweaxSRT::srt)
     target_compile_features(robotweax_srt_send_buffer_benchmark
+        PRIVATE cxx_std_20)
+
+    add_executable(robotweax_srt_send_buffer_probe_benchmark
+        benchmarks/send_buffer_probe_benchmark.cpp)
+    target_link_libraries(robotweax_srt_send_buffer_probe_benchmark
+        PRIVATE RobotweaxSRT::srt)
+    target_compile_features(robotweax_srt_send_buffer_probe_benchmark
+        PRIVATE cxx_std_20)
+
+    # Diagnostic: a coordinated sender against loopback receivers; reads the
+    # coordinator's counters through the private registry like the tests do.
+    add_executable(robotweax_srt_coordinated_sender_benchmark
+        benchmarks/coordinated_sender_benchmark.cpp)
+    target_link_libraries(robotweax_srt_coordinated_sender_benchmark
+        PRIVATE RobotweaxSRT::srt)
+    target_include_directories(robotweax_srt_coordinated_sender_benchmark
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(robotweax_srt_coordinated_sender_benchmark
         PRIVATE cxx_std_20)
 
     add_executable(robotweax_srt_codec_benchmark benchmarks/codec_benchmark.cpp)
@@ -2270,6 +2567,9 @@ endif()
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
     string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH")
 endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
+    string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL")
+endif()
 if(ENABLE_AEAD_API_PREVIEW)
     string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DENABLE_AEAD_API_PREVIEW")
 endif()
@@ -2279,6 +2579,9 @@ endif()
 string(STRIP "${ROBOTWEAX_SRT_PC_CFLAGS}" ROBOTWEAX_SRT_PC_CFLAGS)
 if(WIN32)
     string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lws2_32")
+    if(ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD)
+        string(APPEND ROBOTWEAX_SRT_PC_PRIVATE_LIBS " -lwinmm")
+    endif()
 endif()
 string(STRIP
     "${ROBOTWEAX_SRT_PC_PRIVATE_LIBS}"

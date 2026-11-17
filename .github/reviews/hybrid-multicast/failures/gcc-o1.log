@@ -1,0 +1,10 @@
+[RUN] hybrid_soak_network_upper_profile_ctr
+1794139519189564/251109873162080W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[HYBRID_SOAK_SAMPLE] {"profile":1,"sample":1,"produced":9,"retained_uc":1,"retained_mc":1,"uc_capacity_retries":0}
+[HYBRID_SOAK_FAILURE] crypto=1 peer=1 expected=56 received=57 bytes=1316 canonical=1 offered=88 unique=57 dropped=1 undecryptable=0 sender_dropped=0
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==232282==ERROR: AddressSanitizer: SEGV on unknown address <address> (pc <address> bp <address> sp <address> T0)
+==232282==The signal is caused by a READ memory access.
+AddressSanitizer:DEADLYSIGNAL
+AddressSanitizer: nested bug in the same thread, aborting.

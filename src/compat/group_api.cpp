@@ -344,6 +344,9 @@ static int connect_group_impl(SRTSOCKET group, SRT_SOCKGROUPCONFIG endpoints[],
         // endpoint overrides. Neither snapshot contains runtime ownership.
         record->native_options = description.member_native_options;
         record->public_options = description.member_public_options;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        record->hybrid_startup_options = description.hybrid_startup_options;
+#endif
         if (configured && endpoint.config != nullptr) {
             const auto config = endpoint.config->storage.snapshot();
             for (std::size_t option_index = 0;

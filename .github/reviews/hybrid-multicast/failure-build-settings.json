@@ -1,0 +1,62 @@
+{
+  "gcc-o0": {
+    "reported_compiler": "Ubuntu GCC 13.3.0; identity from separately captured environment, not embedded in original failed-run record.",
+    "configuration_provenance": "Selected values reconstructed from original local cache with digest matching the published failed-run record.",
+    "source_checkout": "c142cb6f08e849dadb132eff7d74acf8bbcde690",
+    "worktree_dirty": false,
+    "cache_sha256": "25d22ad9f7199799b1a9587594e5fd258da80793a37793489028b317874faeda",
+    "settings": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+    },
+    "binary_commit_binding": "not enforced; BL-6 remains open"
+  },
+  "gcc-og": {
+    "reported_compiler": "Ubuntu GCC 13.3.0; identity from separately captured environment, not embedded in original failed-run record.",
+    "configuration_provenance": "Selected values reconstructed from original local cache with digest matching the published failed-run record.",
+    "source_checkout": "c142cb6f08e849dadb132eff7d74acf8bbcde690",
+    "worktree_dirty": false,
+    "cache_sha256": "83fd5c38a2a2f9a89efa4a949c3b8e1e2e29109e3fc068772eff08dba371a89d",
+    "settings": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g -Og",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+    },
+    "binary_commit_binding": "not enforced; BL-6 remains open"
+  },
+  "gcc-o1": {
+    "reported_compiler": "Ubuntu GCC 13.3.0; identity from separately captured environment, not embedded in original failed-run record.",
+    "configuration_provenance": "Selected values reconstructed from original local cache with digest matching the published failed-run record.",
+    "source_checkout": "997cfe2438eab1b0e9bdac2c797a7be7daf31c11",
+    "worktree_dirty": false,
+    "cache_sha256": "dc0db18e3aaa2bf02bd93a6c4e7f5eaceae0499901e3e8fc81a5f112d5601710",
+    "settings": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g -O1",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON"
+    },
+    "binary_commit_binding": "not enforced; BL-6 remains open"
+  },
+  "canonical-drop-diagnostic": {
+    "source_checkout": null,
+    "worktree_dirty": null,
+    "qualification": false,
+    "provenance_limit": "The original log did not record source/binary identity or dirty state. These cannot be recovered independently from its published bytes; do not treat this diagnostic as qualification."
+  }
+}

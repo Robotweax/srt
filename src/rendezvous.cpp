@@ -544,10 +544,48 @@ HandshakeActions RendezvousHandshakeMachine::receive(
     return receive(HandshakeMessage{.packet = packet});
 }
 
+bool RendezvousHandshakeMachine::ignores_setup_message(
+    const HandshakeMessage& message) const noexcept
+{
+    const auto& packet = message.packet;
+    if (state_ == RendezvousState::idle || state_ == RendezvousState::failed
+        || state_ == RendezvousState::rejected)
+        return true;
+    if (peer_cookie_ != 0U
+        && (packet.syn_cookie != peer_cookie_
+            || packet.socket_id != peer_socket_id_
+            || packet.flow_window != peer_flow_window_))
+        return true;
+    if (is_rejection(packet.request))
+        return state_ == RendezvousState::connected;
+    if (packet.socket_id == 0U || packet.syn_cookie == 0U)
+        return true;
+    switch (state_) {
+    case RendezvousState::waving:
+    case RendezvousState::attention:
+        return packet.request != HandshakeRequest::wave_a_hand
+            && packet.request != HandshakeRequest::conclusion;
+    case RendezvousState::fine:
+    case RendezvousState::initiated:
+        return !(packet.request == HandshakeRequest::conclusion
+                   && (role_ == RendezvousRole::initiator
+                       || has_handshake_request(message)))
+            && !(packet.request == HandshakeRequest::agreement
+                && role_ == RendezvousRole::responder);
+    case RendezvousState::connected:
+        return packet.request != HandshakeRequest::conclusion
+            && packet.request != HandshakeRequest::agreement;
+    default:
+        return true;
+    }
+}
+
 HandshakeActions RendezvousHandshakeMachine::receive(
     const HandshakeMessage& message) noexcept
 {
     const auto& incoming = message.packet;
+    if (ignores_setup_message(message))
+        return {};
     if (!configuration_.has_group_membership
         && (message.has_path_identifier || message.has_group_membership
             || message.has_standby_rtt))

@@ -108,6 +108,7 @@ class RendezvousFault:
     handshake_request: int | None = None
     control_type: int | None = None
     suppress_retransmissions: bool = False
+    suppress_until_nak: bool = False
 
     def __post_init__(self) -> None:
         if self.action not in FAULT_ACTIONS:
@@ -157,7 +158,9 @@ class RendezvousFault:
                 "control type filtering requires control packets "
                 "and a 15-bit value"
             )
-        if self.suppress_retransmissions and (
+        if self.suppress_retransmissions and self.suppress_until_nak:
+            raise ValueError("choose one retransmission suppression policy")
+        if (self.suppress_retransmissions or self.suppress_until_nak) and (
             self.action != "drop" or self.packet_kind != "data"
         ):
             raise ValueError(
@@ -1546,6 +1549,8 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
             "occurrence": fault.occurrence,
             **metadata,
         }
+        if fault.suppress_until_nak:
+            event.update(suppress_until_nak=True, suppressed_retransmissions=0)
         if fault.suppress_retransmissions:
             event.update(
                 {
@@ -1674,7 +1679,9 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
             for event in self._fault_events:
                 if (
                     event is None
-                    or event.get("suppress_retransmissions") is not True
+                    or not (event.get("suppress_retransmissions") is True
+                            or (event.get("suppress_until_nak") is True
+                                and event.get("loss_report_forwarded") is not True))
                     or event.get("direction") != direction
                     or event.get("sequence") != metadata.get("sequence")
                     or event.get("message_number")
@@ -1684,6 +1691,8 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
                 attempts = int(
                     event.get("suppressed_retransmissions", 0)
                 ) + 1
+                if event.get("suppress_until_nak") and attempts > 16:
+                    raise OSError(errno.ETIMEDOUT, "NAK loss window exceeded 16 suppressed retries")
                 event.update(
                     {
                         "suppressed_retransmissions": attempts,
@@ -2213,6 +2222,10 @@ class RendezvousTraceProxy(_HandshakeTraceRecorder):
                             "forwarded_monotonic_ns": forwarded_at_ns,
                             "forward_target": list(self._route(direction)[1]),
                         })
+                        for fault in self._fault_events:
+                            if (fault is not None and fault.get("loss_report_relay_ordinal")
+                                    == metadata.get("relay_ordinal")):
+                                fault["loss_report_forwarded"] = True
                         break
         if metadata.get("packet_kind") != "data":
             return

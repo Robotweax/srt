@@ -1,7 +1,7 @@
 # Robotweax SRT documentation
 
 This directory contains the public documentation for building, integrating,
-operating, and evaluating Robotweax SRT 0.3.2.
+operating, and evaluating Robotweax SRT 0.3.3.
 It is written for application
 developers and transport integrators using the installed public API.
 
@@ -22,6 +22,10 @@ developers and transport integrators using the installed public API.
 - [Peer authentication draft](peer-authentication.md) — unreviewed, default-off
   pinned-key protocol with experimental caller/listener support; independent
   cryptographic review remains outstanding.
+
+- [Experimental hybrid control](experimental-hybrid-control.md) — staged,
+  default-off capability codecs and session-bound control admission, without
+  socket activation.
 
 - [Experimental remote identity](implementation-identity.md) — development-only,
   default-off peer labels, disclosure policy and qualification boundaries.
@@ -119,6 +123,9 @@ combining features.
 - [Scheduler shards and staged scaling](scheduler-shards.md)
 - [Same-host UDP group throughput diagnostic](group-throughput.md)
 - [UDP send backpressure](udp-backpressure.md)
+- [UDP I/O backends draft](udp-io-backends.md) — draft contract for batched
+  system calls and segmentation offload (experimental, default off, Linux),
+  and for the unimplemented `io_uring` and Registered I/O backends.
 - [Shared-channel scheduling fairness](channel-fairness.md)
 - [Idle channel readiness](idle-readiness.md)
 - [Incremental SRT epoll readiness](epoll-readiness.md)
@@ -134,6 +141,10 @@ reproducible measurement methods. Internal implementation details that are not
 named as public contracts may change between pre-1.0 releases.
 
 ## Releases and migration
+
+- [0.3.3 security-sensitive delta disposition](security-delta-0.3.3.md) — focused review, provenance fix and retained limits.
+- [Robotweax SRT 0.3.3 release notes](release-notes-0.3.3.md) — hybrid multicast, repair budgets and receive-key hardening.
+- [Release contract for 0.3.3](release-process-0.3.3.md) — frozen-source qualification and publication gates.
 
 - [Robotweax SRT 0.3.2 release notes](release-notes-0.3.2.md) — multicast, optional ARQ-first, timing and admission changes.
 - [Release contract for 0.3.2](release-process-0.3.2.md) — source freeze, qualification, upgrade and publication requirements.
@@ -162,7 +173,7 @@ named as public contracts may change between pre-1.0 releases.
 - [Project changelog](../CHANGELOG.md)
 
 Robotweax release numbers, the shared-library ABI, the compatible SRT API
-value, and the wire handshake generation are independent. For 0.3.2, the ABI
+value, and the wire handshake generation are independent. For 0.3.3, the ABI
 line is 0.3, the default public API and `srt_getversion()` value are 1.5.7,
 and supported connection establishment uses HSv5.
 

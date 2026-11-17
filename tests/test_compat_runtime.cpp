@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -359,6 +360,39 @@ void exercise_gcm_fec_geometry(std::string_view filter,
 }
 
 } // namespace
+
+TEST(compat_runtime_injected_clock_initializes_keepalive_deadline)
+{
+    for (const auto origin_offset :
+        {std::chrono::seconds {-10}, std::chrono::seconds {10}}) {
+        const auto channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams output;
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        std::uint64_t now = 5'000;
+        ConnectionRuntime runtime {{
+            .channel = channel,
+            .peer = {.address = {192, 0, 2, 42}, .port = 16'002},
+            .peer_socket_id = 420,
+            .initial_sequence = SequenceNumber {100},
+            .origin = ConnectionRuntime::Clock::now() + origin_offset,
+            .now_function = injected_now,
+            .now_context = &now,
+        }};
+        (void)runtime.poll();
+        REQUIRE(take_datagrams(output).empty());
+        now += 999'999;
+        (void)runtime.poll();
+        REQUIRE(take_datagrams(output).empty());
+        ++now;
+        (void)runtime.poll();
+        const auto packets = take_datagrams(output);
+        REQUIRE_EQ(packets.size(), 1U);
+        const auto packet = decode_packet(packets.front());
+        REQUIRE(packet);
+        REQUIRE_EQ(packet.packet.kind, PacketKind::control);
+        REQUIRE_EQ(packet.packet.control.type, ControlType::keepalive);
+    }
+}
 
 #ifdef ENABLE_AEAD_API_PREVIEW
 TEST(compat_runtime_gcm_sensor_authenticates_fec_and_duplicate_data)
@@ -5767,22 +5801,34 @@ void check_rotation_loss_horizon(CryptoMode mode, std::uint64_t steady_step,
         stalled == 0U, available_positions * step >= 4'000U + losses * 10'000U);
 }
 
-} // namespace
-
-TEST(compat_runtime_rotation_loss_preserves_payload_and_configured_key_budget)
+// The loss-horizon matrix is the largest rotation case. Each cipher runs in
+// its own CTest partition so instrumented builds keep the 30-second budget.
+void check_rotation_loss_horizons(CryptoMode mode)
 {
-    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
-        for (const std::uint64_t step : {10U, 25U, 100U, 1'000U}) {
-            for (const std::uint32_t preannouncement : {1U, 256U}) {
-                for (const unsigned losses : {0U, 1U, 2U}) {
-                    for (const bool lose_response : {false, true}) {
-                        check_rotation_loss_horizon(
-                            mode, step, preannouncement, losses, lose_response);
-                    }
+    for (const std::uint64_t step : {10U, 25U, 100U, 1'000U}) {
+        for (const std::uint32_t preannouncement : {1U, 256U}) {
+            for (const unsigned losses : {0U, 1U, 2U}) {
+                for (const bool lose_response : {false, true}) {
+                    check_rotation_loss_horizon(
+                        mode, step, preannouncement, losses, lose_response);
                 }
             }
         }
     }
+}
+
+} // namespace
+
+TEST(
+    compat_runtime_rotation_loss_ctr_preserves_payload_and_configured_key_budget)
+{
+    check_rotation_loss_horizons(CryptoMode::aes_ctr);
+}
+
+TEST(
+    compat_runtime_rotation_loss_gcm_preserves_payload_and_configured_key_budget)
+{
+    check_rotation_loss_horizons(CryptoMode::aes_gcm);
 }
 
 TEST(compat_runtime_rotation_transitions_preserve_payload_and_key_budget)
@@ -8196,6 +8242,85 @@ TEST(compat_runtime_peer_idle_timeout_uses_last_valid_packet)
     REQUIRE(!runtime.writable());
 }
 
+#ifndef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+// Without the experimental hybrid control option a hybrid control packet has
+// no effect on a connection. It must not count as peer activity, so it cannot
+// keep an idle connection alive, exactly like a control packet whose subtype
+// nobody has assigned. A keepalive is the positive control for the harness.
+TEST(compat_runtime_default_build_gives_hybrid_control_subtypes_no_effect)
+{
+    constexpr std::uint16_t unassigned_subtype = 0x7f18;
+    constexpr std::uint16_t hybrid_control_subtype = 0x7f16;
+    constexpr std::uint16_t hybrid_exchange_subtype = 0x7f17;
+    constexpr std::uint16_t authenticated_envelope_subtype = 0x7f05;
+
+    // An authenticated-control envelope whose inner packet is a hybrid
+    // control: 12 envelope bytes, the inner packet, 32 trailing bytes.
+    const std::array<std::byte, 4> padding {};
+    MutablePacketView inner;
+    inner.kind = PacketKind::control;
+    inner.control.type = ControlType::user_defined;
+    inner.control.subtype = hybrid_control_subtype;
+    inner.control.destination_socket_id = 1;
+    inner.payload = padding;
+    constexpr std::size_t inner_size = packet_header_size + padding.size();
+    std::array<std::byte, 12 + inner_size + 32> envelope {};
+    const auto encoded_inner = encode_packet(
+        inner, std::span<std::byte>(envelope).subspan(12, inner_size));
+    REQUIRE(encoded_inner);
+    REQUIRE_EQ(encoded_inner.bytes_written, inner_size);
+
+    // True when one control packet, received at 4 ms, keeps a runtime with a
+    // 5 ms peer idle timeout alive past the 5 ms mark.
+    const auto refreshes_peer_activity = [](ControlType type,
+                                             std::uint16_t subtype,
+                                             std::span<const std::byte> body) {
+        const auto channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams output;
+        channel->set_send_hook_for_testing(capture_datagram, &output);
+        const Ipv4Endpoint peer {
+            .address = {198, 51, 100, 42},
+            .port = 12'002,
+        };
+        std::uint64_t now = 0;
+        ConnectionRuntime runtime {{
+            .channel = channel,
+            .peer = peer,
+            .peer_socket_id = 901,
+            .initial_sequence = SequenceNumber {3'000},
+            .origin = ConnectionRuntime::Clock::now(),
+            .peer_idle_timeout_milliseconds = 5,
+            .now_function = injected_now,
+            .now_context = &now,
+        }};
+        now = 4'000;
+        PacketView control;
+        control.kind = PacketKind::control;
+        control.control.type = type;
+        control.control.subtype = subtype;
+        control.control.destination_socket_id = 1;
+        control.payload = body;
+        runtime.process_packet(control, peer);
+        now = 5'001;
+        (void)runtime.poll();
+        return !runtime.broken();
+    };
+
+    REQUIRE(refreshes_peer_activity(ControlType::keepalive, 0, padding));
+    const auto user_defined = ControlType::user_defined;
+    REQUIRE(
+        !refreshes_peer_activity(user_defined, unassigned_subtype, padding));
+    REQUIRE(
+        !refreshes_peer_activity(user_defined, unassigned_subtype, envelope));
+    REQUIRE(!refreshes_peer_activity(
+        user_defined, hybrid_control_subtype, padding));
+    REQUIRE(!refreshes_peer_activity(
+        user_defined, hybrid_exchange_subtype, padding));
+    REQUIRE(!refreshes_peer_activity(
+        user_defined, authenticated_envelope_subtype, envelope));
+}
+#endif
+
 TEST(compat_runtime_rejects_malformed_peer_error_without_refreshing_idle_time)
 {
     const auto channel = std::make_shared<DatagramChannel>();
@@ -8949,12 +9074,13 @@ struct BackpressureFixture {
     explicit BackpressureFixture(bool too_late_drop = false,
         std::uint32_t peer_idle_timeout_milliseconds = 5'000,
         bool peer_periodic_nak = false, std::uint32_t capacity = 64,
-        bool file_mode = false)
+        bool file_mode = false, std::uint32_t send_capacity = 64)
     {
         channel->set_send_hook_for_testing(backpressure_datagram, &output);
         SocketOptions options;
         REQUIRE_EQ(
-            options.set(SocketOption::send_buffer_packets, 64), Error::none);
+            options.set(SocketOption::send_buffer_packets, send_capacity),
+            Error::none);
         REQUIRE_EQ(options.set(SocketOption::receive_buffer_packets,
                        static_cast<std::int64_t>(capacity)),
             Error::none);
@@ -9758,13 +9884,14 @@ namespace {
 struct FairnessClock {
     std::uint64_t* now = nullptr;
     std::size_t reads = 0;
+    std::uint64_t advance_per_read = 0;
 };
 
 std::uint64_t fairness_now(void* context) noexcept
 {
     auto& clock = *static_cast<FairnessClock*>(context);
     ++clock.reads;
-    return *clock.now;
+    return *clock.now += clock.advance_per_read;
 }
 
 struct FairnessFixture {
@@ -9807,6 +9934,12 @@ struct FairnessFixture {
     {
         auto clock = std::make_unique<FairnessClock>();
         clock->now = &now;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+        // Staged DATA reaches the send hook only after the whole poll picked
+        // it, so the hook cannot make the next packet due. Time moves on
+        // with every reading instead.
+        clock->advance_per_read = 10;
+#endif
         SocketOptions options;
         REQUIRE_EQ(options.set(SocketOption::send_buffer_packets,
                        messages == 0 ? 4 : 128),
@@ -12031,6 +12164,177 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
 
 } // namespace
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+namespace {
+
+// Every reading moves time on, so one poll finds several DATA due and stages
+// them together.
+std::uint64_t batching_now(void* context) noexcept
+{
+    return *static_cast<std::uint64_t*>(context) += 20;
+}
+
+void run_encrypted_send_batches_across_rotations(CryptoMode mode)
+{
+    const auto sender_channel = std::make_shared<DatagramChannel>();
+    const auto receiver_channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams sender_output;
+    CapturedDatagrams receiver_output;
+    sender_channel->set_send_hook_for_testing(capture_datagram, &sender_output);
+    receiver_channel->set_send_hook_for_testing(
+        capture_datagram, &receiver_output);
+    const Ipv4Endpoint sender_endpoint {
+        .address = {192, 0, 2, 97}, .port = 16'201};
+    const Ipv4Endpoint receiver_endpoint {
+        .address = {192, 0, 2, 98}, .port = 16'202};
+    const CryptoConfiguration configuration {
+        .passphrase = "batched key rotation fixture",
+        .mode = mode,
+        .enable_aes_gcm = true,
+        .key_length = 16,
+        .refresh_rate_packets = 200,
+        .preannouncement_packets = 80,
+    };
+    auto sender_crypto = std::make_shared<CryptoSession>(configuration);
+    auto receiver_crypto = std::make_shared<CryptoSession>(configuration);
+    REQUIRE_EQ(sender_crypto->start_initiator(), Error::none);
+    REQUIRE_EQ(receiver_crypto->accept_key_material(
+                   sender_crypto->pending_key_material(), true),
+        Error::none);
+    REQUIRE_EQ(sender_crypto->acknowledge_key_material(
+                   receiver_crypto->key_material_response(), true),
+        Error::none);
+    confirm_directional_test_keys(*sender_crypto, *receiver_crypto);
+
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::send_buffer_packets, 2'048), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::receive_buffer_packets, 2'048), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second,
+                   1'000'000'000),
+        Error::none);
+#ifdef ENABLE_AEAD_API_PREVIEW
+    if (mode == CryptoMode::aes_gcm) {
+        REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+    }
+#endif
+    const SequenceNumber initial_sequence {8'000};
+    const auto origin = ConnectionRuntime::Clock::now();
+    std::uint64_t now = 1'000'000;
+    ConnectionRuntime sender {{
+        .channel = sender_channel,
+        .peer = receiver_endpoint,
+        .peer_socket_id = 940,
+        .initial_sequence = initial_sequence,
+        .flow_window_packets = 2'048,
+        .options = options,
+        .negotiated_options = {.periodic_nak = true, .retransmit_flag = true},
+        .origin = origin,
+        .crypto = sender_crypto,
+        .now_function = batching_now,
+        .now_context = &now,
+    }};
+    ConnectionRuntime receiver {{
+        .channel = receiver_channel,
+        .peer = sender_endpoint,
+        .peer_socket_id = 930,
+        .initial_sequence = initial_sequence,
+        .flow_window_packets = 2'048,
+        .options = options,
+        .negotiated_options = {.periodic_nak = true, .retransmit_flag = true},
+        .origin = origin,
+        .crypto = receiver_crypto,
+        .now_function = batching_now,
+        .now_context = &now,
+    }};
+
+    constexpr std::uint32_t messages = 700;
+    std::uint32_t queued = 0;
+    std::uint32_t delivered = 0;
+    std::size_t largest_batch = 0;
+    std::size_t rotations = 0;
+    std::array<std::byte, 64> message {};
+    std::array<std::byte, 1'500> received {};
+    for (int round = 0; round < 20'000 && delivered < messages; ++round) {
+        for (int burst = 0; burst < 50 && queued < messages; ++burst) {
+            message.fill(static_cast<std::byte>(queued));
+            if (sender.queue_message(message, 0, true, false, 0).status
+                != MessageIoStatus::success) {
+                break;
+            }
+            ++queued;
+        }
+        (void)sender.poll();
+        std::size_t data_in_poll = 0;
+        for (const auto& datagram : take_datagrams(sender_output)) {
+            const auto decoded = decode_packet(datagram);
+            REQUIRE(decoded);
+            if (decoded.packet.kind == PacketKind::data) {
+                ++data_in_poll;
+            }
+            receiver.process_packet(decoded.packet, sender_endpoint);
+        }
+        largest_batch = std::max(largest_batch, data_in_poll);
+        (void)receiver.poll();
+        for (const auto& datagram : take_datagrams(receiver_output)) {
+            const auto decoded = decode_packet(datagram);
+            REQUIRE(decoded);
+            if (decoded.packet.kind == PacketKind::control
+                && decoded.packet.control.type == ControlType::user_defined
+                && decoded.packet.control.subtype
+                    == key_material_response_subtype) {
+                ++rotations;
+            }
+            sender.process_packet(decoded.packet, receiver_endpoint);
+        }
+        for (;;) {
+            const auto got = receiver.receive_message(received, false, 0);
+            if (got.status != MessageIoStatus::success) {
+                break;
+            }
+            // In order, whole, and decrypted with the right key.
+            REQUIRE_EQ(got.bytes, message.size());
+            REQUIRE(std::all_of(received.begin(),
+                received.begin() + static_cast<std::ptrdiff_t>(got.bytes),
+                [&](std::byte value) {
+                    return value == static_cast<std::byte>(delivered);
+                }));
+            ++delivered;
+        }
+        REQUIRE(!sender.broken());
+        REQUIRE(!receiver.broken());
+        // A key never covers more than its refresh period plus one
+        // preannouncement window, however the packets were batched.
+        REQUIRE(sender_crypto->packets_on_active_key() < 400U);
+        now += 200;
+    }
+    REQUIRE_EQ(delivered, messages);
+    REQUIRE(largest_batch > 1U);
+    // 700 packets at a refresh period of 200: each position counted once
+    // gives three rotations. Counting a staged packet twice would give more.
+    REQUIRE_EQ(rotations, 3U);
+    const auto sender_totals = sender.statistics(false, true).total;
+    REQUIRE_EQ(sender_totals.sent_unique.packets, messages);
+    REQUIRE_EQ(sender_totals.sender_key_refresh_overrun_positions, 0U);
+    REQUIRE_EQ(
+        receiver.statistics(false, true).total.receiver_undecryptable.packets,
+        0U);
+}
+
+} // namespace
+
+TEST(compat_runtime_encrypted_send_batches_rotate_keys_ctr)
+{
+    run_encrypted_send_batches_across_rotations(CryptoMode::aes_ctr);
+}
+
+TEST(compat_runtime_encrypted_send_batches_rotate_keys_gcm)
+{
+    run_encrypted_send_batches_across_rotations(CryptoMode::aes_gcm);
+}
+#endif
+
 TEST(compat_runtime_sender_late_drop_spares_packets_that_were_never_sent)
 {
     // The application writes a burst far beyond the paced sending rate, so
@@ -13661,4 +13965,883 @@ TEST(
         }
         REQUIRE(acknowledged_cycle);
     }
+}
+
+namespace {
+
+struct MulticastIngressFixture {
+    static constexpr std::uint32_t dispatch_id = 0x40000001U;
+    static constexpr std::uint32_t member_id = 101U;
+    std::uint64_t now = 0;
+    CapturedDatagrams output;
+    std::shared_ptr<DatagramChannel> control =
+        std::make_shared<DatagramChannel>();
+    DatagramChannel multicast;
+    std::shared_ptr<ConnectionRuntime> runtime;
+
+    MulticastIngressFixture()
+    {
+        control->set_send_hook_for_testing(capture_datagram, &output);
+        SocketOptions options;
+        REQUIRE_EQ(options.set(SocketOption::tsbpd_mode, 0), Error::none);
+        runtime = std::make_shared<ConnectionRuntime>(
+            ConnectionRuntime::Configuration {
+                .channel = control,
+                .peer = IpEndpoint::loopback(9000),
+                .peer_socket_id = 77,
+                .initial_sequence = SequenceNumber {42},
+                .options = options,
+                .peer_idle_timeout_milliseconds = 5,
+                .now_function = injected_now,
+                .now_context = &now,
+            });
+        REQUIRE(multicast.register_ingress_route(
+            dispatch_id, runtime, PacketIngress::multicast_data));
+        REQUIRE(control->register_ingress_route(
+            dispatch_id, runtime, PacketIngress::unicast_session));
+        REQUIRE(control->register_ingress_route(
+            member_id, runtime, PacketIngress::unicast_session));
+    }
+
+    void deliver(DatagramChannel& channel, const MutablePacketView& packet,
+        IpEndpoint peer = IpEndpoint::loopback(9000))
+    {
+        std::array<std::byte, 1500> bytes {};
+        const auto encoded = encode_packet(packet, bytes);
+        REQUIRE(encoded);
+        bool consumed = false;
+        auto input = [&](std::span<std::byte> destination) -> UdpIoResult {
+            if (consumed)
+                return {.error = Error::would_block};
+            consumed = true;
+            std::copy_n(
+                bytes.begin(), encoded.bytes_written, destination.begin());
+            return {.bytes_transferred = encoded.bytes_written, .peer = peer};
+        };
+        (void)channel.run_once_for_testing(input);
+    }
+};
+
+} // namespace
+
+TEST(compat_multicast_ingress_rejects_shutdown_but_unicast_keeps_control)
+{
+    for (const auto destination : {MulticastIngressFixture::dispatch_id,
+             MulticastIngressFixture::member_id}) {
+        MulticastIngressFixture fixture;
+        const std::array<std::byte, 4> payload {};
+        MutablePacketView packet;
+        packet.kind = PacketKind::control;
+        packet.control.type = ControlType::shutdown;
+        packet.control.destination_socket_id =
+            MulticastIngressFixture::dispatch_id;
+        packet.payload = payload;
+        fixture.deliver(fixture.multicast, packet);
+        REQUIRE(!fixture.runtime->peer_closed());
+        REQUIRE(!fixture.runtime->broken());
+        packet.control.destination_socket_id = destination;
+        fixture.deliver(*fixture.control, packet);
+        REQUIRE(fixture.runtime->peer_closed());
+    }
+}
+
+TEST(compat_multicast_ingress_rejects_acknowledgements_before_statistics)
+{
+    MulticastIngressFixture fixture;
+    std::array<std::byte, 4> payload {};
+    REQUIRE(encode_acknowledgement_payload(
+        {.kind = AcknowledgementKind::lite,
+            .next_sequence = SequenceNumber {42}},
+        payload));
+    MutablePacketView packet;
+    packet.kind = PacketKind::control;
+    packet.control.type = ControlType::acknowledgement;
+    packet.control.destination_socket_id = MulticastIngressFixture::dispatch_id;
+    packet.payload = payload;
+    fixture.deliver(fixture.multicast, packet);
+    REQUIRE_EQ(fixture.runtime->statistics(false, false)
+                   .total.received_acknowledgements,
+        0U);
+    fixture.deliver(*fixture.control, packet);
+    REQUIRE_EQ(fixture.runtime->statistics(false, false)
+                   .total.received_acknowledgements,
+        1U);
+}
+
+TEST(compat_multicast_ingress_rejected_keepalive_does_not_extend_liveness)
+{
+    MulticastIngressFixture fixture;
+    const std::array<std::byte, 4> payload {};
+    MutablePacketView packet;
+    packet.kind = PacketKind::control;
+    packet.control.type = ControlType::keepalive;
+    packet.control.destination_socket_id = MulticastIngressFixture::dispatch_id;
+    packet.payload = payload;
+    fixture.now = 4000;
+    fixture.deliver(fixture.multicast, packet);
+    fixture.now = 6000;
+    (void)fixture.runtime->poll();
+    REQUIRE(fixture.runtime->broken());
+}
+
+TEST(compat_multicast_ingress_source_destination_and_merge_admission)
+{
+    MulticastIngressFixture fixture;
+    const std::array payload {std::byte {'a'}};
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.destination_socket_id = MulticastIngressFixture::dispatch_id;
+    packet.data.sequence = SequenceNumber {42};
+    packet.data.message_number = 1;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.data.in_order = true;
+    packet.payload = payload;
+    for (const auto source : {IpEndpoint::loopback(9001),
+             IpEndpoint {.address = {127, 0, 0, 2}, .port = 9000},
+             IpEndpoint::ipv6_loopback(9000)})
+        fixture.deliver(fixture.multicast, packet, source);
+    REQUIRE_EQ(fixture.runtime->foreign_peer_packets(), 3U);
+    packet.data.destination_socket_id = MulticastIngressFixture::member_id;
+    fixture.deliver(fixture.multicast, packet);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received.packets, 0U);
+    REQUIRE_EQ(fixture.multicast.unrouted_datagrams(), 1U);
+    packet.data.destination_socket_id = MulticastIngressFixture::dispatch_id;
+    fixture.deliver(fixture.multicast, packet);
+    fixture.deliver(*fixture.control, packet);
+    std::array<std::byte, 1> output {};
+    REQUIRE_EQ(fixture.runtime->receive_message(output, false, 0).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(output, payload);
+    REQUIRE_EQ(fixture.runtime->receive_message(output, false, 0).status,
+        MessageIoStatus::would_block);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+}
+
+namespace robotweax::srt::compat {
+struct MulticastIngressTestAccess {
+    static std::shared_ptr<const MulticastIngressBinding> snapshot(
+        DatagramChannel& channel, std::uint32_t id)
+    {
+        std::lock_guard lock(channel.routes_mutex_);
+        return channel.routes_.at(id).multicast_binding;
+    }
+    static std::uint64_t generation(
+        const std::shared_ptr<const MulticastIngressBinding>& binding)
+    {
+        return binding->generation_;
+    }
+    static void prepare_last_generation(ConnectionRuntime& runtime)
+    {
+        std::lock_guard lock(runtime.mutex_);
+        runtime.multicast_ingress_generation_ =
+            std::numeric_limits<std::uint64_t>::max() - 1U;
+    }
+};
+} // namespace robotweax::srt::compat
+
+namespace {
+
+MutablePacketView multicast_binding_packet(std::span<const std::byte> payload)
+{
+    MutablePacketView packet;
+    packet.kind = PacketKind::data;
+    packet.data.destination_socket_id = MulticastIngressFixture::dispatch_id;
+    packet.data.sequence = SequenceNumber {42};
+    packet.data.message_number = 1;
+    packet.data.boundary = MessageBoundary::solo;
+    packet.data.in_order = true;
+    packet.payload = payload;
+    return packet;
+}
+
+PacketView binding_view(const MutablePacketView& packet)
+{
+    PacketView view;
+    view.kind = packet.kind;
+    view.data = packet.data;
+    view.control = packet.control;
+    view.payload = packet.payload;
+    return view;
+}
+
+void require_no_binding_data(ConnectionRuntime& runtime)
+{
+    REQUIRE_EQ(runtime.statistics(false, false).total.received.packets, 0U);
+    REQUIRE_EQ(runtime.foreign_peer_packets(), 0U);
+    std::array<std::byte, 1> output {};
+    REQUIRE_EQ(runtime.receive_message(output, false, 0).status,
+        MessageIoStatus::would_block);
+}
+
+MulticastIngressConfiguration binding_source(
+    IpEndpoint endpoint, std::uint32_t local_scope = 0)
+{
+    return {.source = {.kind = MulticastSourceKind::announcement,
+                .group_id = MulticastIngressFixture::dispatch_id,
+                .endpoint = endpoint},
+        .interface_scope_id = local_scope};
+}
+
+} // namespace
+
+TEST(compat_multicast_binding_rejects_missing_foreign_and_mismatched_tokens)
+{
+    MulticastIngressFixture fixture;
+    MulticastIngressFixture other;
+    const std::array payload {std::byte {'a'}};
+    auto packet = multicast_binding_packet(payload);
+    const auto token = MulticastIngressTestAccess::snapshot(
+        fixture.multicast, fixture.dispatch_id);
+    const auto foreign = MulticastIngressTestAccess::snapshot(
+        other.multicast, other.dispatch_id);
+    fixture.runtime->process_packet(binding_view(packet),
+        IpEndpoint::loopback(9000), {}, PacketIngress::multicast_data);
+    fixture.runtime->process_packet(binding_view(packet),
+        IpEndpoint::loopback(9000), {}, PacketIngress::multicast_data, foreign);
+    fixture.runtime->process_packet(binding_view(packet),
+        IpEndpoint::loopback(9000), {}, PacketIngress::multicast_data,
+        std::make_shared<MulticastIngressBinding>());
+    ++packet.data.destination_socket_id;
+    fixture.runtime->process_packet(binding_view(packet),
+        IpEndpoint::loopback(9000), {}, PacketIngress::multicast_data, token);
+    require_no_binding_data(*fixture.runtime);
+}
+
+TEST(compat_multicast_binding_fences_captured_work_after_unregister_and_rebind)
+{
+    MulticastIngressFixture fixture;
+    const std::array payload {std::byte {'a'}};
+    const auto packet = multicast_binding_packet(payload);
+    // Capture exactly the identity dispatch copies before dropping routes_mutex_.
+    const auto old = MulticastIngressTestAccess::snapshot(
+        fixture.multicast, fixture.dispatch_id);
+    fixture.multicast.unregister_connection(fixture.dispatch_id);
+    fixture.runtime->process_packet(binding_view(packet),
+        IpEndpoint::loopback(9000), {}, PacketIngress::multicast_data, old);
+    require_no_binding_data(*fixture.runtime);
+    REQUIRE(fixture.multicast.register_ingress_route(
+        fixture.dispatch_id, fixture.runtime, PacketIngress::multicast_data));
+    const auto current = MulticastIngressTestAccess::snapshot(
+        fixture.multicast, fixture.dispatch_id);
+    REQUIRE(current != old);
+    REQUIRE_EQ(MulticastIngressTestAccess::generation(current),
+        MulticastIngressTestAccess::generation(old) + 1U);
+    fixture.runtime->process_packet(binding_view(packet),
+        IpEndpoint::loopback(9000), {}, PacketIngress::multicast_data, old);
+    require_no_binding_data(*fixture.runtime);
+    fixture.deliver(fixture.multicast, packet);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+}
+
+TEST(compat_multicast_binding_replacement_survives_old_channel_teardown)
+{
+    MulticastIngressFixture fixture;
+    const std::array payload {std::byte {'a'}};
+    const auto packet = multicast_binding_packet(payload);
+    DatagramChannel replacement;
+    REQUIRE(replacement.register_ingress_route(
+        fixture.dispatch_id, fixture.runtime, PacketIngress::multicast_data));
+    fixture.deliver(fixture.multicast, packet);
+    require_no_binding_data(*fixture.runtime);
+    fixture.multicast.unregister_connection(fixture.dispatch_id);
+    fixture.deliver(replacement, packet);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+}
+
+// A replacement on another channel supersedes the identity; the route that
+// carried the old identity leaves its channel with it, instead of lingering
+// there until that channel's teardown and dropping routed datagrams.
+TEST(
+    compat_multicast_binding_replacement_retires_the_route_on_the_former_channel)
+{
+    MulticastIngressFixture fixture;
+    const std::array payload {std::byte {'a'}};
+    const auto packet = multicast_binding_packet(payload);
+    const auto former = std::make_shared<DatagramChannel>();
+    const auto current = std::make_shared<DatagramChannel>();
+    REQUIRE(former->register_ingress_route(
+        fixture.dispatch_id, fixture.runtime, PacketIngress::multicast_data));
+    REQUIRE(former->has_ingress_route(fixture.dispatch_id,
+        fixture.runtime.get(), PacketIngress::multicast_data));
+    REQUIRE(current->register_ingress_route(
+        fixture.dispatch_id, fixture.runtime, PacketIngress::multicast_data));
+    REQUIRE(!former->has_ingress_route(fixture.dispatch_id,
+        fixture.runtime.get(), PacketIngress::multicast_data));
+    fixture.deliver(*former, packet);
+    REQUIRE_EQ(former->unrouted_datagrams(), 1U);
+    REQUIRE_EQ(fixture.runtime->rejected_multicast_packets(), 0U);
+    require_no_binding_data(*fixture.runtime);
+    fixture.deliver(*current, packet);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+    // The fixture's own channel is not shared, so it carries no publisher;
+    // its stale route stays until its teardown, as before.
+    REQUIRE(fixture.multicast.has_ingress_route(fixture.dispatch_id,
+        fixture.runtime.get(), PacketIngress::multicast_data));
+}
+
+TEST(compat_multicast_binding_channel_destruction_revokes_captured_identity)
+{
+    MulticastIngressFixture fixture;
+    const std::array payload {std::byte {'a'}};
+    auto channel = std::make_unique<DatagramChannel>();
+    REQUIRE(channel->register_ingress_route(
+        fixture.dispatch_id, fixture.runtime, PacketIngress::multicast_data));
+    const auto captured =
+        MulticastIngressTestAccess::snapshot(*channel, fixture.dispatch_id);
+    channel.reset();
+    fixture.runtime->process_packet(
+        binding_view(multicast_binding_packet(payload)),
+        IpEndpoint::loopback(9000), {}, PacketIngress::multicast_data,
+        captured);
+    require_no_binding_data(*fixture.runtime);
+}
+
+TEST(
+    compat_multicast_binding_duplicate_or_exhausted_registration_preserves_active_route)
+{
+    for (const bool exhaust : {false, true}) {
+        MulticastIngressFixture fixture;
+        const std::array payload {std::byte {'a'}};
+        if (exhaust) {
+            fixture.multicast.unregister_connection(fixture.dispatch_id);
+            MulticastIngressTestAccess::prepare_last_generation(
+                *fixture.runtime);
+            REQUIRE(
+                fixture.multicast.register_ingress_route(fixture.dispatch_id,
+                    fixture.runtime, PacketIngress::multicast_data));
+        }
+        const auto before = MulticastIngressTestAccess::snapshot(
+            fixture.multicast, fixture.dispatch_id);
+        if (exhaust) {
+            REQUIRE_EQ(MulticastIngressTestAccess::generation(before),
+                std::numeric_limits<std::uint64_t>::max());
+            DatagramChannel replacement;
+            REQUIRE(!replacement.register_ingress_route(fixture.dispatch_id,
+                fixture.runtime, PacketIngress::multicast_data));
+            fixture.deliver(replacement, multicast_binding_packet(payload));
+            REQUIRE_EQ(replacement.unrouted_datagrams(), 1U);
+        } else {
+            REQUIRE(
+                !fixture.multicast.register_ingress_route(fixture.dispatch_id,
+                    fixture.runtime, PacketIngress::multicast_data));
+        }
+        REQUIRE(MulticastIngressTestAccess::snapshot(
+                    fixture.multicast, fixture.dispatch_id)
+            == before);
+        fixture.deliver(fixture.multicast, multicast_binding_packet(payload));
+        REQUIRE_EQ(fixture.runtime->statistics(false, false)
+                       .total.received_unique.packets,
+            1U);
+    }
+}
+
+TEST(
+    compat_multicast_binding_independent_source_keeps_unicast_peer_validation_and_merge)
+{
+    MulticastIngressFixture fixture;
+    const IpEndpoint source {.address = {127, 0, 0, 2}, .port = 6000};
+    const std::array payload {std::byte {'a'}};
+    const auto packet = multicast_binding_packet(payload);
+    fixture.multicast.unregister_connection(fixture.dispatch_id);
+    REQUIRE(fixture.multicast.register_ingress_route(fixture.dispatch_id,
+        fixture.runtime, PacketIngress::multicast_data,
+        binding_source(source)));
+    for (const auto wrong :
+        {IpEndpoint::loopback(9000), IpEndpoint::loopback(6000),
+            IpEndpoint {.address = source.address, .port = 6001}})
+        fixture.deliver(fixture.multicast, packet, wrong);
+    fixture.deliver(*fixture.control, packet, source);
+    REQUIRE_EQ(fixture.runtime->foreign_peer_packets(), 4U);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received.packets, 0U);
+    fixture.deliver(fixture.multicast, packet, source);
+    fixture.deliver(*fixture.control, packet);
+    std::array<std::byte, 1> output {};
+    REQUIRE_EQ(fixture.runtime->receive_message(output, false, 0).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(output, payload);
+    REQUIRE_EQ(fixture.runtime->receive_message(output, false, 0).status,
+        MessageIoStatus::would_block);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+    MutablePacketView shutdown;
+    shutdown.kind = PacketKind::control;
+    shutdown.control.type = ControlType::shutdown;
+    shutdown.control.destination_socket_id = fixture.dispatch_id;
+    const std::array<std::byte, 4> zero {};
+    shutdown.payload = zero;
+    fixture.deliver(fixture.multicast, shutdown, source);
+    fixture.deliver(*fixture.control, shutdown, source);
+    REQUIRE(!fixture.runtime->peer_closed());
+    fixture.deliver(*fixture.control, shutdown);
+    REQUIRE(fixture.runtime->peer_closed());
+}
+
+TEST(compat_multicast_binding_invalid_configuration_does_not_replace_live_route)
+{
+    MulticastIngressFixture fixture;
+    for (unsigned invalid = 0; invalid < 6; ++invalid) {
+        DatagramChannel candidate;
+        auto config = binding_source(IpEndpoint::loopback(6000));
+        auto provenance = PacketIngress::multicast_data;
+        switch (invalid) {
+        case 0:
+            ++config.source.group_id;
+            break;
+        case 1:
+            config.source.kind = MulticastSourceKind::offer;
+            break;
+        case 2:
+            config.source.endpoint.port = 0;
+            break;
+        case 3:
+            provenance = PacketIngress::unicast_session;
+            break;
+        case 4:
+            config.interface_scope_id = 4;
+            break;
+        case 5:
+            provenance = static_cast<PacketIngress>(99);
+            break;
+        }
+        REQUIRE(!candidate.register_ingress_route(
+            fixture.dispatch_id, fixture.runtime, provenance, config));
+    }
+    const std::array payload {std::byte {'a'}};
+    fixture.deliver(fixture.multicast, multicast_binding_packet(payload));
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+}
+
+TEST(compat_multicast_binding_local_ipv6_scope_is_not_learned_from_wire)
+{
+    MulticastIngressFixture fixture;
+    IpEndpoint source = IpEndpoint::ipv6_loopback(6000);
+    source.address[0] = 0xfe;
+    source.address[1] = 0x80;
+    DatagramChannel scoped;
+    REQUIRE(!scoped.register_ingress_route(fixture.dispatch_id, fixture.runtime,
+        PacketIngress::multicast_data, binding_source(source)));
+    REQUIRE(scoped.register_ingress_route(fixture.dispatch_id, fixture.runtime,
+        PacketIngress::multicast_data, binding_source(source, 3)));
+    const std::array payload {std::byte {'a'}};
+    const auto packet = multicast_binding_packet(payload);
+    source.scope_id = 4;
+    fixture.deliver(scoped, packet, source);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received.packets, 0U);
+    source.scope_id = 3;
+    fixture.deliver(scoped, packet, source);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+}
+
+TEST(compat_multicast_binding_stale_snapshot_cannot_extend_liveness)
+{
+    MulticastIngressFixture fixture;
+    const auto old = MulticastIngressTestAccess::snapshot(
+        fixture.multicast, fixture.dispatch_id);
+    fixture.multicast.unregister_connection(fixture.dispatch_id);
+    const std::array payload {std::byte {'a'}};
+    fixture.now = 4000;
+    fixture.runtime->process_packet(
+        binding_view(multicast_binding_packet(payload)),
+        IpEndpoint::loopback(9000), {}, PacketIngress::multicast_data, old);
+    require_no_binding_data(*fixture.runtime);
+    fixture.now = 6000;
+    (void)fixture.runtime->poll();
+    REQUIRE(fixture.runtime->broken());
+}
+
+TEST(compat_multicast_binding_runtime_close_rejects_late_work_and_registration)
+{
+    MulticastIngressFixture fixture;
+    const auto old = MulticastIngressTestAccess::snapshot(
+        fixture.multicast, fixture.dispatch_id);
+    fixture.runtime->close();
+    const std::array payload {std::byte {'a'}};
+    fixture.runtime->process_packet(
+        binding_view(multicast_binding_packet(payload)),
+        IpEndpoint::loopback(9000), {}, PacketIngress::multicast_data, old);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received.packets, 0U);
+    DatagramChannel replacement;
+    REQUIRE(!replacement.register_ingress_route(
+        fixture.dispatch_id, fixture.runtime, PacketIngress::multicast_data));
+}
+
+TEST(
+    compat_runtime_multicast_binding_native_udp_preserves_independent_source_port)
+{
+    MulticastIngressFixture fixture;
+    DatagramChannel channel;
+    UdpSocket sender;
+    REQUIRE_EQ(channel.socket.bind(IpEndpoint::loopback()), Error::none);
+    REQUIRE_EQ(sender.bind(IpEndpoint::loopback()), Error::none);
+    const auto destination = channel.socket.local_endpoint();
+    const auto source = sender.local_endpoint();
+    REQUIRE(destination);
+    REQUIRE(source);
+    REQUIRE(source.endpoint != IpEndpoint::loopback(9000));
+    REQUIRE(channel.register_ingress_route(fixture.dispatch_id, fixture.runtime,
+        PacketIngress::multicast_data, binding_source(source.endpoint)));
+    const std::array payload {std::byte {'a'}};
+    const auto packet = multicast_binding_packet(payload);
+    std::array<std::byte, 64> bytes {};
+    const auto encoded = encode_packet(packet, bytes);
+    REQUIRE(encoded);
+    REQUIRE(sender.send_to(
+        std::span {bytes}.first(encoded.bytes_written), destination.endpoint));
+    const auto ready = channel.socket.wait_readable(2000);
+    REQUIRE(ready);
+    REQUIRE(ready.ready);
+    (void)channel.run_once_for_testing();
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+    std::array<std::byte, 1> received {};
+    REQUIRE_EQ(fixture.runtime->receive_message(received, false, 0).status,
+        MessageIoStatus::success);
+    REQUIRE_EQ(received, payload);
+}
+
+TEST(compat_multicast_binding_global_ipv6_source_keeps_scope_zero)
+{
+    MulticastIngressFixture fixture;
+    DatagramChannel channel;
+    const auto source = IpEndpoint::ipv6_loopback(6000);
+    REQUIRE(
+        !channel.register_ingress_route(fixture.dispatch_id, fixture.runtime,
+            PacketIngress::multicast_data, binding_source(source, 3)));
+    auto scoped_wire = source;
+    scoped_wire.scope_id = 3;
+    REQUIRE(
+        !channel.register_ingress_route(fixture.dispatch_id, fixture.runtime,
+            PacketIngress::multicast_data, binding_source(scoped_wire)));
+    REQUIRE(channel.register_ingress_route(fixture.dispatch_id, fixture.runtime,
+        PacketIngress::multicast_data, binding_source(source)));
+    const std::array payload {std::byte {'a'}};
+    fixture.deliver(channel, multicast_binding_packet(payload), source);
+    REQUIRE_EQ(
+        fixture.runtime->statistics(false, false).total.received_unique.packets,
+        1U);
+}
+
+TEST(compat_multicast_binding_expected_runtime_fences_ingress_retirement)
+{
+    auto first = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.peer = IpEndpoint::loopback(1),
+            .local_socket_id = 107,
+            .peer_socket_id = 108});
+    auto next = std::make_shared<ConnectionRuntime>(
+        ConnectionRuntime::Configuration {.peer = IpEndpoint::loopback(1),
+            .local_socket_id = 207,
+            .peer_socket_id = 208});
+    DatagramChannel channel;
+    constexpr auto id = group_handle_mask | 1U;
+    REQUIRE(channel.register_ingress_route(
+        id, first, PacketIngress::unicast_session));
+    channel.unregister_connection(id, next.get());
+    REQUIRE(channel.has_ingress_route(
+        id, first.get(), PacketIngress::unicast_session));
+    channel.unregister_connection(id, first.get());
+    REQUIRE(!channel.has_ingress_route(
+        id, first.get(), PacketIngress::unicast_session));
+    REQUIRE(channel.register_ingress_route(
+        id, next, PacketIngress::unicast_session));
+    channel.unregister_connection(id, first.get());
+    REQUIRE(channel.has_ingress_route(
+        id, next.get(), PacketIngress::unicast_session));
+    channel.unregister_connection(id, next.get());
+}
+
+namespace {
+void dispatch_repair_nak(BackpressureFixture& f)
+{
+    std::array<std::byte, 8> loss_bytes {};
+    const std::array losses {
+        SequenceRange {SequenceNumber {700}, SequenceNumber {700}}};
+    const auto encoded = encode_loss_ranges(losses, loss_bytes);
+    REQUIRE(encoded);
+    f.runtime->process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::negative_acknowledgement},
+            .payload = std::span {loss_bytes}.first(encoded.bytes_written)},
+        f.peer);
+}
+void dispatch_repair_egress(BackpressureFixture& f,
+    const std::shared_ptr<DispatchTransmitState>& state, unsigned threshold)
+{
+    f.runtime->set_group_data_egress(
+        {.mode = ConnectionRuntime::GroupDataEgress::Mode::redirect,
+            .destination = IpEndpoint {Ipv4Endpoint {
+                .address = {239, 255, 1, 1}, .port = 25999}},
+            .destination_socket_id = 0x40000001,
+            .transmit = state,
+            .repeat_threshold = threshold,
+            .member_id = 1});
+}
+}
+TEST(multicast_dispatch_repair_multicast_repair_does_not_need_unicast_credit)
+{
+    for (bool limited : {false, true}) {
+        BackpressureFixture f;
+        f.output.blocked = false;
+        auto state = std::make_shared<DispatchTransmitState>();
+        dispatch_repair_egress(f, state, 1);
+        f.enqueue();
+        (void)f.runtime->poll();
+        REQUIRE_EQ(state->multicast_packets(), 1U);
+        if (limited)
+            state->configure_unicast_repeat_limit(
+                1, DispatchTransmitState::unicast_repeat_clock());
+        dispatch_repair_nak(f);
+        f.now += 1000;
+        (void)f.runtime->poll();
+        REQUIRE_EQ(state->multicast_repeats(), 1U);
+    }
+}
+TEST(multicast_dispatch_repair_pending_repair_rechecks_changed_group_limit)
+{
+    BackpressureFixture f;
+    f.output.blocked = false;
+    auto state = std::make_shared<DispatchTransmitState>();
+    dispatch_repair_egress(f, state, 0);
+    f.enqueue();
+    (void)f.runtime->poll();
+    state->configure_unicast_repeat_limit(
+        1000, DispatchTransmitState::unicast_repeat_clock() - 1000000);
+    dispatch_repair_nak(f);
+    f.output.blocked = true;
+    f.now += 1000;
+    (void)f.runtime->poll();
+    REQUIRE_EQ(state->unicast_repeat_bytes(), 0U);
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        0U);
+    state->configure_unicast_repeat_limit(
+        1, DispatchTransmitState::unicast_repeat_clock());
+    REQUIRE(!state->unicast_repeat_ready(
+        17, DispatchTransmitState::unicast_repeat_clock()));
+    f.output.blocked = false;
+    f.now += 1000;
+    (void)f.runtime->poll();
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        0U);
+    // Originals must still run while the repair lacks credit.
+    f.enqueue();
+    f.now += 10'000;
+    (void)f.runtime->poll();
+    REQUIRE_EQ(state->multicast_packets(), 2U);
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        0U);
+    REQUIRE(!f.runtime->broken());
+    state->configure_unicast_repeat_limit(
+        -1, DispatchTransmitState::unicast_repeat_clock());
+    f.now += 1000;
+    (void)f.runtime->poll();
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        1U);
+}
+
+TEST(multicast_dispatch_repair_backpressure_recovery_obeys_shared_burst)
+{
+    auto state = std::make_shared<DispatchTransmitState>();
+    // 100 B/s fills the 1500-byte burst in 15 s and needs 5 s for the second
+    // 1000-byte repair. The steady clock counts from boot on CI hosts, so the
+    // backdated start must stay well below the host's uptime; a larger value
+    // wraps and leaves the bucket empty.
+    const auto clock = DispatchTransmitState::unicast_repeat_clock();
+    REQUIRE(clock > 20'000'000U);
+    state->configure_unicast_repeat_limit(25, clock - 20'000'000U);
+    std::array<BackpressureFixture, 3> members;
+    const std::array<std::byte, 984> payload {};
+    for (auto& member : members) {
+        dispatch_repair_egress(member, state, 0);
+        member.output.blocked = false;
+        REQUIRE_EQ(
+            member.runtime->queue_message(payload, 0, true, false, -1, -1)
+                .status,
+            MessageIoStatus::success);
+        (void)member.runtime->poll();
+        dispatch_repair_nak(member);
+        member.output.blocked = true;
+        member.now += 20'000;
+        (void)member.runtime->poll();
+        REQUIRE_EQ(member.runtime->statistics(false, true)
+                       .total.sent_retransmitted.packets,
+            0U);
+    }
+    REQUIRE_EQ(state->unicast_repeat_bytes(), 0U);
+    std::uint64_t sent = 0;
+    for (auto& member : members) {
+        member.output.blocked = false;
+        member.now += 20'000;
+        (void)member.runtime->poll();
+        sent += member.runtime->statistics(false, true)
+                    .total.sent_retransmitted.packets;
+    }
+    // Three members waited through backpressure, but they share one 1500B
+    // burst. Previously all three could prepay and burst on recovery.
+    REQUIRE_EQ(sent, 1U);
+    REQUIRE_EQ(state->unicast_repeat_bytes(), 1'000U);
+}
+
+TEST(multicast_dispatch_repair_several_repairs_without_credit_do_not_spin)
+{
+    BackpressureFixture f;
+    f.output.blocked = false;
+    auto state = std::make_shared<DispatchTransmitState>();
+    dispatch_repair_egress(f, state, 0);
+    f.enqueue();
+    f.enqueue();
+    (void)f.runtime->poll();
+    f.now += 10'000;
+    (void)f.runtime->poll();
+    REQUIRE_EQ(state->multicast_packets(), 2U);
+    // One byte per second: neither repair gets credit during this test.
+    state->configure_unicast_repeat_limit(
+        1, DispatchTransmitState::unicast_repeat_clock());
+    std::array<std::byte, 8> loss_bytes {};
+    const std::array losses {
+        SequenceRange {SequenceNumber {700}, SequenceNumber {701}}};
+    const auto encoded = encode_loss_ranges(losses, loss_bytes);
+    REQUIRE(encoded);
+    f.runtime->process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::negative_acknowledgement},
+            .payload = std::span {loss_bytes}.first(encoded.bytes_written)},
+        f.peer);
+    for (int round = 0; round < 3; ++round) {
+        f.now += 1'000;
+        const auto result = f.runtime->poll();
+        // The member sleeps until credit exists instead of offering each
+        // waiting repair to the budget again.
+        REQUIRE(!result.immediate_work);
+        REQUIRE(result.next_work_delay.has_value());
+        REQUIRE(result.next_work_delay->count() > 0);
+    }
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        0U);
+    // Each queued repair was examined once, not once per poll or batch slot.
+    REQUIRE_EQ(state->unicast_repeat_waits(), 2U);
+    // With credit, both repairs leave.
+    state->configure_unicast_repeat_limit(
+        -1, DispatchTransmitState::unicast_repeat_clock());
+    for (int round = 0; round < 2; ++round) {
+        f.now += 10'000;
+        (void)f.runtime->poll();
+    }
+    REQUIRE_EQ(
+        f.runtime->statistics(false, true).total.sent_retransmitted.packets,
+        2U);
+    REQUIRE(!f.runtime->broken());
+}
+
+TEST(multicast_dispatch_repair_wait_allows_multicast_and_suppressed_repairs)
+{
+    for (bool arrive_while_waiting : {false, true}) {
+        for (bool already_repaired : {false, true}) {
+            BackpressureFixture f;
+            f.output.blocked = false;
+            auto state = std::make_shared<DispatchTransmitState>();
+            dispatch_repair_egress(f, state, 2);
+            f.enqueue();
+            f.enqueue();
+            (void)f.runtime->poll();
+            f.now += 10'000;
+            (void)f.runtime->poll();
+            REQUIRE_EQ(state->multicast_packets(), 2U);
+            state->configure_unicast_repeat_limit(
+                1, DispatchTransmitState::unicast_repeat_clock());
+            if (arrive_while_waiting) {
+                dispatch_repair_nak(f);
+                f.now += 1'000;
+                const auto result = f.runtime->poll();
+                REQUIRE(!result.immediate_work);
+                REQUIRE_EQ(state->unicast_repeat_waits(), 1U);
+            }
+            const auto decision = state->note_repeat(SequenceNumber {701}, 2,
+                f.now, already_repaired ? 1 : 2, 100'000);
+            if (already_repaired)
+                state->complete_repeat(
+                    SequenceNumber {701}, decision.attempt, true);
+            std::array<std::byte, 8> loss_bytes {};
+            const std::array losses {SequenceRange {
+                SequenceNumber {arrive_while_waiting ? 701U : 700U},
+                SequenceNumber {701}}};
+            const auto encoded = encode_loss_ranges(losses, loss_bytes);
+            REQUIRE(encoded);
+            f.runtime->process_packet(
+                {.kind = PacketKind::control,
+                    .control = {.type = ControlType::negative_acknowledgement},
+                    .payload =
+                        std::span {loss_bytes}.first(encoded.bytes_written)},
+                f.peer);
+            for (int round = 0; round < 3; ++round) {
+                f.now += 1'000;
+                (void)f.runtime->poll();
+            }
+            REQUIRE_EQ(state->multicast_repeats(), already_repaired ? 0U : 1U);
+            REQUIRE_EQ(state->skipped_repeats(), already_repaired ? 1U : 0U);
+            REQUIRE_EQ(state->unicast_repeat_bytes(), 0U);
+            REQUIRE(!f.runtime->poll().immediate_work);
+            REQUIRE(!f.runtime->broken());
+        }
+    }
+}
+
+TEST(multicast_dispatch_repair_scan_spans_batches_then_sleeps)
+{
+    BackpressureFixture f {false, 5'000, false, 128, false, 128};
+    f.output.blocked = false;
+    auto state = std::make_shared<DispatchTransmitState>();
+    dispatch_repair_egress(f, state, 0);
+    constexpr unsigned count = 65;
+    for (unsigned index = 0; index < count; ++index) {
+        f.enqueue();
+        f.now += 1'000;
+        (void)f.runtime->poll();
+    }
+    REQUIRE_EQ(state->multicast_packets(), count);
+    state->configure_unicast_repeat_limit(
+        1, DispatchTransmitState::unicast_repeat_clock());
+    std::array<std::byte, 8> loss_bytes {};
+    const std::array losses {
+        SequenceRange {SequenceNumber {700}, SequenceNumber {764}}};
+    const auto encoded = encode_loss_ranges(losses, loss_bytes);
+    REQUIRE(encoded);
+    f.runtime->process_packet(
+        {.kind = PacketKind::control,
+            .control = {.type = ControlType::negative_acknowledgement},
+            .payload = std::span {loss_bytes}.first(encoded.bytes_written)},
+        f.peer);
+    f.now += 1'000;
+    REQUIRE(f.runtime->poll().immediate_work);
+    REQUIRE_EQ(state->unicast_repeat_waits(), 64U);
+    for (int round = 0; round < 3; ++round) {
+        f.now += 1'000;
+        const auto result = f.runtime->poll();
+        REQUIRE(!result.immediate_work);
+        REQUIRE(result.next_work_delay.has_value());
+        REQUIRE(result.next_work_delay->count() > 0);
+    }
+    REQUIRE_EQ(state->unicast_repeat_waits(), count);
+    REQUIRE_EQ(state->unicast_repeat_bytes(), 0U);
 }

@@ -25,7 +25,7 @@ bool authenticated_identity(SRTSOCKET socket)
     std::array<unsigned char, 64> key {};
     int size = key.size();
     return srt_getsockflag(
-               socket, static_cast<SRT_SOCKOPT>(0x0100001d), key.data(), &size)
+               socket, static_cast<SRT_SOCKOPT>(0x0100001f), key.data(), &size)
         == 0
         && size == static_cast<int>(key.size()) && key == generator;
 }
@@ -75,7 +75,7 @@ int main(int argc, char** argv)
     if (mode == "unavailable") {
         if (socket == SRT_INVALID_SOCK)
             return finish(3);
-        for (unsigned option = 0x01000019; option <= 0x0100001d; ++option) {
+        for (unsigned option = 0x0100001b; option <= 0x0100001f; ++option) {
             std::array<unsigned char, 64> value {};
             value.back() = 1;
             int size = value.size();
@@ -84,8 +84,8 @@ int main(int argc, char** argv)
                     != SRT_ERROR
                 || srt_getlasterror(nullptr) != SRT_EINVOP)
                 return finish(3);
-            const int written_size = option == 0x01000019 ? 4
-                : option == 0x0100001a                    ? 32
+            const int written_size = option == 0x0100001b ? 4
+                : option == 0x0100001c                    ? 32
                                                           : 64;
             if (srt_setsockflag(socket, static_cast<SRT_SOCKOPT>(option),
                     value.data(), written_size)
@@ -111,13 +111,13 @@ int main(int argc, char** argv)
     if (mode == "required") {
         std::array<unsigned char, 32> scalar {};
         scalar.back() = 1;
-        if (srt_setsockflag(socket, static_cast<SRT_SOCKOPT>(0x0100001a),
+        if (srt_setsockflag(socket, static_cast<SRT_SOCKOPT>(0x0100001c),
                 scalar.data(), scalar.size())
                 != 0
-            || srt_setsockflag(socket, static_cast<SRT_SOCKOPT>(0x0100001b),
+            || srt_setsockflag(socket, static_cast<SRT_SOCKOPT>(0x0100001d),
                    generator.data(), generator.size())
                 != 0
-            || !set(static_cast<SRT_SOCKOPT>(0x01000019), 1))
+            || !set(static_cast<SRT_SOCKOPT>(0x0100001b), 1))
             return finish(3);
     }
     sockaddr_in address {};

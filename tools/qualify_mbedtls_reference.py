@@ -13,7 +13,13 @@ PINS = {'ctr': '899348d8318eb9a3c5a5b6ec43c4a1114288773a',
 
 def run(command, log):
     with log.open('w') as output:
-        subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, check=True)
+        result = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT)
+    if result.returncode != 0:
+        # The log lives in a directory CI does not upload: show its end, which
+        # holds a harness's per-peer diagnostics, before failing as before.
+        text = log.read_text(errors='replace')
+        print(f'--- {log.name} (last 20000 characters) ---\n{text[-20000:]}', file=sys.stderr, flush=True)
+        result.check_returncode()
 
 def main():
     parser = argparse.ArgumentParser()

@@ -38,7 +38,7 @@ The phase output is diagnostic evidence, not an alternative acceptance gate.
 ### Linux-only CI investigation
 
 The separate `Timing diagnostics` workflow runs its timing investigation on
-`ubuntu-24.04` when its own workflow, timing runner, trace wrapper, or timing
+`ubuntu-26.04` when its own workflow, timing runner, trace wrapper, or timing
 runner tests change in a pull request. Its manual `investigation` input also
 allows selecting `timing` or one of the isolated group investigations described
 in [Testing](testing.md#isolated-group-investigations). The registered workflow

@@ -68,6 +68,10 @@ struct PublicSocketOptions {
     PathIdentifier path_identifier {};
     // Multicast dispatch (SRTO_ROBOTWEAX_MCAST_*). A set group enables
     // dispatch admission on a Listener; a Caller only uses the interface.
+    bool multicast_independent = false;
+    bool multicast_coordinated = false;
+    bool multicast_source_set = false;
+    IpEndpoint multicast_source {};
     bool multicast_group_set = false;
     IpEndpoint multicast_group {};
     bool multicast_interface_set = false;

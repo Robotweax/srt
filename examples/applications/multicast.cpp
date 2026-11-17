@@ -3,6 +3,7 @@
 // hardware encoder supplies UDP input; a player consumes the UDP output.
 #include "common.hpp"
 #include "media.hpp"
+#include "hybrid_multicast.hpp"
 
 namespace {
 using namespace samples;
@@ -96,7 +97,7 @@ void wait_for_receivers(SRTSOCKET group, int expected, const Settings& settings)
 }
 
 void send_media(const Arguments& args, const Settings& settings,
-    const sockaddr_in& interface)
+    const sockaddr_in& interface, HybridMedia& hybrid)
 {
     if (!args.get("--record").empty())
         throw std::runtime_error("--record is receive-only");
@@ -119,6 +120,7 @@ void send_media(const Arguments& args, const Settings& settings,
     Socket listener(srt_create_socket());
     configure(listener.id, settings, SRTT_LIVE);
     option(listener.id, SRTO_SENDER, true);
+    hybrid.provision(listener.id, args, interface);
     option(listener.id, SRTO_ROBOTWEAX_MCAST_GROUP, multicast);
     option(listener.id, SRTO_ROBOTWEAX_MCAST_IFACE, interface);
     option(listener.id, SRTO_ROBOTWEAX_MCAST_TTL, ttl);
@@ -136,16 +138,26 @@ void send_media(const Arguments& args, const Settings& settings,
     option(group.id, SRTO_SNDTIMEO, 250);
     option(group.id, SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD, threshold);
     wait_for_receivers(group.id, minimum, settings);
+    hybrid.attach(group.id, args);
     if (!media_stopping) {
-        media_stream(group.id, args, true, {}, [&] {
-            multicast_stats(group.id);
-        });
+        media_stream(
+            group.id, args, true, {},
+            [&] {
+                multicast_stats(group.id);
+                hybrid.report();
+            },
+            [&] {
+                hybrid.tick();
+            },
+            [&](const SRT_MSGCTRL& control) {
+                hybrid.delivered(control);
+            });
         multicast_stats(group.id);
     }
 }
 
 void receive_media(const Arguments& args, const Settings& settings,
-    const sockaddr_in& interface)
+    const sockaddr_in& interface, HybridMedia& hybrid)
 {
     for (const auto* option :
         {"--multicast", "--ttl", "--min-receivers", "--repeat-threshold"})
@@ -156,6 +168,7 @@ void receive_media(const Arguments& args, const Settings& settings,
     Socket group(srt_create_group(ROBOTWEAX_SRT_GTYPE_MULTICAST));
     configure(group.id, settings, SRTT_LIVE, true);
     option(group.id, SRTO_ROBOTWEAX_MCAST_IFACE, interface);
+    hybrid.provision(group.id, args, interface);
     struct Config {
         SRT_SOCKOPT_CONFIG* value = srt_create_config();
         ~Config()
@@ -175,9 +188,19 @@ void receive_media(const Arguments& args, const Settings& settings,
     endpoint.config = config.value;
     if (srt_connect_group(group.id, &endpoint, 1) == SRT_ERROR)
         fail("connect dispatch receiver");
-    media_stream(group.id, args, false, {}, [&] {
-        multicast_stats(group.id);
-    });
+    hybrid.attach(group.id, args);
+    media_stream(
+        group.id, args, false, {},
+        [&] {
+            multicast_stats(group.id);
+            hybrid.report();
+        },
+        [&] {
+            hybrid.tick();
+        },
+        [&](const SRT_MSGCTRL& control) {
+            hybrid.delivered(control);
+        });
     multicast_stats(group.id);
 }
 } // namespace
@@ -211,6 +234,18 @@ int main(int argc, char** argv)
                    "encryption\n"
                    "  --crypto ctr|gcm        Explicit cipher (ctr); GCM "
                    "requires matching build\n"
+                   "  --hybrid                Opt into authenticated hybrid "
+                   "startup, fallback and return\n"
+                   "  --hybrid-secret-env NAME  Pairwise id=64hex credentials "
+                   "(semicolon separated)\n"
+                   "  --hybrid-id ID          Receiver credential identity\n"
+                   "  --hybrid-maxbw BYTES    Sender rate bound (1000000)\n"
+                   "  --hybrid-cycles N       Receiver automatic operation "
+                   "budget (4; max 8)\n"
+                   "Hybrid requires a static build with experimental ACP1 and "
+                   "HYBRID_CONTROL.\n"
+                   "Hybrid live catch-up may discard buffered media; see "
+                   "hybrid_discontinuity events.\n"
                    "Raw MPEG-TS only, 188..1316 bytes per datagram. No "
                    "transcoding or RTP.\n"
                    "Wait for media_ready before starting the source. Ctrl+C "
@@ -222,9 +257,22 @@ int main(int argc, char** argv)
         Arguments args(argc, argv,
             " --endpoint  --interface  --multicast  --ttl  --min-receivers "
             " --repeat-threshold  --media-udp  --duration  --record "
-            " --latency-ms  --timeout-ms  --passphrase-env  --crypto ");
+            " --latency-ms  --timeout-ms  --passphrase-env  --crypto "
+            " --hybrid  --hybrid-secret-env  --hybrid-id  --hybrid-maxbw  "
+            "--hybrid-cycles "
+#ifdef ROBOTWEAX_SAMPLE_TESTING
+            " --test-multicast-outage "
+#endif
+            ,
+            " --hybrid "
+#ifdef ROBOTWEAX_SAMPLE_TESTING
+            " --test-multicast-outage "
+#endif
+        );
         if (args.role != "send" && args.role != "receive")
             throw std::runtime_error("role must be send or receive");
+        Runtime runtime;
+        HybridMedia hybrid(args);
         // Validate media configuration before opening a network connection.
         (void)unicast_address(args.get("--media-udp"));
         (void)args.integer("--duration", 20, 3, 3600);
@@ -235,11 +283,10 @@ int main(int argc, char** argv)
             throw std::runtime_error(
                 "--interface requires a local unicast IPv4 address");
         const Settings settings(args);
-        Runtime runtime;
         if (args.role == "send")
-            send_media(args, settings, interface);
+            send_media(args, settings, interface, hybrid);
         else
-            receive_media(args, settings, interface);
+            receive_media(args, settings, interface, hybrid);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "multicast sample: " << error.what() << '\n';

@@ -1,5 +1,6 @@
 #include "compat/group_receive_retention.hpp"
 #include "compat/transport_runtime.hpp"
+#include "compat/group_runtime_admission.hpp"
 #include "compat/submillisecond_pacing_platform.hpp"
 
 #include "robotweax/srt/parity_policy.hpp"
@@ -559,6 +560,11 @@ DatagramChannel::DatagramChannel(
 DatagramChannel::~DatagramChannel()
 {
     stop();
+    std::lock_guard lock(routes_mutex_);
+    for (const auto& [id, route] : routes_) {
+        if (route.multicast_binding != nullptr)
+            route.runtime->revoke_multicast_ingress(route.multicast_binding);
+    }
 }
 
 UdpIoResult DatagramChannel::send_datagram(
@@ -582,6 +588,28 @@ UdpIoResult DatagramChannel::try_send_monitoring_datagram(
         return send_hook_(bytes, peer, send_hook_context_);
     return socket.send_to(bytes, peer);
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+std::size_t DatagramChannel::send_datagram_batch(
+    std::span<const std::span<const std::byte>> datagrams, IpEndpoint peer,
+    UdpIoResult& rejection) noexcept
+{
+    std::lock_guard lock(send_mutex_);
+    if (send_hook_ == nullptr) {
+        return socket.send_batch(datagrams, peer, rejection);
+    }
+    rejection = {};
+    for (std::size_t index = 0; index < datagrams.size(); ++index) {
+        const auto sent =
+            send_hook_(datagrams[index], peer, send_hook_context_);
+        if (!sent || sent.bytes_transferred != datagrams[index].size()) {
+            rejection = sent;
+            return index;
+        }
+    }
+    return datagrams.size();
+}
+#endif
 
 void DatagramChannel::set_send_hook_for_testing(
     SendHook hook, void* context) noexcept
@@ -713,26 +741,161 @@ std::shared_ptr<ConnectionRuntime> DatagramChannel::promote_setup_connection(
 }
 
 bool DatagramChannel::register_ingress_route(std::uint32_t protocol_socket_id,
-    std::shared_ptr<ConnectionRuntime> runtime) noexcept
+    std::shared_ptr<ConnectionRuntime> runtime, PacketIngress provenance,
+    std::optional<MulticastIngressConfiguration> multicast,
+    std::shared_ptr<const void> membership) noexcept
 {
-    if (protocol_socket_id == 0U || runtime == nullptr) {
+    if (protocol_socket_id == 0U || runtime == nullptr
+        || (provenance != PacketIngress::multicast_data
+            && provenance != PacketIngress::unicast_session)
+        || ((multicast || membership)
+            && provenance != PacketIngress::multicast_data))
         return false;
-    }
     try {
-        std::lock_guard lock(routes_mutex_);
-        // Not linked into the poll ring (previous/next stay null) and no
-        // handshake replay key: this channel only delivers.
-        return routes_
-            .emplace(protocol_socket_id,
-                ConnectionRoute {.runtime = std::move(runtime)})
-            .second;
+        std::shared_ptr<MulticastIngressBinding> binding;
+        if (provenance == PacketIngress::multicast_data) {
+            if ((protocol_socket_id & group_handle_mask) == 0U)
+                return false;
+            IpEndpoint source = runtime->peer_;
+            if (multicast) {
+                const auto& announcement = multicast->source;
+                if (!valid_multicast_source(announcement)
+                    || announcement.kind != MulticastSourceKind::announcement
+                    || announcement.group_id != protocol_socket_id)
+                    return false;
+                source = announcement.endpoint;
+                const bool link_local = source.is_ipv6()
+                    && source.address[0] == 0xfeU
+                    && (source.address[1] & 0xc0U) == 0x80U;
+                if (link_local) {
+                    if (multicast->interface_scope_id == 0U)
+                        return false;
+                    source.scope_id = multicast->interface_scope_id;
+                } else if (multicast->interface_scope_id != 0U) {
+                    return false;
+                }
+            }
+            binding = std::make_shared<MulticastIngressBinding>();
+            binding->destination_socket_id_ = protocol_socket_id;
+            binding->source_ = source;
+        }
+        std::shared_ptr<const MulticastIngressBinding> replaced;
+        {
+            std::lock_guard lock(routes_mutex_);
+            // Registration is transactional: publish the new runtime
+            // generation only after map insertion succeeds. The routing lock
+            // excludes readers.
+            const auto [route, inserted] = routes_.emplace(protocol_socket_id,
+                ConnectionRoute {.runtime = runtime,
+                    .provenance = provenance,
+                    .multicast_binding = binding});
+            if (!inserted)
+                return false;
+            if (binding) {
+                binding->owner_ = weak_from_this();
+                if (!runtime->activate_multicast_ingress(
+                        binding, membership, replaced)) {
+                    routes_.erase(route);
+                    return false;
+                }
+            }
+        }
+        // The identity this registration superseded still has a route on the
+        // channel that published it. Retire it now, after this channel's
+        // routing lock is released, so two channels are never locked
+        // together. The runtime's current identity is already the new one,
+        // so the former channel's revocation leaves it alone. Only the route
+        // that still carries the superseded identity is retired: the former
+        // channel may have registered the runtime again since this channel's
+        // lock was released, and that route is not this registration's to
+        // remove.
+        if (replaced) {
+            if (const auto former = replaced->owner_.lock();
+                former && former.get() != this)
+                former->unregister_connection(
+                    protocol_socket_id, runtime.get(), replaced.get());
+        }
+        return true;
     } catch (...) {
         return false;
     }
 }
 
-void DatagramChannel::unregister_connection(
-    std::uint32_t protocol_socket_id) noexcept
+bool ConnectionRuntime::activate_multicast_ingress(
+    const std::shared_ptr<MulticastIngressBinding>& binding,
+    const std::shared_ptr<const void>& membership,
+    std::shared_ptr<const MulticastIngressBinding>& replaced) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_ || peer_closed_
+        || multicast_ingress_generation_
+            == std::numeric_limits<std::uint64_t>::max())
+        return false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (membership != hybrid_membership_
+        || (membership
+            && (!hybrid_membership_live_ || multicast_ingress_binding_)))
+        return false;
+#else
+    if (membership)
+        return false;
+#endif
+    binding->generation_ = ++multicast_ingress_generation_;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (membership)
+        hybrid_receive_route_ = multicast_ingress_generation_;
+#endif
+    replaced = std::move(multicast_ingress_binding_);
+    multicast_ingress_binding_ = binding;
+    return true;
+}
+
+bool ConnectionRuntime::lose_multicast_ingress(
+    const std::shared_ptr<const MulticastIngressBinding>& binding) noexcept
+{
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::lock_guard lock(mutex_);
+    if (!binding || multicast_ingress_binding_ != binding || !hybrid_membership_
+        || !hybrid_membership_live_ || !hybrid_membership_recoverable_
+        || hybrid_membership_loss_ || locally_closed_ || broken_ || peer_closed_
+        || peer_error_pending_ || multicast_ingress_generation_ == UINT64_MAX)
+        return false;
+    multicast_ingress_binding_.reset();
+    hybrid_membership_loss_ = true;
+    hybrid_membership_loss_at_ = hybrid_service_ ? hybrid_service_->now() : 0;
+    hybrid_receive_route_ = ++multicast_ingress_generation_;
+    if (hybrid_receive_)
+        hybrid_receive_->invalidate_multicast_coverage();
+    return true;
+#else
+    (void)binding;
+    return false;
+#endif
+}
+void ConnectionRuntime::revoke_multicast_ingress(
+    const std::shared_ptr<const MulticastIngressBinding>& binding) noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (multicast_ingress_binding_ == binding) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (hybrid_membership_)
+            hybrid_membership_live_ = false;
+#endif
+        multicast_ingress_binding_.reset();
+    }
+}
+
+bool DatagramChannel::has_ingress_route(std::uint32_t id,
+    const ConnectionRuntime* runtime, PacketIngress provenance) noexcept
+{
+    std::lock_guard lock(routes_mutex_);
+    const auto found = routes_.find(id);
+    return found != routes_.end() && found->second.runtime.get() == runtime
+        && found->second.provenance == provenance;
+}
+void DatagramChannel::unregister_connection(std::uint32_t protocol_socket_id,
+    const ConnectionRuntime* expected,
+    const MulticastIngressBinding* expected_binding) noexcept
 {
     std::lock_guard lock(routes_mutex_);
     const auto route = routes_.find(protocol_socket_id);
@@ -740,6 +903,12 @@ void DatagramChannel::unregister_connection(
         return;
     }
     auto& node = route->second;
+    if (expected && node.runtime.get() != expected)
+        return;
+    if (expected_binding && node.multicast_binding.get() != expected_binding)
+        return;
+    if (node.multicast_binding != nullptr)
+        node.runtime->revoke_multicast_ingress(node.multicast_binding);
     if (node.next == nullptr) {
         // Ingress-only route: never in the poll ring, no replay key.
         routes_.erase(route);
@@ -1315,11 +1484,19 @@ void DatagramChannel::dispatch(const PacketView& packet,
             return;
         }
         if (inbox != nullptr) {
-            (void)inbox->push({
+            HandshakeEnvelope envelope {
                 .message = decoded.message,
                 .control = decoded.control,
                 .peer = peer,
-            });
+            };
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+            if (datagram.size() <= envelope.raw_datagram.size()) {
+                std::copy(datagram.begin(), datagram.end(),
+                    envelope.raw_datagram.begin());
+                envelope.raw_size = datagram.size();
+            }
+#endif
+            (void)inbox->push(envelope);
         }
         return;
     }
@@ -1331,6 +1508,8 @@ void DatagramChannel::dispatch(const PacketView& packet,
     std::shared_ptr<ConnectionRuntime> runtime;
     std::shared_ptr<DatagramInbox> setup_inbox;
     bool ingress_only = false;
+    PacketIngress provenance = PacketIngress::unicast_session;
+    std::shared_ptr<const MulticastIngressBinding> multicast_binding;
     {
         std::lock_guard lock(routes_mutex_);
         const auto route = routes_.find(
@@ -1338,6 +1517,8 @@ void DatagramChannel::dispatch(const PacketView& packet,
         if (route != routes_.end()) {
             runtime = route->second.runtime;
             ingress_only = route->second.next == nullptr;
+            provenance = route->second.provenance;
+            multicast_binding = route->second.multicast_binding;
         } else {
             const auto setup = setup_routes_.find(
                 destination_socket_id);
@@ -1349,7 +1530,8 @@ void DatagramChannel::dispatch(const PacketView& packet,
     }
     if (runtime != nullptr) {
         routed_datagrams_.fetch_add(1U, std::memory_order_relaxed);
-        runtime->process_packet(packet, peer, ingress);
+        runtime->process_packet(
+            packet, peer, ingress, provenance, multicast_binding);
         if (ingress_only) {
             // Multicast ingress does not poll this runtime. Wake its control
             // channel so newly armed ACK/NAK deadlines are serviced even if
@@ -1369,13 +1551,106 @@ void DatagramChannel::dispatch(const PacketView& packet,
 void DatagramChannel::mark_connections_broken(int system_error) noexcept
 {
     std::lock_guard lock(routes_mutex_);
-    for (const auto& route : routes_) {
-        route.second.runtime->mark_broken(system_error);
+    for (auto route = routes_.begin(); route != routes_.end();) {
+        if (route->second.multicast_binding
+            && route->second.runtime->lose_multicast_ingress(
+                route->second.multicast_binding)) {
+            route = routes_.erase(route);
+        } else {
+            route->second.runtime->mark_broken(system_error);
+            ++route;
+        }
     }
+}
+
+bool DatagramChannel::accept_received(
+    const UdpIoResult& received, std::span<const std::byte> datagram) noexcept
+{
+    if (received.error == Error::would_block) {
+        return false;
+    }
+    if (received.error == Error::buffer_too_small) {
+        return true;
+    }
+    if (received.error == Error::io_error
+        && UdpSocket::is_transient_receive_error(received.system_error)) {
+        // A queued ICMP report or interrupted call for one peer is not a
+        // fault of the shared socket.
+        return true;
+    }
+    if (!received) {
+        mark_connections_broken(received.system_error);
+        return false;
+    }
+    const auto ingress = std::chrono::steady_clock::now();
+    last_datagram_time_ = ingress;
+    const auto bytes = datagram.first(received.bytes_transferred);
+    const auto decoded = decode_packet(bytes);
+    if (decoded) {
+        dispatch(decoded.packet, bytes, received.peer, ingress);
+    }
+    return true;
+}
+
+RuntimePollResult DatagramChannel::finish_receive_slice(
+    std::size_t received_count) noexcept
+{
+    // Sparse traffic: no datagram for several short-poll intervals. A
+    // readiness wake costs two thread hops, so it only beats the poll when
+    // datagrams are far apart; denser traffic keeps the poll, which
+    // coalesces datagrams into one wake.
+    slice_quiet_ = std::chrono::steady_clock::now() - last_datagram_time_
+        >= quiet_traffic_intervals * idle_wait_;
+    auto result = poll_connections();
+    // A full slice can leave UDP input unread. After would_block, however,
+    // the receive queue is drained: preserve the connection poll deadline
+    // instead of forcing another empty receive and complete route sweep.
+    if (received_count == maximum_receive_batch) {
+        result.immediate_work = true;
+        result.next_work_delay.reset();
+    }
+    return result;
 }
 
 RuntimePollResult DatagramChannel::run_once() noexcept
 {
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
+    if (receive_batch_storage_ == nullptr) {
+        receive_batch_storage_.reset(new (std::nothrow)
+                std::byte[maximum_receive_batch * receive_slot_size]);
+    }
+    if (receive_batch_storage_ != nullptr) {
+        const std::span storage {receive_batch_storage_.get(),
+            maximum_receive_batch * receive_slot_size};
+        std::array<UdpIoResult, maximum_receive_batch> results;
+        std::size_t received_count = 0;
+        // As on the single-datagram path, the slice ends at its budget or
+        // at would_block, so a drained socket is always observed as such.
+        while (received_count < maximum_receive_batch) {
+            UdpIoResult terminal;
+            const std::size_t count =
+                socket.receive_batch(storage, receive_slot_size,
+                    std::span {results}.first(
+                        maximum_receive_batch - received_count),
+                    terminal);
+            if (count == 0U) {
+                if (!accept_received(terminal, {})) {
+                    break;
+                }
+                ++received_count;
+                continue;
+            }
+            for (std::size_t index = 0; index < count; ++index) {
+                // A consumed datagram never ends the slice.
+                (void)accept_received(results[index],
+                    storage.subspan(
+                        index * receive_slot_size, receive_slot_size));
+            }
+            received_count += count;
+        }
+        return finish_receive_slice(received_count);
+    }
+#endif
     return run_receive_slice([this](std::span<std::byte> datagram) noexcept {
         return socket.receive_from(datagram);
     });
@@ -1421,14 +1696,22 @@ RuntimePollResult DatagramChannel::poll_connections(
         // holding the route table across protocol work or nonblocking sends.
         const auto result = runtime->poll(remaining_send_attempts);
         poll_round_immediate_ |= result.immediate_work;
-        const bool can_wait =
-            readiness_available_.load(std::memory_order_acquire)
-            && result.receive_wait_safe;
+        const bool quiet_wait = slice_quiet_ && !result.receive_wait_safe
+            && result.quiet_receive_wait.has_value()
+            && readiness_available_.load(std::memory_order_acquire);
+        const bool can_wait = quiet_wait
+            || (readiness_available_.load(std::memory_order_acquire)
+                && result.receive_wait_safe);
         poll_round_receive_wait_safe_ &= can_wait;
-        if (can_wait && !result.next_work_delay.has_value()) {
+        if (can_wait && !quiet_wait && !result.next_work_delay.has_value()) {
             continue;
         }
-        const auto delay = can_wait
+        const auto delay = quiet_wait
+            ? (result.next_work_delay.has_value()
+                      ? std::min(
+                            *result.next_work_delay, *result.quiet_receive_wait)
+                      : *result.quiet_receive_wait)
+            : can_wait
             ? *result.next_work_delay
             : std::min(result.next_work_delay.value_or(idle_wait_),
                   std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1436,8 +1719,8 @@ RuntimePollResult DatagramChannel::poll_connections(
         // Store an absolute deadline: each continuation must not restart an
         // earlier connection's pacing/backpressure/idle wait.
         const auto relative_deadline = current_time() + delay;
-        const auto deadline = !injected_now.has_value() && clock == nullptr
-                && result.next_work_deadline.has_value()
+        const auto deadline = !quiet_wait && !injected_now.has_value()
+                && clock == nullptr && result.next_work_deadline.has_value()
             ? (can_wait
                       ? *result.next_work_deadline
                       : std::min(*result.next_work_deadline, relative_deadline))
@@ -1517,7 +1800,9 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
           .send_capacity_packets = configuration.options.send_buffer_packets(),
           .receive_capacity_packets = effective_receive_capacity(configuration),
           .maximum_payload_size = effective_maximum_payload_size(configuration),
-          .start_microseconds = elapsed_microseconds(configuration.origin),
+          .start_microseconds = configuration.now_function != nullptr
+              ? configuration.now_function(configuration.now_context)
+              : elapsed_microseconds(configuration.origin),
           .member_receive_initial_sequence = configuration.group
                   && configuration.group->type == SRT_GTYPE_BACKUP
               ? std::optional {configuration.peer_wire_initial_sequence
@@ -1558,6 +1843,9 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
     , peer_flow_window_ceiling_(effective_peer_flow_window(configuration))
     , flow_window_packets_(peer_flow_window_ceiling_)
 {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    hybrid_local_socket_id_ = configuration.local_socket_id;
+#endif
     // Leave three further heartbeat opportunities inside a short local idle
     // budget. The peer timeout itself is unchanged. Keep the usual one-second
     // cadence for budgets of four seconds or longer, and cap idle heartbeat
@@ -1788,7 +2076,13 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
         session_.reorder_tolerance_packets());
 }
 
-ConnectionRuntime::~ConnectionRuntime() = default;
+ConnectionRuntime::~ConnectionRuntime()
+{
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_service_)
+        hybrid_service_->close(hybrid::NativeService::Failure::lifetime);
+#endif
+}
 
 std::uint64_t ConnectionRuntime::now_microseconds() const noexcept
 {
@@ -1841,6 +2135,8 @@ MessageIoResult ConnectionRuntime::queue_message(
     std::int32_t ttl_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (group_send_state_ && !locally_closed_ && !peer_closed_ && !broken_)
+        return {.status = MessageIoStatus::invalid_state};
     if (options_.control_profile() && ttl_milliseconds >= 0) {
         return {.status = MessageIoStatus::invalid_state};
     }
@@ -1943,6 +2239,8 @@ MessageIoResult ConnectionRuntime::queue_group_message(
     std::int32_t ttl_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (group_send_state_ && !locally_closed_ && !peer_closed_ && !broken_)
+        return {.status = MessageIoStatus::invalid_state};
     if (options_.control_profile() && ttl_milliseconds >= 0) {
         return {.status = MessageIoStatus::invalid_state};
     }
@@ -2284,6 +2582,8 @@ MessageIoResult ConnectionRuntime::queue_stream(
     std::int32_t timeout_milliseconds) noexcept
 {
     std::unique_lock lock(mutex_);
+    if (group_send_state_ && !locally_closed_ && !peer_closed_ && !broken_)
+        return {.status = MessageIoStatus::invalid_state};
     const bool has_deadline = timeout_milliseconds >= 0;
     const Clock::time_point deadline = has_deadline
         ? Clock::now() + std::chrono::milliseconds{timeout_milliseconds}
@@ -2516,6 +2816,32 @@ ConnectionRuntime::next_receive_wakeup_locked(
 
 bool ConnectionRuntime::retransmission_ready(std::uint64_t now) noexcept
 {
+    // Examine each queued repair once, across as many bounded polls as
+    // needed. A refused unicast repair rotates to the tail; it must not
+    // prevent later multicast/skip decisions, nor start another busy pass.
+    if (group_data_egress_.transmit
+        && group_data_egress_.transmit->unicast_repeat_limited()) {
+        const auto& buffer = session_.send_buffer();
+        const bool credit_ready = unicast_repeat_wait_
+            && group_data_egress_.transmit->unicast_repeat_ready(
+                unicast_repeat_wait_->second,
+                DispatchTransmitState::unicast_repeat_clock());
+        if (credit_ready)
+            unicast_repeat_wait_.reset();
+        if (!unicast_repeat_scan_revision_
+            || *unicast_repeat_scan_revision_
+                != buffer.retransmission_revision()
+            || credit_ready) {
+            unicast_repeat_scan_revision_ = buffer.retransmission_revision();
+            unicast_repeat_scan_remaining_ =
+                buffer.pending_retransmission_count();
+        }
+        if (unicast_repeat_wait_ && unicast_repeat_scan_remaining_ == 0U)
+            return false;
+    } else {
+        unicast_repeat_wait_.reset();
+        unicast_repeat_scan_revision_.reset();
+    }
 #ifdef ENABLE_MAXREXMITBW
     const auto packet = session_.peek_retransmission_packet();
     return packet.has_value()
@@ -2538,6 +2864,190 @@ std::span<const std::byte> ConnectionRuntime::queued_control_payload(
         return bytes.subspan(prefix, bytes.size() - prefix - 32U);
     }
     return bytes.subspan(packet_header_size);
+}
+
+UdpIoResult ConnectionRuntime::send_budgeted_datagram(DatagramChannel& channel,
+    std::span<const std::byte> bytes, const DatagramCompletion& completion,
+    bool& budget_wait) noexcept
+{
+    if (completion.unicast_repeat_state) {
+        UdpIoResult sent {.error = Error::would_block};
+        budget_wait = !completion.unicast_repeat_state->submit_unicast_repeat(
+            bytes.size(), DispatchTransmitState::unicast_repeat_clock(), [&] {
+                sent = channel.send_datagram(bytes, peer_);
+                return sent && sent.bytes_transferred == bytes.size();
+            });
+        return sent;
+    }
+    if (!completion.group_binding || !completion.group_binding->unicast_budget_)
+        return channel.send_datagram(bytes, peer_);
+    auto permit =
+        completion.group_binding->unicast_budget_->acquire(bytes.size());
+    if (!permit) {
+        budget_wait = true;
+        return {.error = Error::would_block};
+    }
+    const auto sent = channel.send_datagram(bytes, peer_);
+    permit.finish(
+        sent && sent.bytes_transferred != 0U, completion.data.retransmitted);
+    return sent;
+}
+
+bool ConnectionRuntime::current_group_datagram(
+    const DatagramCompletion& completion) const noexcept
+{
+    const auto token = session_.send_buffer().group_original_submission(
+        completion.data.sequence);
+    return group_send_state_
+        && group_send_state_->binding == completion.group_binding && token
+        && token->sequence_position == completion.group_position;
+}
+
+bool ConnectionRuntime::hold_group_budget_datagram(
+    std::span<const std::byte> bytes,
+    const DatagramCompletion& completion) noexcept
+{
+    if (group_budget_pending_) {
+        break_locked(0);
+        return false;
+    }
+    group_budget_pending_.reset(new (std::nothrow) PendingDatagram {});
+    if (!group_budget_pending_) {
+        break_locked(0);
+        return false;
+    }
+    std::copy(bytes.begin(), bytes.end(), group_budget_pending_->bytes.begin());
+    group_budget_pending_->size = bytes.size();
+    group_budget_pending_->completion = completion;
+    return true;
+}
+
+bool ConnectionRuntime::flush_group_budget_datagram(std::uint64_t now) noexcept
+{
+    if (!group_budget_pending_)
+        return true;
+    const auto& pending = *group_budget_pending_;
+    if (!current_group_datagram(pending.completion)) {
+        group_budget_pending_.reset();
+        send_ready_.notify_all();
+        return true;
+    }
+#ifdef ENABLE_MAXREXMITBW
+    if (pending.completion.data.retransmitted
+        && !retransmission_budget_.ready(pending.size, now)) {
+        session_.requeue_prepared_retransmission(
+            pending.completion.data.sequence);
+        group_budget_pending_.reset();
+        return true;
+    }
+#endif
+    if (pending_datagram_size_ || (poll_send_budget_ && !*poll_send_budget_))
+        return true;
+    auto channel = channel_.lock();
+    if (!channel) {
+        break_locked(0);
+        return false;
+    }
+    bool wait = false;
+    const auto bytes = std::span {pending.bytes}.first(pending.size);
+    const auto sent =
+        send_budgeted_datagram(*channel, bytes, pending.completion, wait);
+    if (wait)
+        return true;
+    if (poll_send_budget_)
+        --*poll_send_budget_;
+    if (!sent) {
+        if (!defer_send_error(sent, now))
+            return false;
+        // A real native error returns to the existing bounded retry FIFO.
+        pending_datagram_head_ = std::move(group_budget_pending_);
+        pending_datagram_tail_ = pending_datagram_head_.get();
+        pending_datagram_size_ = 1;
+        return true;
+    }
+    if (sent.bytes_transferred != pending.size) {
+        break_locked(0);
+        return false;
+    }
+    const auto completed = complete_datagram(bytes, pending.completion, now);
+    group_budget_pending_.reset();
+    send_ready_.notify_all();
+    return completed;
+}
+
+std::optional<std::chrono::microseconds> ConnectionRuntime::quiet_receive_wait(
+    std::uint64_t now) noexcept
+{
+    // Buffered DATA normally keeps the channel on its short poll. When every
+    // remaining deadline lies in the future the channel can instead sleep
+    // until the earliest one and let socket readiness report new input. A
+    // deadline that is already due, or a pending key exchange, keeps the
+    // short poll: its completion depends on work this bound does not model.
+    // The cap bounds the wait for anything the list below does not cover.
+    constexpr std::uint64_t maximum_quiet_wait_microseconds = 10'000;
+    if (crypto_ != nullptr && !crypto_->pending_key_material().empty()) {
+        return std::nullopt;
+    }
+    std::uint64_t wait = maximum_quiet_wait_microseconds;
+    bool due = false;
+    const auto bound = [&](std::uint64_t deadline) noexcept {
+        if (deadline <= now) {
+            due = true;
+        } else {
+            wait = std::min(wait, deadline - now);
+        }
+    };
+    bound(session_.next_control_deadline(now));
+    const auto remaining = (std::numeric_limits<std::uint64_t>::max)()
+        - last_peer_activity_microseconds_;
+    bound(last_peer_activity_microseconds_
+        + std::min(remaining, peer_idle_timeout_microseconds_ + 1U));
+    if (const auto deadline = session_.next_sender_retirement_deadline()) {
+        bound(*deadline);
+    }
+    if (const auto deadline = session_.next_sensor_receive_gap_deadline()) {
+        bound(*deadline);
+    }
+    if (const auto deadline = session_.next_receive_delivery_time()) {
+        bound(*deadline);
+    }
+    if (const auto deadline = session_.next_tail_probe_due()) {
+        bound(*deadline);
+    }
+    if (due) {
+        return std::nullopt;
+    }
+    return std::chrono::microseconds {wait};
+}
+
+RuntimePollResult ConnectionRuntime::group_budget_poll_result(
+    std::uint64_t now) noexcept
+{
+    auto delay = std::chrono::microseconds {1'000};
+    if (group_budget_pending_->completion.group_binding->unicast_budget_)
+        delay = group_budget_pending_->completion.group_binding->unicast_budget_
+                    ->delay(group_budget_pending_->size);
+    // Fairness/contention polling is bounded; protocol controls, sender TTL,
+    // and receive delivery must keep their earlier existing deadlines.
+    delay = std::min(delay, std::chrono::microseconds {1'000'000});
+    if (crypto_ && !crypto_->pending_key_material().empty())
+        delay = std::min(delay, std::chrono::microseconds {1'000});
+    const auto bound = [&](std::uint64_t deadline) {
+        delay = std::min(delay,
+            std::chrono::microseconds {deadline > now ? deadline - now : 0U});
+    };
+    bound(session_.next_control_deadline(now));
+    const auto remaining = std::numeric_limits<std::uint64_t>::max()
+        - last_peer_activity_microseconds_;
+    bound(last_peer_activity_microseconds_
+        + std::min(remaining, peer_idle_timeout_microseconds_ + 1U));
+    if (const auto deadline = session_.next_sender_retirement_deadline())
+        bound(*deadline);
+    if (const auto deadline = session_.next_receive_delivery_time())
+        bound(*deadline);
+    if (const auto deadline = session_.next_tail_probe_due())
+        bound(*deadline);
+    return {.immediate_work = delay.count() == 0, .next_work_delay = delay};
 }
 
 bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
@@ -2573,12 +3083,35 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
         break_locked(0);
         return false;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+    if (send_stage_open_ && pending_datagram_size_ == 0U
+        && send_budget_beyond_stage() && stageable_datagram(completion)) {
+        return stage_datagram(bytes, completion, now);
+    }
+    // Anything else leaves after the staged DATA that was submitted first.
+    if (!flush_send_stage()) {
+        return false;
+    }
+#endif
     if (pending_datagram_size_ == 0U
         && (poll_send_budget_ == nullptr || *poll_send_budget_ != 0U)) {
-        if (poll_send_budget_ != nullptr) {
-            --*poll_send_budget_;
+        bool budget_wait = false;
+        const auto sent =
+            send_budgeted_datagram(*channel, bytes, completion, budget_wait);
+        if (budget_wait) {
+            if (completion.unicast_repeat_state) {
+                if (!unicast_repeat_wait_
+                    || bytes.size() < unicast_repeat_wait_->second)
+                    unicast_repeat_wait_ = {
+                        completion.data.sequence, bytes.size()};
+                session_.requeue_prepared_retransmission(
+                    completion.data.sequence);
+                return true;
+            }
+            return hold_group_budget_datagram(bytes, completion);
         }
-        const auto sent = channel->send_datagram(bytes, peer_);
+        if (poll_send_budget_ != nullptr)
+            --*poll_send_budget_;
         if (sent) {
             if (sent.bytes_transferred != bytes.size()) {
                 break_locked(0);
@@ -2643,13 +3176,220 @@ bool ConnectionRuntime::submit_datagram(std::span<const std::byte> bytes,
     return true;
 }
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+bool ConnectionRuntime::stageable_datagram(
+    const DatagramCompletion& completion) const noexcept
+{
+    // Only DATA whose completion leaves the choice and the bytes of the next
+    // datagram untouched may wait for a batch. FEC and filters emit repair
+    // after a source packet, and group members share budgets, positions and
+    // key schedules: all of those keep the direct path.
+    if (completion.kind != DatagramKind::data || completion.group_binding
+        || completion.unicast_repeat_state || group_send_state_
+        || group_data_egress_.mode != GroupDataEgress::Mode::normal
+        || fec_encoder_active() || options_.experimental_acp1()) {
+        return false;
+    }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
+    if (experimental_filter_) {
+        return false;
+    }
+#endif
+#ifdef ENABLE_MAXREXMITBW
+    // The retransmission budget is consumed at completion.
+    if (completion.data.retransmitted) {
+        return false;
+    }
+#endif
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
+    // A controller may read what completion advances before the next pick.
+    return false;
+#else
+    return true;
+#endif
+}
+
+bool ConnectionRuntime::stage_datagram(std::span<const std::byte> bytes,
+    const DatagramCompletion& completion, std::uint64_t now) noexcept
+{
+    constexpr auto slot = DatagramEnvelope::maximum_size;
+    if (!send_stage_) {
+        send_stage_.reset(new (std::nothrow) SendStage {});
+        if (send_stage_) {
+            send_stage_->bytes.reset(
+                new (std::nothrow) std::byte[SendStage::capacity * slot]);
+        }
+        if (!send_stage_ || !send_stage_->bytes) {
+            send_stage_.reset();
+            break_locked(0);
+            return false;
+        }
+    }
+    if (send_stage_->size == SendStage::capacity && !flush_send_stage()) {
+        return false;
+    }
+    if (pending_datagram_size_ != 0U) {
+        // The flush met backpressure: this datagram joins the FIFO behind it.
+        send_stage_open_ = false;
+        return submit_datagram(bytes, completion, now);
+    }
+    auto& entry = send_stage_->entries[send_stage_->size];
+    std::copy(bytes.begin(), bytes.end(),
+        send_stage_->bytes.get() + send_stage_->size * slot);
+    entry.size = bytes.size();
+    entry.now = now;
+    entry.completion = completion;
+    entry.pacer_before = pacer_;
+    ++send_stage_->size;
+    pacer_.on_packet_sent(bytes.size(), now);
+    if (crypto_ != nullptr && !completion.data.retransmitted) {
+        const std::uint64_t overrun_before =
+            crypto_->refresh_overrun_positions();
+        if (crypto_->note_data_packet_sent() != Error::none) {
+            break_locked(0);
+            return false;
+        }
+        statistics_.note_key_refresh_overrun(
+            crypto_->refresh_overrun_positions() - overrun_before);
+        entry.completion.key_use_counted = true;
+    }
+    return true;
+}
+
+bool ConnectionRuntime::send_budget_beyond_stage() const noexcept
+{
+    // The budget counts UDP attempts and is charged when the stage is
+    // submitted. Until then every staged datagram reserves one attempt.
+    return poll_send_budget_ == nullptr
+        || *poll_send_budget_ > (send_stage_ ? send_stage_->size : 0U);
+}
+
+bool ConnectionRuntime::flush_send_stage() noexcept
+{
+    if (!send_stage_ || send_stage_->size == 0U) {
+        return true;
+    }
+    constexpr auto slot = DatagramEnvelope::maximum_size;
+    auto& stage = *send_stage_;
+    const std::size_t count = std::exchange(stage.size, 0U);
+    const auto datagram = [&](std::size_t index) noexcept {
+        return std::span<const std::byte> {
+            stage.bytes.get() + index * slot, stage.entries[index].size};
+    };
+    const auto release = [&]() noexcept {
+        for (std::size_t index = 0; index < count; ++index) {
+            stage.entries[index].completion = {};
+        }
+    };
+    const auto channel = channel_.lock();
+    if (channel == nullptr) {
+        release();
+        break_locked(0);
+        return false;
+    }
+    std::array<std::span<const std::byte>, SendStage::capacity> datagrams;
+    for (std::size_t index = 0; index < count; ++index) {
+        datagrams[index] = datagram(index);
+    }
+    UdpIoResult rejection;
+    const std::size_t accepted = channel->send_datagram_batch(
+        std::span {datagrams}.first(count), peer_, rejection);
+    if (poll_send_budget_ != nullptr) {
+        // Each accepted datagram and the refused one were UDP attempts; what
+        // was staged behind a refusal was never offered.
+        const std::size_t attempts = accepted + (accepted < count ? 1U : 0U);
+        *poll_send_budget_ -= std::min(*poll_send_budget_, attempts);
+    }
+    // Exactly the accepted prefix completes, in submission order.
+    completing_staged_datagram_ = true;
+    for (std::size_t index = 0; index < accepted; ++index) {
+        const auto& entry = stage.entries[index];
+        if (!complete_datagram(datagram(index), entry.completion, entry.now)) {
+            completing_staged_datagram_ = false;
+            release();
+            return false;
+        }
+    }
+    completing_staged_datagram_ = false;
+    if (accepted == count) {
+        release();
+        return true;
+    }
+    // UDP did not take the rest, so its pacing has not happened either.
+    pacer_ = stage.entries[accepted].pacer_before;
+    if (rejection) {
+        // A short submission stays terminal.
+        release();
+        break_locked(0);
+        return false;
+    }
+    if (!defer_send_error(rejection, stage.entries[count - 1U].now)) {
+        release();
+        return false;
+    }
+    // The existing retry FIFO is empty whenever DATA is staged. It keeps the
+    // unaccepted rest in order and completes each datagram when UDP takes it.
+    for (std::size_t index = accepted; index < count; ++index) {
+        auto pending = std::unique_ptr<PendingDatagram> {
+            new (std::nothrow) PendingDatagram {}};
+        if (pending == nullptr
+            || pending_datagram_size_ == pending_datagram_capacity) {
+            release();
+            break_locked(0);
+            return false;
+        }
+        const auto bytes = datagram(index);
+        std::copy(bytes.begin(), bytes.end(), pending->bytes.begin());
+        pending->size = bytes.size();
+        pending->completion = std::move(stage.entries[index].completion);
+        auto* tail = pending.get();
+        if (pending_datagram_tail_ != nullptr) {
+            pending_datagram_tail_->next = std::move(pending);
+        } else {
+            pending_datagram_head_ = std::move(pending);
+        }
+        pending_datagram_tail_ = tail;
+        ++pending_datagram_size_;
+    }
+    release();
+    return true;
+}
+#endif
+
 bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
     const DatagramCompletion& completion, std::uint64_t now) noexcept
 {
+    if (completion.group_binding)
+        now =
+            now_microseconds(); // Observe complete UDP acceptance, not selection.
     transient_send_failure_since_.reset();
     transient_send_system_error_ = 0;
     if (completion.kind == DatagramKind::data) {
-        session_.note_packet_submitted(completion.data.sequence);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (completion.group_binding && !completion.data.retransmitted
+            && group_send_state_
+            && group_send_state_->binding == completion.group_binding
+            && group_send_state_->generation
+                == completion.group_binding->member_generation_
+            && completion.group_position
+                >= completion.group_binding->runtime_position_origin_) {
+            const auto base =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    origin_.time_since_epoch())
+                    .count();
+            if (base >= 0
+                && now <= UINT64_MAX - static_cast<std::uint64_t>(base))
+                (void)group_send_state_->unicast_originals.note(
+                    completion.group_position
+                        - completion.group_binding->runtime_position_origin_,
+                    static_cast<std::uint64_t>(base) + now);
+        }
+#endif
+        if (completion.group_binding && !completion.data.retransmitted)
+            (void)session_.note_group_unicast_submitted(
+                {completion.data.sequence, completion.group_position}, now);
+        else
+            session_.note_packet_submitted(completion.data.sequence);
         if (standby_rtt_) {
             standby_rtt_->last_data = now;
             standby_rtt_->measurement.pause();
@@ -2684,15 +3424,26 @@ bool ConnectionRuntime::complete_datagram(std::span<const std::byte> bytes,
             completion.data.retransmitted, completion.payload_size,
             session_.send_buffer().size(),
             session_.send_buffer().packets_in_flight());
-        session_.note_data_packet_sent(now, completion.data.retransmitted);
+        if (!completion.group_binding || completion.data.retransmitted)
+            session_.note_data_packet_sent(now, completion.data.retransmitted);
+        else
+            session_.note_packet_sent(now);
         if (completion.data.retransmitted) {
 #ifdef ENABLE_MAXREXMITBW
             retransmission_budget_.consume(bytes.size(), now);
 #endif
             session_.note_retransmission_sent(completion.data.sequence, now);
         }
-        pacer_.on_packet_sent(bytes.size(), now);
-        if (crypto_ != nullptr && !completion.data.retransmitted) {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+        if (!completing_staged_datagram_)
+#endif
+            pacer_.on_packet_sent(bytes.size(), now);
+        bool count_key_use = crypto_ != nullptr
+            && !completion.data.retransmitted && !completion.group_binding;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+        count_key_use = count_key_use && !completion.key_use_counted;
+#endif
+        if (count_key_use) {
             const std::uint64_t overrun_before =
                 crypto_->refresh_overrun_positions();
             if (crypto_->note_data_packet_sent() != Error::none) {
@@ -2785,6 +3536,9 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
             // ACK/TTL/TLPKTDROP can retire a prepared packet during the wait.
             current = session_.send_buffer().retains_packet(
                 pending.completion.data.sequence);
+            if (pending.completion.group_binding) {
+                current = current && current_group_datagram(pending.completion);
+            }
         } else if (pending.completion.kind == DatagramKind::key_request) {
             // An earlier copy may have been acknowledged while this retry
             // waited. Never let its completion timestamp delay a new rotation.
@@ -2824,9 +3578,43 @@ bool ConnectionRuntime::flush_pending_datagrams(std::uint64_t now) noexcept
                 if (*poll_send_budget_ == 0U) {
                     return true;
                 }
-                --*poll_send_budget_;
             }
-            const auto sent = channel->send_datagram(bytes, peer_);
+            bool budget_wait = false;
+            const auto sent = send_budgeted_datagram(
+                *channel, bytes, pending.completion, budget_wait);
+            if (budget_wait && pending.completion.unicast_repeat_state) {
+                if (!unicast_repeat_wait_
+                    || pending.size < unicast_repeat_wait_->second)
+                    unicast_repeat_wait_ = {
+                        pending.completion.data.sequence, pending.size};
+                session_.requeue_prepared_retransmission(
+                    pending.completion.data.sequence);
+                auto retired = std::move(pending_datagram_head_);
+                pending_datagram_head_ = std::move(retired->next);
+                if (!pending_datagram_head_)
+                    pending_datagram_tail_ = nullptr;
+                --pending_datagram_size_;
+                next_datagram_retry_microseconds_ = 0;
+                continue;
+            }
+            if (budget_wait) {
+                if (group_budget_pending_) {
+                    break_locked(0);
+                    return false;
+                }
+                auto held = std::move(pending_datagram_head_);
+                pending_datagram_head_ = std::move(held->next);
+                if (!pending_datagram_head_)
+                    pending_datagram_tail_ = nullptr;
+                --pending_datagram_size_;
+                group_budget_pending_ = std::move(held);
+                next_datagram_retry_microseconds_ = 0;
+                transient_send_failure_since_.reset();
+                transient_send_system_error_ = 0;
+                continue;
+            }
+            if (poll_send_budget_)
+                --*poll_send_budget_;
             if (!sent) {
                 return defer_send_error(sent, now);
             }
@@ -2905,7 +3693,8 @@ bool ConnectionRuntime::send_actions(
             : maximum_loss_ranges_per_report;
         do {
             const auto count = std::min(losses.size(), maximum_ranges);
-            std::array<std::byte, 1500> datagram {};
+            // Only the encoded prefix is submitted.
+            std::array<std::byte, 1500> datagram;
             const auto encoded =
                 encode_reliability_action(action, losses.first(count),
                     PacketTimestamp {static_cast<std::uint32_t>(now)},
@@ -2934,6 +3723,12 @@ void ConnectionRuntime::set_group_data_egress(
     const GroupDataEgress& egress) noexcept
 {
     std::lock_guard lock(mutex_);
+    if (group_send_state_) {
+        // External ownership is exclusive for this runtime. A legacy election
+        // cannot rewrite retained canonical identity or create another producer.
+        group_send_state_->binding.reset();
+        return;
+    }
     group_data_egress_ = egress;
 }
 
@@ -2948,6 +3743,28 @@ bool ConnectionRuntime::send_data(
     const OutboundPacket& packet,
     std::uint64_t now) noexcept
 {
+    if (packet.canonical_group) {
+        // Policy is captured in the history slot. Never consult mutable egress
+        // delivery, prepare another key, rewrite its destination or reseal.
+        if (!group_send_state_ || !group_send_state_->binding)
+            return true;
+        std::array<std::byte, DatagramEnvelope::maximum_size> bytes;
+        const auto encoded = encode_packet({.kind = PacketKind::data,
+                                               .data = packet.header,
+                                               .payload = packet.payload},
+            bytes);
+        if (!encoded) {
+            break_locked(0);
+            return false;
+        }
+        return submit_datagram(std::span {bytes}.first(encoded.bytes_written),
+            {.kind = DatagramKind::data,
+                .data = packet.header,
+                .payload_size = packet.plaintext_size,
+                .group_binding = group_send_state_->binding,
+                .group_position = packet.sequence_position},
+            now);
+    }
     if (!packet.header.retransmitted
         && group_data_egress_.mode == GroupDataEgress::Mode::suppress) {
         // Another member transmits this original to the multicast group.
@@ -3053,13 +3870,15 @@ bool ConnectionRuntime::send_data(
             && packet.payload.size() >= srt_gcm_authentication_tag_size
         ? packet.payload.size() - srt_gcm_authentication_tag_size
         : packet.payload.size();
-    const DatagramCompletion completion {.kind = DatagramKind::data,
+    DatagramCompletion completion {.kind = DatagramKind::data,
         .data = view.data,
         .payload_size = application_payload_size};
     bool multicast_path = !packet.header.retransmitted
         && group_data_egress_.mode == GroupDataEgress::Mode::redirect;
     DispatchTransmitState::RepeatDecision repeat_decision;
-    if (packet.header.retransmitted
+    const bool selected_unicast = unicast_repeat_wait_
+        && unicast_repeat_wait_->first == packet.header.sequence;
+    if (!selected_unicast && packet.header.retransmitted
         && group_data_egress_.mode != GroupDataEgress::Mode::normal
         && group_data_egress_.transmit != nullptr
         && group_data_egress_.repeat_threshold != 0U) {
@@ -3084,10 +3903,11 @@ bool ConnectionRuntime::send_data(
         multicast_path = repeat_decision.multicast;
     }
     if (multicast_path) {
-        // One copy for every receiver: the datagram leaves on this member's
-        // channel socket towards the multicast group, so its source address
-        // is the one the receivers' control links know.
-        const auto channel = channel_.lock();
+        // All multicast originals and aggregated repairs use the same source.
+        // The independent channel is send-only and never owns member routes.
+        const auto channel = group_data_egress_.transmit_channel
+            ? group_data_egress_.transmit_channel
+            : channel_.lock();
         if (channel == nullptr) {
             if (repeat_decision.multicast) {
                 group_data_egress_.transmit->complete_repeat(
@@ -3118,6 +3938,7 @@ bool ConnectionRuntime::send_data(
         if (repeat_decision.multicast) {
             // A local multicast failure did not repair this receiver. Use
             // its ordinary bounded unicast retry path with the same packet.
+            completion.unicast_repeat_state = group_data_egress_.transmit;
             return submit_datagram(bytes, completion, now);
         }
         // A transient multicast send failure drops this copy for every
@@ -3127,6 +3948,11 @@ bool ConnectionRuntime::send_data(
             session_.note_retransmission_sent(packet.header.sequence, now);
         }
         return true;
+    }
+    if (packet.header.retransmitted
+        && (group_data_egress_.mode == GroupDataEgress::Mode::suppress
+            || group_data_egress_.mode == GroupDataEgress::Mode::redirect)) {
+        completion.unicast_repeat_state = group_data_egress_.transmit;
     }
     return submit_datagram(
         std::span {datagram}.first(datagram_size), completion, now);
@@ -3607,8 +4433,18 @@ bool ConnectionRuntime::service_key_rotation(
 bool ConnectionRuntime::process_reliability_packet_locked(
     const PacketView& packet, std::uint64_t now,
     ReliabilityReceiveContext context, bool wire_received,
-    std::span<const std::byte> authenticated_plaintext) noexcept
+    std::span<const std::byte> authenticated_plaintext,
+    std::optional<hybrid::DataPath> observation_path,
+    std::uint64_t observation_arrival_us) noexcept
 {
+#ifndef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    (void)observation_path;
+    (void)observation_arrival_us;
+#else
+    if (hybrid_receive_)
+        hybrid_receive_->sync_floor(
+            session_.receive_buffer().first_stored_sequence());
+#endif
     // Reject oversized DATA before querying delivery state or doing provider
     // work. Invalid input must neither terminate nor advance this session.
     if (packet.kind == PacketKind::data
@@ -3624,8 +4460,9 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     const bool readable_before = session_.data_ready_at(now);
     const auto delivery_before = session_.next_receive_delivery_time();
     PacketView clear_packet = packet;
-    std::array<std::byte, maximum_data_payload_size>
-        clear_payload{};
+    // Written only as the decryption destination below and read only
+    // through that destination after a successful decryption.
+    std::array<std::byte, maximum_data_payload_size> clear_payload;
     const auto filter_disposition =
         session_.packet_filter_policy().inspect(packet);
     if (filter_disposition
@@ -3739,6 +4576,18 @@ bool ConnectionRuntime::process_reliability_packet_locked(
     if (!processed) {
         return false;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_receive_) {
+        hybrid_receive_->sync_floor(
+            session_.receive_buffer().first_stored_sequence());
+        if (observation_path && wire_received && !context.filter_supplied
+            && !context.discard_payload
+            && !processed.receiver_filter_control_packet)
+            hybrid_receive_->receive(clear_packet,
+                processed.receiver_packet_accepted_unique, *observation_path,
+                observation_arrival_us);
+    }
+#endif
     if (packet.kind == PacketKind::data
         && processed.receiver_packet_accepted_unique && !context.discard_payload
         && !processed.receiver_filter_control_packet) {
@@ -3754,10 +4603,12 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         && !consume_filter_control && processed.receiver_packet_accepted_unique
         && packet.data.encryption_key != EncryptionKey::none) {
         // AES-CTR cannot authenticate a packet. Only a sequence the receive
-        // window accepted may advance the key-generation ceilings; a spoofed
+        // window accepted may advance the key-generation frontier and the
+        // accepted range of the generation that decrypted it; a spoofed
         // far-ahead sequence would otherwise misroute later packets to a
         // retired key after the next rotation.
-        crypto_->note_accepted_receive_sequence(packet.data.sequence);
+        crypto_->note_accepted_receive_sequence(
+            packet.data.encryption_key, packet.data.sequence);
     }
     if (processed.peer_available_receive_buffer_packets.has_value()) {
         const std::size_t previous_flow_window = flow_window_packets_;
@@ -3876,6 +4727,10 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         terminate_standby_rtt();
         peer_closed_ = true;
         broken_ = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (hybrid_service_)
+            hybrid_service_->close(hybrid::NativeService::Failure::lifetime);
+#endif
         terminal_edge = true;
         receive_ready_.notify_all();
         send_ready_.notify_all();
@@ -3883,6 +4738,10 @@ bool ConnectionRuntime::process_reliability_packet_locked(
         && packet.control.type == ControlType::peer_error) {
         terminate_standby_rtt();
         peer_error_pending_ = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        if (hybrid_service_)
+            hybrid_service_->close(hybrid::NativeService::Failure::lifetime);
+#endif
         terminal_edge = true;
         send_ready_.notify_all();
     } else if (receive_edge) {
@@ -3965,22 +4824,168 @@ void ConnectionRuntime::process_experimental_filter_locked(
 }
 #endif
 
-void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
-    IpEndpoint peer, std::optional<Clock::time_point> ingress) noexcept
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+bool ConnectionRuntime::publish_hybrid_conclusions(
+    std::shared_ptr<const hybrid::Conclusions> pair, bool caller) noexcept
 {
-    PacketView packet = incoming_packet;
-    if (peer != peer_) {
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_ || peer_closed_ || hybrid_conclusions_
+        || !pair
+        || !pair->matches(caller, hybrid_local_socket_id_, peer_socket_id_))
+        return false;
+    if (caller) {
+        try {
+            auto progress = std::make_unique<hybrid::ReceiveProgress>(
+                SequenceNumber {pair->dispatch().initial_sequence});
+            progress->sync_floor(
+                session_.receive_buffer().first_stored_sequence());
+            hybrid_receive_ = std::move(progress);
+            hybrid_receive_route_ = multicast_ingress_generation_;
+        } catch (...) {
+            return false;
+        }
+    }
+    hybrid_conclusions_ = std::move(pair);
+    hybrid_caller_ = caller;
+    return true;
+}
+std::shared_ptr<const hybrid::Conclusions>
+ConnectionRuntime::hybrid_conclusions() const noexcept
+{
+    std::lock_guard lock(mutex_);
+    return locally_closed_ || broken_ || peer_closed_ ? nullptr
+                                                      : hybrid_conclusions_;
+}
+bool ConnectionRuntime::hybrid_observation_current() const noexcept
+{
+    return hybrid_receive_route_ == multicast_ingress_generation_
+        && (hybrid_membership_ ? hybrid_membership_live_
+                               : static_cast<bool>(multicast_ingress_binding_));
+}
+std::optional<hybrid::ReceiveDataProgress>
+ConnectionRuntime::hybrid_receive_progress(
+    const hybrid::NativeService* service, std::uint64_t origin) const noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_ || peer_closed_ || peer_error_pending_
+        || !service || service->closed() || hybrid_service_.get() != service
+        || hybrid_conclusions_ != service->origin() || !hybrid_receive_
+        || !hybrid_observation_current())
+        return {};
+    hybrid_receive_->sync_floor(
+        session_.receive_buffer().first_stored_sequence());
+    auto data = hybrid_receive_->snapshot(origin);
+    if (data && hybrid_membership_recoverable_)
+        data->route_epoch = multicast_ingress_generation_;
+    return data;
+}
+bool ConnectionRuntime::hybrid_multicast_fence(
+    const hybrid::NativeService* service, std::uint64_t epoch) const noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (!service || service->closed() || hybrid_service_.get() != service
+        || locally_closed_ || broken_ || peer_closed_ || peer_error_pending_)
+        return false;
+    if (!hybrid_membership_recoverable_ && !epoch)
+        return true; // Existing trusted explicit proof contract.
+    return epoch && epoch == multicast_ingress_generation_
+        && multicast_ingress_binding_ && hybrid_observation_current()
+        && !hybrid_membership_loss_;
+}
+std::optional<hybrid::MulticastCoverage>
+ConnectionRuntime::hybrid_multicast_coverage(
+    const hybrid::NativeService* service, std::uint64_t begin,
+    std::uint64_t through, std::uint64_t origin) const noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_ || peer_closed_ || peer_error_pending_
+        || !service || service->closed() || hybrid_service_.get() != service
+        || hybrid_conclusions_ != service->origin() || !hybrid_receive_
+        || !multicast_ingress_binding_ || !hybrid_observation_current())
+        return {};
+    hybrid_receive_->sync_floor(
+        session_.receive_buffer().first_stored_sequence());
+    auto coverage = hybrid_receive_->coverage(begin, through, origin);
+    if (coverage)
+        coverage->route_epoch = multicast_ingress_generation_;
+    return coverage;
+}
+#endif
+void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
+    IpEndpoint peer, std::optional<Clock::time_point> ingress,
+    PacketIngress provenance,
+    const std::shared_ptr<const MulticastIngressBinding>&
+        multicast_binding) noexcept
+{
+    if (provenance != PacketIngress::multicast_data
+        && provenance != PacketIngress::unicast_session)
+        return;
+    const bool multicast = provenance == PacketIngress::multicast_data;
+    const auto reject_multicast = [&] {
+        if (multicast)
+            rejected_multicast_packets_.fetch_add(
+                1U, std::memory_order_relaxed);
+    };
+    if (multicast && incoming_packet.kind != PacketKind::data) {
+        reject_multicast();
+        return;
+    }
+    // Preserve the established unicast peer check; an independent multicast
+    // source is admitted only through the active route token below.
+    if (provenance == PacketIngress::unicast_session && peer != peer_) {
         foreign_peer_packets_.fetch_add(1U, std::memory_order_relaxed);
         return;
     }
-    // Admission must precede FEC state, liveness and statistics mutations.
-    if (packet.kind == PacketKind::data
-        && packet.payload.size() > maximum_data_payload_size)
-        return;
-    std::lock_guard lock(mutex_);
-    if (locally_closed_ || broken_) {
+    if (incoming_packet.kind == PacketKind::data
+        && incoming_packet.payload.size() > maximum_data_payload_size) {
+        reject_multicast();
         return;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    // Only a build with the experimental option classifies hybrid controls.
+    // Without it these subtypes take the ordinary control path below, like
+    // any other subtype this runtime does not implement.
+    if (hybrid::native_candidate(incoming_packet)) {
+        std::shared_ptr<hybrid::NativeService> service;
+        {
+            std::lock_guard lock(mutex_);
+            if (!locally_closed_ && !broken_ && !peer_closed_)
+                service = hybrid_service_;
+        }
+        if (service) {
+            const auto at = ingress
+                ? static_cast<std::uint64_t>(std::max<std::int64_t>(0,
+                      std::chrono::duration_cast<std::chrono::microseconds>(
+                          ingress->time_since_epoch())
+                          .count()))
+                : hybrid::NativeService::monotonic_now();
+            (void)service->enqueue(incoming_packet, at);
+        }
+        return;
+    }
+#endif
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_) {
+        reject_multicast();
+        return;
+    }
+    if (multicast) {
+        // Revocation, replacement and admission serialize on this mutex.
+        // Reject stale identities before even source/liveness counters change.
+        if (multicast_binding == nullptr
+            || multicast_binding != multicast_ingress_binding_
+            || multicast_binding->generation_ != multicast_ingress_generation_
+            || incoming_packet.data.destination_socket_id
+                != multicast_binding->destination_socket_id_) {
+            reject_multicast();
+            return;
+        }
+        if (peer != multicast_binding->source_) {
+            foreign_peer_packets_.fetch_add(1U, std::memory_order_relaxed);
+            return;
+        }
+    }
+    PacketView packet = incoming_packet;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
     if (options_.experimental_acp1() && packet.kind == PacketKind::control) {
         PacketView opened;
@@ -4211,8 +5216,8 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
 
     if (packet.kind == PacketKind::data
         && fec_decoder_active()) {
-        std::array<std::byte, maximum_data_payload_size>
-            authenticated_payload {};
+        // Read only through the destination of a successful open.
+        std::array<std::byte, maximum_data_payload_size> authenticated_payload;
         std::span<const std::byte> authenticated_plaintext;
         if (packet.data.message_number != 0U && crypto_ != nullptr
             && crypto_->authenticated_data_enabled()) {
@@ -4317,7 +5322,50 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
             filtered.irrecoverable_losses, now);
         return;
     }
-    if (process_reliability_packet_locked(packet, now)) {
+    std::optional<hybrid::DataPath> observation_path;
+    std::uint64_t arrival = 0;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (packet.kind == PacketKind::data && hybrid_receive_
+        && hybrid_observation_current()) {
+        observation_path = provenance == PacketIngress::multicast_data
+            ? hybrid::DataPath::multicast
+            : hybrid::DataPath::unicast;
+        // Compare native ingress against one absolute clock sample. Summing
+        // separately truncated origin and elapsed microseconds can put a valid
+        // receive one microsecond in the future.
+        // Progress timestamps belong to the hybrid service's clock domain,
+        // the one every controller compares them with. In production that is
+        // the steady clock the channel stamped the ingress with; an injected
+        // test clock has no relation to that stamp, so the stamp is not
+        // applied then.
+        const bool injected =
+            hybrid_service_ != nullptr && hybrid_service_->injected_clock();
+        if (hybrid_service_ != nullptr) {
+            arrival = hybrid_service_->now();
+        } else {
+            const auto absolute =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    Clock::now().time_since_epoch())
+                    .count();
+            if (absolute >= 0)
+                arrival = static_cast<std::uint64_t>(absolute);
+            else
+                observation_path.reset();
+        }
+        if (ingress && !injected) {
+            const auto recorded =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    ingress->time_since_epoch())
+                    .count();
+            if (recorded < 0 || static_cast<std::uint64_t>(recorded) > arrival)
+                observation_path.reset();
+            else
+                arrival = static_cast<std::uint64_t>(recorded);
+        }
+    }
+#endif
+    if (process_reliability_packet_locked(
+            packet, now, {}, true, {}, observation_path, arrival)) {
         last_peer_activity_microseconds_ = now;
     }
 }
@@ -4477,6 +5525,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     // sent. Once the stream pauses or ends, retained copies stay available
     // for retransmission until acknowledged.
     const bool new_data_waiting = pending_datagram_size_ != 0U
+        || group_budget_pending_
         || session_.send_buffer().peek_new_packet().has_value();
     if (!send_actions(session_.drop_expired_sender_message(now), now)
         || (new_data_waiting
@@ -4548,8 +5597,41 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         return {};
     }
 #endif
+    if (!flush_group_budget_datagram(now))
+        return {};
+    if (pending_datagram_size_)
+        return pending_send_poll_result(now);
+    if (group_budget_pending_)
+        return group_budget_poll_result(now_microseconds());
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+    // DATA found due below is staged and submitted together after the loop.
+    // Every early return in the loop follows a broken connection, which
+    // discards what is staged.
+    struct SendStageScope {
+        ConnectionRuntime& runtime;
+        ~SendStageScope()
+        {
+            runtime.send_stage_open_ = false;
+            if (runtime.send_stage_) {
+                for (std::size_t staged = 0; staged < runtime.send_stage_->size;
+                    ++staged) {
+                    runtime.send_stage_->entries[staged].completion = {};
+                }
+                runtime.send_stage_->size = 0U;
+            }
+        }
+    } send_stage_scope {*this};
+    send_stage_open_ = true;
+    const auto send_budget_left = [&]() noexcept {
+        return send_budget_beyond_stage();
+    };
+#else
+    const auto send_budget_left = [&]() noexcept {
+        return *poll_send_budget_ != 0U;
+    };
+#endif
     for (std::size_t index = 0;
-        index < maximum_send_batch && *poll_send_budget_ != 0U; ++index) {
+        index < maximum_send_batch && send_budget_left(); ++index) {
         const std::uint64_t packet_time = now_microseconds();
         if (crypto_ != nullptr && crypto_->enabled()) {
             if (!service_key_rotation(packet_time)) {
@@ -4624,7 +5706,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         if (crypto_ != nullptr && crypto_->enabled()
             && !retransmission_ready(now_microseconds())) {
             const auto candidate = session_.send_buffer().peek_new_packet();
-            if (candidate.has_value()) {
+            if (candidate.has_value() && !candidate->canonical_group) {
                 observe_key_sequence_position(
                     candidate->sequence_position, packet_time);
                 // Refresh the hint before accounting for this candidate's
@@ -4646,6 +5728,8 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         // already owns its original ciphertext and does not depend on it.
         if (crypto_ != nullptr && crypto_->enabled()
             && !crypto_->ready_to_send_data()
+            && !(session_.send_buffer().peek_new_packet()
+                && session_.send_buffer().peek_new_packet()->canonical_group)
             && !retransmission_ready(now_microseconds())) {
             break;
         }
@@ -4666,7 +5750,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             continue;
         }
         if (!retransmission
-            && session_.send_buffer().packets_in_flight()
+            && session_.send_buffer().new_packet_flow_count()
                 >= flow_window_packets_) {
             break;
         }
@@ -4685,14 +5769,25 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         if (!packet.has_value()) {
             break;
         }
+        if (packet->header.retransmitted
+            && unicast_repeat_scan_remaining_ != 0U)
+            --unicast_repeat_scan_remaining_;
         if (!send_data(*packet, packet_time)) {
             return {};
         }
-        if (pending_datagram_size_ != 0U) {
+        if (pending_datagram_size_ != 0U || group_budget_pending_) {
             break;
         }
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+    send_stage_open_ = false;
+    if (!flush_send_stage()) {
+        return {};
+    }
+#endif
 
+    if (group_budget_pending_)
+        return group_budget_poll_result(now_microseconds());
     if (pending_datagram_size_ != 0U) {
         return pending_send_poll_result(now_microseconds());
     }
@@ -4705,7 +5800,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             effective_window, session_.experimental_window_packets());
 #endif
     const bool flow_blocked = !retransmission
-        && session_.send_buffer().packets_in_flight() >= effective_window;
+        && session_.send_buffer().new_packet_flow_count() >= effective_window;
     bool filter_pending = fec_control_ready();
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
     filter_pending = filter_pending
@@ -4725,7 +5820,9 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     // produce the response, especially when another group member is behind a
     // black hole. Flow-window waits have the same inbound-event dependency.
     const bool crypto_blocked = !retransmission && crypto_ != nullptr
-        && crypto_->enabled() && !crypto_->ready_to_send_data();
+        && crypto_->enabled() && !crypto_->ready_to_send_data()
+        && !(session_.send_buffer().peek_new_packet()
+            && session_.send_buffer().peek_new_packet()->canonical_group);
     statistics_.update_key_pause(now_microseconds(), crypto_blocked && pending);
     const bool paced_work =
         filter_pending || (pending && !flow_blocked && !crypto_blocked);
@@ -4749,15 +5846,26 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
         retirement_delay =
             std::chrono::microseconds {*retirement_deadline - current};
     }
-#ifdef ENABLE_MAXREXMITBW
     if (!filter_pending && !retransmission
         && session_.has_pending_retransmission()
         && (!session_.send_buffer().peek_new_packet().has_value()
             || flow_blocked || crypto_blocked)) {
         const auto candidate = session_.peek_retransmission_packet();
         if (candidate.has_value()) {
-            const auto wait = retransmission_budget_.delay(
+            std::optional<std::uint64_t> wait = 0;
+#ifdef ENABLE_MAXREXMITBW
+            wait = retransmission_budget_.delay(
                 packet_header_size + candidate->payload.size(), current);
+#endif
+            if (unicast_repeat_wait_ && group_data_egress_.transmit && wait) {
+                const auto shared =
+                    group_data_egress_.transmit->unicast_repeat_delay(
+                        unicast_repeat_wait_->second,
+                        DispatchTransmitState::unicast_repeat_clock());
+                wait = shared
+                    ? std::optional<std::uint64_t> {std::max(*wait, *shared)}
+                    : std::nullopt;
+            }
             if (wait.has_value() && *wait != 0) {
                 return {.next_work_delay = std::chrono::microseconds {*wait},
                     .next_work_deadline = now_function_ == nullptr
@@ -4770,7 +5878,6 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
                 return {};
         }
     }
-#endif
     if (!paced_work) {
         // Buffered DATA, receive delivery/drop work and pending key exchanges
         // retain the short polling path. Sensor retirement still bounds it.
@@ -4787,7 +5894,8 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
                     retirement_delay = probe_delay;
                 }
             }
-            return {.next_work_delay = retirement_delay};
+            return {.next_work_delay = retirement_delay,
+                .quiet_receive_wait = quiet_receive_wait(current)};
         }
         const auto maximum = (std::numeric_limits<std::uint64_t>::max)();
         const auto timeout = last_peer_activity_microseconds_
@@ -4810,7 +5918,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     const PaceDecision pace = pacer_.query(current,
         filter_pending || retransmission
             ? 0U
-            : session_.send_buffer().packets_in_flight());
+            : session_.send_buffer().new_packet_flow_count());
     if (pace.ready || pace.next_ready_microseconds <= current) {
         return {
             .immediate_work = true,
@@ -4852,6 +5960,12 @@ void ConnectionRuntime::apply_options(
     const SocketOptions& options) noexcept
 {
     std::unique_lock lock(mutex_);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_service_)
+        hybrid_service_->close(hybrid::NativeService::Failure::options);
+#endif
+    if (group_send_state_)
+        group_send_state_->binding.reset();
     options_ = options;
 #ifdef ENABLE_MAXREXMITBW
     const auto limit =
@@ -4905,7 +6019,9 @@ void ConnectionRuntime::notify_idle_expiry_locked(std::uint64_t now) noexcept
     if (!encoded) {
         return;
     }
-    --*poll_send_budget_;
+    // Null outside a poll: disconnect_peer() sends from the caller's thread.
+    if (poll_send_budget_ != nullptr)
+        --*poll_send_budget_;
     std::span<const std::byte> bytes =
         std::span {datagram}.first(encoded.bytes_written);
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
@@ -4936,9 +6052,16 @@ void ConnectionRuntime::break_locked(int system_error) noexcept
     statistics_.update_send_duration(now, false);
     terminate_standby_rtt();
     broken_ = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_service_)
+        hybrid_service_->close(hybrid::NativeService::Failure::lifetime);
+#endif
+    if (group_send_state_)
+        group_send_state_->binding.reset();
     pending_datagram_head_.reset();
     pending_datagram_tail_ = nullptr;
     pending_datagram_size_ = 0U;
+    group_budget_pending_.reset();
     next_datagram_retry_microseconds_ = 0U;
     transient_send_failure_since_.reset();
     transient_send_system_error_ = 0;
@@ -4966,6 +6089,15 @@ void ConnectionRuntime::mark_broken(int system_error) noexcept
 {
     std::lock_guard lock(mutex_);
     break_locked(system_error);
+}
+
+void ConnectionRuntime::disconnect_peer() noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || peer_closed_ || broken_)
+        return;
+    notify_idle_expiry_locked(now_microseconds());
+    break_locked(0);
 }
 
 bool ConnectionRuntime::report_peer_error(
@@ -4999,6 +6131,13 @@ bool ConnectionRuntime::begin_close() noexcept
         return false;
     }
     locally_closed_ = true;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_service_)
+        hybrid_service_->close(hybrid::NativeService::Failure::lifetime);
+#endif
+    if (group_send_state_)
+        group_send_state_->binding.reset();
+    multicast_ingress_binding_.reset();
     terminate_standby_rtt();
     receive_ready_.notify_all();
     send_ready_.notify_all();
@@ -5126,6 +6265,7 @@ void ConnectionRuntime::finish_close() noexcept
     transient_send_failure_since_.reset();
     transient_send_system_error_ = 0;
     close_completed_ = true;
+    group_budget_pending_.reset();
     auto retirement = std::exchange(retired_group_statistics_, {});
     PacketByteCounter total;
     if (retirement.group != SRT_INVALID_SOCK)
@@ -5248,7 +6388,7 @@ SocketReadinessSnapshot ConnectionRuntime::readiness_snapshot(
     } else {
         readiness.read_wakeup = wakeup;
     }
-    if (!locally_closed_ && !peer_closed_ && !broken_
+    if (!locally_closed_ && !peer_closed_ && !broken_ && !group_send_state_
         && (peer_error_pending_ || session_.send_buffer().available() != 0U)) {
         readiness.events |= SRT_EPOLL_OUT;
     }
@@ -5258,9 +6398,8 @@ SocketReadinessSnapshot ConnectionRuntime::readiness_snapshot(
 bool ConnectionRuntime::writable() const noexcept
 {
     std::lock_guard lock(mutex_);
-    return !locally_closed_ && !peer_closed_ && !broken_
-        && (peer_error_pending_
-            || session_.send_buffer().available() != 0U);
+    return !locally_closed_ && !peer_closed_ && !broken_ && !group_send_state_
+        && (peer_error_pending_ || session_.send_buffer().available() != 0U);
 }
 
 std::size_t ConnectionRuntime::retained_payload_capacity() const noexcept
@@ -5280,13 +6419,14 @@ bool ConnectionRuntime::wait_for_send_drain(
     std::unique_lock lock(mutex_);
     const auto complete = [this] {
         return (session_.send_buffer().size() == 0U
-                   && pending_datagram_size_ == 0U)
+                   && pending_datagram_size_ == 0U && !group_budget_pending_)
             || locally_closed_ || peer_closed_ || broken_;
     };
     if (!complete() && timeout.count() > 0) {
         (void)send_ready_.wait_for(lock, timeout, complete);
     }
-    return session_.send_buffer().size() == 0U && pending_datagram_size_ == 0U;
+    return session_.send_buffer().size() == 0U && pending_datagram_size_ == 0U
+        && !group_budget_pending_;
 }
 
 CryptoState ConnectionRuntime::sender_crypto_state() const noexcept

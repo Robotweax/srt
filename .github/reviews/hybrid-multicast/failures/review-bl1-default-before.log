@@ -1,0 +1,15 @@
+[1/1] Building CXX object CMakeFiles/robotweax_srt_tests.dir/tests/test_multicast_dispatch.cpp.o
+FAILED: [code=1] CMakeFiles/robotweax_srt_tests.dir/tests/test_multicast_dispatch.cpp.o
+/usr/bin/c++ -DROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=1 -I<source>/src -I<source>/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -MD -MT CMakeFiles/robotweax_srt_tests.dir/tests/test_multicast_dispatch.cpp.o -MF CMakeFiles/robotweax_srt_tests.dir/tests/test_multicast_dispatch.cpp.o.d -o CMakeFiles/robotweax_srt_tests.dir/tests/test_multicast_dispatch.cpp.o -c <source>/tests/test_multicast_dispatch.cpp
+<source>/tests/test_multicast_dispatch.cpp:1442:43: error: use of undeclared identifier 'SRTO_CRYPTOMODE'; did you mean 'SRTO_TSBPDMODE'?
+ 1442 |                 srt_setsockflag(listener, SRTO_CRYPTOMODE, &mode, sizeof(mode)),
+      |                                           ^~~~~~~~~~~~~~~
+      |                                           SRTO_TSBPDMODE
+<source>/tests/test.hpp:73:64: note: expanded from macro 'REQUIRE_EQ'
+   73 | #define REQUIRE_EQ(left, right) ::robotweax::srt::test::equal((left), (right), #left, #right, __FILE__, __LINE__)
+      |                                                                ^~~~
+<source>/include/srt/srt.h:107:5: note: 'SRTO_TSBPDMODE' declared here
+  107 |     SRTO_TSBPDMODE = 22,
+      |     ^
+1 error generated.
+ninja: build stopped: subcommand failed.

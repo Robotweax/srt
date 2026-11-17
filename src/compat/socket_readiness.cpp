@@ -209,8 +209,9 @@ struct SocketReadiness::State {
             return errno == EINTR ? 0 : -1;
         }
         for (int index = 0; index < result; ++index) {
-            // Linux packs epoll_event: data.u64 may not be naturally aligned.
-            // Copy by value before vector::push_back binds a reference to it.
+            // glibc packs epoll_event on x86-64, which leaves data.u64 at a
+            // four-byte offset. Copy it: push_back takes a reference, and a
+            // reference to the packed member would be misaligned.
             const std::uint64_t payload =
                 events[static_cast<std::size_t>(index)].data.u64;
             if (payload == wake_marker) {

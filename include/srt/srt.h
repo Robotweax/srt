@@ -235,7 +235,8 @@ typedef enum SRT_SOCKOPT {
     SRTO_ROBOTWEAX_MCAST_GROUP = 0x01000011,
     /** Pre-bind/listen on either side: sockaddr selecting the local
      * interface for multicast; IPv4 by address, IPv6 by sin6_scope_id. The
-     * Listener announces it as a hint; the Caller's own value wins. */
+     * legacy Listener announces a hint; the Caller's own value wins. The
+     * independent profile uses only receiver-local selection or OS default. */
     SRTO_ROBOTWEAX_MCAST_IFACE = 0x01000012,
     /** Listener, pre-listen: int32_t hop limit for multicast payload,
      * 0..255, default 1 (link-local). */
@@ -248,7 +249,7 @@ typedef enum SRT_SOCKOPT {
     SRTO_ROBOTWEAX_MCAST_REXMIT_THRESHOLD = 0x01000014,
     /** Dispatch group, read-only: ROBOTWEAX_SRT_MCAST_STATS_V1 for the
      * multicast path. A sender reports what left on it; a receiver reports
-     * what its multicast socket received and dropped before decoding. */
+     * decoded multicast route observations and source rejections. */
     SRTO_ROBOTWEAX_MCAST_STATS = 0x01000015,
     /** Sender-local FEC parity policy, int32_t, PRE: ROBOTWEAX_SRT_FECPOLICY_ALWAYS
      * (default, every ready repair packet is sent) or
@@ -265,16 +266,35 @@ typedef enum SRT_SOCKOPT {
      * receiver can detect a lost tail (TCP TLP, RFC 8985). Accepted only
      * together with SRTO_ROBOTWEAX_FECPOLICY = ARQFIRST. */
     SRTO_ROBOTWEAX_TAILPROBE = 0x01000017,
-    /** Experimental peer authentication PRE configuration. Default-off build
-     * gate; connection admission is not implemented yet. KEY is write-only. */
-    SRTO_ROBOTWEAX_PEERAUTH_POLICY = 0x01000019,
-    SRTO_ROBOTWEAX_PEERAUTH_KEY = 0x0100001a,
-    SRTO_ROBOTWEAX_PEERAUTH_TRUSTED = 0x0100001b,
+    /** PRE-bind bool, default false. Require bilateral fixed-source multicast
+     * negotiation. IPv4 multicast Listener or single-endpoint receiver group.
+     * Listener also requires MCAST_SOURCE and MCAST_GROUP. No automatic fallback. */
+    SRTO_ROBOTWEAX_MCAST_INDEPENDENT = 0x01000018,
+    /** Listener PRE-bind sockaddr_in: concrete multicast transmit source;
+     * port zero selects an ephemeral port at listen. Readback after listen
+     * returns the bound source. Requires MCAST_INDEPENDENT. */
+    SRTO_ROBOTWEAX_MCAST_SOURCE = 0x01000019,
+    /** Listener-local PRE-bind bool, default false: group-owned original
+     * multicast emission. Requires MCAST_INDEPENDENT and positive MAXBW;
+     * MAXBW includes IP/UDP overhead and is frozen after listen. Solo Live
+     * messages only, at most 64 receivers. Unavailable receivers are detached
+     * from group sending; inspect group data. No automatic fallback. The
+     * fixed-source wire format and receiver configuration are unchanged. */
+    SRTO_ROBOTWEAX_MCAST_COORDINATED = 0x0100001a,
+    /** Experimental peer authentication, compiled only with
+     * ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH; every option returns
+     * SRT_EINVOP otherwise. PRE options. POLICY is OFF or REQUIRED, KEY is a
+     * write-only 32-byte P-256 scalar, TRUSTED is one to sixteen 64-byte
+     * public keys. See docs/peer-authentication.md. */
+    SRTO_ROBOTWEAX_PEERAUTH_POLICY = 0x0100001b,
+    SRTO_ROBOTWEAX_PEERAUTH_KEY = 0x0100001c,
+    SRTO_ROBOTWEAX_PEERAUTH_TRUSTED = 0x0100001d,
     /** Claimed 32-byte key identifier, read-only during the listen callback;
      * this is not an authenticated identity. */
-    SRTO_ROBOTWEAX_PEERAUTH_OFFERED = 0x0100001c,
-    /** Reserved authenticated peer result; unavailable until admission is wired. */
-    SRTO_ROBOTWEAX_PEERAUTH_PEER = 0x0100001d,
+    SRTO_ROBOTWEAX_PEERAUTH_OFFERED = 0x0100001e,
+    /** Read-only on a connected socket: the 64-byte public key the peer
+     * authenticated with. */
+    SRTO_ROBOTWEAX_PEERAUTH_PEER = 0x0100001f,
 #ifdef ENABLE_AEAD_API_PREVIEW
     SRTO_CRYPTOMODE = 62,
 #endif
@@ -1311,6 +1331,10 @@ SRT_API int64_t srt_sendfile(
  * Invalid arguments and failure before payload delivery do not truncate an
  * existing destination. Later failures may leave a partially written file;
  * this helper is not transactional.
+ * Regular/new files and POSIX character devices are supported; final symlinks and
+ * Windows reparse points are rejected. The caller must authorize the parent
+ * directories. One file handle is retained through the transfer, so renaming
+ * the destination does not redirect subsequent truncation or writes.
  * @param path NUL-terminated destination path borrowed for this call.
  * @param[in,out] offset File offset advanced only by transferred bytes.
  * @param size Maximum bytes to receive.

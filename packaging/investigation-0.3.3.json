@@ -1,0 +1,68 @@
+{
+  "status": "investigated_not_fixed",
+  "source_commit": "b1c650e1f1c72899271daa5dbf6c7477bd479135",
+  "successful_vlc_run": 41917753809,
+  "recent_successful_vlc_run": 42575246163,
+  "failed_ci_run": 43011018905,
+  "vlc": {
+    "old_baseline_frames": 46,
+    "old_baseline_unique": 46,
+    "failed_baseline_frames": 46,
+    "failed_baseline_unique": 34,
+    "network_frames": 20,
+    "network_identical_to_successful_run": true,
+    "network_matches_old_reference": true,
+    "nov9_reference_identical_to_release": true,
+    "baseline_changed_positions_zero_based": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+    ],
+    "repeated_frame": "FRAME ef3370f28e16b9d4",
+    "repeated_frame_previous_position_zero_based": 13,
+    "old_runner_image": "20261025.353.1",
+    "new_runner_image": "20261101.360.1",
+    "libmpeg2_package_both": "0.5.1-9build1",
+    "finding": "The immediate failure comes from an incomplete local decoded-frame reference, not different network frames. The scheduling/decoder trigger is not established.",
+    "local_reproduction": "Pinned VLC and FFmpeg on Linux ARM: 20 ordinary plus 20 CPU-contention decodes, no invalid-picture event; architecture differs from hosted x86-64. An additional 20 decodes with distribution FFmpeg also passed."
+  },
+  "filecc": {
+    "dropped_sequence": 1174101912,
+    "drop_ordinal": 143,
+    "retransmission_ordinal": 146,
+    "retransmission_delay_us": 6798,
+    "later_data_before_retry": false,
+    "only_nak_sequence": 1174101843,
+    "payload_bytes": 1491323,
+    "payload_identical": true,
+    "finding": "The explicit NAK precondition was not established. Flight-wide RTO can select newly sent packets before later DATA exposes their loss. No causal sender-timer trace was retained in the hosted failure; its exact timing trigger is unresolved.",
+    "local_reproduction": "15 Linux ARM repetitions passed across initiator/responder roles; no claim that this fixes the hosted failure."
+  },
+  "unchanged_since_v032": [
+    "tests/vlc",
+    "interop/run_file_interop.py",
+    "src/timing.cpp"
+  ],
+  "next_steps": [
+    "Make the VLC reference completeness/uniqueness check fail at reference creation; preserve fixture bytes and decoder evidence. Establish and correct decoder/capture failure before accepting a replacement reference.",
+    "Capture sender RTO selection/ACK/pacing state for FileCC and establish a deterministic NAK-specific gap-exposure precondition; retain payload, NAK causality and separate RTO assertions.",
+    "Do not release on reruns alone."
+  ],
+  "evidence_sha256": {
+    "/tmp/srt032-vlc-evidence/evidence/baseline.frames": "d7fb82f199eb3da8e4ffcc415c22cb9666c2db4b12cfd0a63df2bfb3ab5ed2d7",
+    "/tmp/srt032-vlc-evidence/evidence/ffmpeg-to-vlc-clear-listener.frames": "3df18e5b844b35dfe38dfe19c13a11ee285d99476e63535866fccb974ee69b1a",
+    "/tmp/srt033-vlc-evidence/evidence/baseline.frames": "3ffc67a579159421dbbd93026f75d0cc877227d6914911c716cfcda8437aaa37",
+    "/tmp/srt033-vlc-evidence/evidence/ffmpeg-to-vlc-clear-listener.frames": "3df18e5b844b35dfe38dfe19c13a11ee285d99476e63535866fccb974ee69b1a",
+    "/tmp/srt033-vlc-evidence/evidence/baseline.log": "e0f6a5e405921cbf88e4db2d3f3ae2654eed55adb34d9d34ae85e3106f275500",
+    "/tmp/srt033-file-base.log": "c277bea923f7a3947897cc6f4b8e5e8dfa7ed65c33aceaf037b8909993c561d4"
+  }
+}

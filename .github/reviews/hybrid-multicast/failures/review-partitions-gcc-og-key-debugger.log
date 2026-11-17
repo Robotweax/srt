@@ -1,0 +1,119 @@
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/aarch64-linux-gnu/libthread_db.so.1".
+[RUN] hybrid_key_network_multi_receiver_pending_response_preserves_healthy_uc_mc_ctr_gcm
+1794154940876738/281474842416992W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+
+Thread 1 "robotweax_srt_t" received signal SIGINT, Interrupt.
+<address> in ?? () from /lib/aarch64-linux-gnu/libc.so.6
+
+Thread 9 (Thread <address> (LWP 242077) "rwx-worker-3"):
+#0  <address> in ?? () from /lib/aarch64-linux-gnu/libc.so.6
+#1  <address> in pthread_cond_wait () from /lib/aarch64-linux-gnu/libc.so.6
+#2  <address> in std::condition_variable::wait<robotweax::srt::compat::RuntimeWorkExecutor::run(std::shared_ptr<State>)::<lambda()> >(std::unique_lock<std::mutex> &, struct {...}) (this=..., __lock=..., __p=...) at /usr/include/c++/13/condition_variable:105
+#3  <address> in robotweax::srt::compat::RuntimeWorkExecutor::run (state=...) at <source>/src/compat/runtime_work_executor.cpp:181
+#4  <address> in operator() (__closure=...) at <source>/src/compat/runtime_work_executor.cpp:74
+#5  <address> in std::__invoke_impl<void, robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > (__f=...) at /usr/include/c++/13/bits/invoke.h:60
+#6  std::__invoke<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > (__fn=...) at /usr/include/c++/13/bits/invoke.h:96
+#7  std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > >::_M_invoke<0> (this=...) at /usr/include/c++/13/bits/std_thread.h:292
+#8  std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > >::operator() (this=...) at /usr/include/c++/13/bits/std_thread.h:299
+#9  std::thread::_State_impl<std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > > >::_M_run(void) (this=...) at /usr/include/c++/13/bits/std_thread.h:244
+#10 <address> in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#11 <address> [PAC] in asan_thread_start (arg=...) at ../../../../src/libsanitizer/asan/asan_interceptors.cpp:234
+
+Thread 8 (Thread <address> (LWP 242076) "rwx-worker-2"):
+#0  <address> in ?? () from /lib/aarch64-linux-gnu/libc.so.6
+#1  <address> in pthread_cond_wait () from /lib/aarch64-linux-gnu/libc.so.6
+#2  <address> in std::condition_variable::wait<robotweax::srt::compat::RuntimeWorkExecutor::run(std::shared_ptr<State>)::<lambda()> >(std::unique_lock<std::mutex> &, struct {...}) (this=..., __lock=..., __p=...) at /usr/include/c++/13/condition_variable:105
+#3  <address> in robotweax::srt::compat::RuntimeWorkExecutor::run (state=...) at <source>/src/compat/runtime_work_executor.cpp:181
+#4  <address> in operator() (__closure=...) at <source>/src/compat/runtime_work_executor.cpp:74
+#5  <address> in std::__invoke_impl<void, robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > (__f=...) at /usr/include/c++/13/bits/invoke.h:60
+#6  std::__invoke<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > (__fn=...) at /usr/include/c++/13/bits/invoke.h:96
+#7  std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > >::_M_invoke<0> (this=...) at /usr/include/c++/13/bits/std_thread.h:292
+#8  std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > >::operator() (this=...) at /usr/include/c++/13/bits/std_thread.h:299
+#9  std::thread::_State_impl<std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > > >::_M_run(void) (this=...) at /usr/include/c++/13/bits/std_thread.h:244
+#10 <address> in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#11 <address> [PAC] in asan_thread_start (arg=...) at ../../../../src/libsanitizer/asan/asan_interceptors.cpp:234
+
+Thread 7 (Thread <address> (LWP 242075) "rwx-worker-1"):
+#0  <address> in ?? () from /lib/aarch64-linux-gnu/libc.so.6
+#1  <address> in pthread_cond_wait () from /lib/aarch64-linux-gnu/libc.so.6
+#2  <address> in std::condition_variable::wait<robotweax::srt::compat::RuntimeWorkExecutor::run(std::shared_ptr<State>)::<lambda()> >(std::unique_lock<std::mutex> &, struct {...}) (this=..., __lock=..., __p=...) at /usr/include/c++/13/condition_variable:105
+#3  <address> in robotweax::srt::compat::RuntimeWorkExecutor::run (state=...) at <source>/src/compat/runtime_work_executor.cpp:181
+#4  <address> in operator() (__closure=...) at <source>/src/compat/runtime_work_executor.cpp:74
+#5  <address> in std::__invoke_impl<void, robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > (__f=...) at /usr/include/c++/13/bits/invoke.h:60
+#6  std::__invoke<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > (__fn=...) at /usr/include/c++/13/bits/invoke.h:96
+#7  std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > >::_M_invoke<0> (this=...) at /usr/include/c++/13/bits/std_thread.h:292
+#8  std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > >::operator() (this=...) at /usr/include/c++/13/bits/std_thread.h:299
+#9  std::thread::_State_impl<std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > > >::_M_run(void) (this=...) at /usr/include/c++/13/bits/std_thread.h:244
+#10 <address> in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#11 <address> [PAC] in asan_thread_start (arg=...) at ../../../../src/libsanitizer/asan/asan_interceptors.cpp:234
+
+Thread 6 (Thread <address> (LWP 242074) "rwx-worker-0"):
+#0  <address> in ?? () from /lib/aarch64-linux-gnu/libc.so.6
+#1  <address> in pthread_cond_wait () from /lib/aarch64-linux-gnu/libc.so.6
+#2  <address> in std::condition_variable::wait<robotweax::srt::compat::RuntimeWorkExecutor::run(std::shared_ptr<State>)::<lambda()> >(std::unique_lock<std::mutex> &, struct {...}) (this=..., __lock=..., __p=...) at /usr/include/c++/13/condition_variable:105
+#3  <address> in robotweax::srt::compat::RuntimeWorkExecutor::run (state=...) at <source>/src/compat/runtime_work_executor.cpp:181
+#4  <address> in operator() (__closure=...) at <source>/src/compat/runtime_work_executor.cpp:74
+#5  <address> in std::__invoke_impl<void, robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > (__f=...) at /usr/include/c++/13/bits/invoke.h:60
+#6  std::__invoke<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > (__fn=...) at /usr/include/c++/13/bits/invoke.h:96
+#7  std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > >::_M_invoke<0> (this=...) at /usr/include/c++/13/bits/std_thread.h:292
+#8  std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > >::operator() (this=...) at /usr/include/c++/13/bits/std_thread.h:299
+#9  std::thread::_State_impl<std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeWorkExecutor::start()::<lambda()> > > >::_M_run(void) (this=...) at /usr/include/c++/13/bits/std_thread.h:244
+#10 <address> in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#11 <address> [PAC] in asan_thread_start (arg=...) at ../../../../src/libsanitizer/asan/asan_interceptors.cpp:234
+
+Thread 5 (Thread <address> (LWP 242073) "rwx-readiness"):
+#0  <address> in epoll_pwait () from /lib/aarch64-linux-gnu/libc.so.6
+#1  <address> in robotweax::srt::compat::SocketReadiness::State::queue_wait (this=..., payloads=..., woken=...) at /usr/include/c++/13/array:276
+#2  <address> in robotweax::srt::compat::SocketReadiness::run (state=...) at <source>/src/compat/socket_readiness.cpp:622
+#3  <address> in std::__invoke_impl<void, void (*)(std::shared_ptr<robotweax::srt::compat::SocketReadiness::State>) noexcept, std::shared_ptr<robotweax::srt::compat::SocketReadiness::State> >(std::__invoke_other, void (*&&)(std::shared_ptr<robotweax::srt::compat::SocketReadiness::State>) noexcept, std::shared_ptr<robotweax::srt::compat::SocketReadiness::State>&&) (__f=...) at /usr/include/c++/13/bits/invoke.h:61
+#4  <address> in std::__invoke<void (*)(std::shared_ptr<robotweax::srt::compat::SocketReadiness::State>) noexcept, std::shared_ptr<robotweax::srt::compat::SocketReadiness::State> >(void (*&&)(std::shared_ptr<robotweax::srt::compat::SocketReadiness::State>) noexcept, std::shared_ptr<robotweax::srt::compat::SocketReadiness::State>&&) (__fn=...) at /usr/include/c++/13/bits/invoke.h:90
+#5  std::thread::_Invoker<std::tuple<void (*)(std::shared_ptr<robotweax::srt::compat::SocketReadiness::State>) noexcept, std::shared_ptr<robotweax::srt::compat::SocketReadiness::State> > >::_M_invoke<0ul, 1ul>(std::_Index_tuple<0ul, 1ul>) (this=...) at /usr/include/c++/13/bits/std_thread.h:292
+#6  std::thread::_Invoker<std::tuple<void (*)(std::shared_ptr<robotweax::srt::compat::SocketReadiness::State>) noexcept, std::shared_ptr<robotweax::srt::compat::SocketReadiness::State> > >::operator()() (this=...) at /usr/include/c++/13/bits/std_thread.h:299
+#7  std::thread::_State_impl<std::thread::_Invoker<std::tuple<void (*)(std::shared_ptr<robotweax::srt::compat::SocketReadiness::State>) noexcept, std::shared_ptr<robotweax::srt::compat::SocketReadiness::State> > > >::_M_run() (this=...) at /usr/include/c++/13/bits/std_thread.h:244
+#8  <address> in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#9  <address> [PAC] in asan_thread_start (arg=...) at ../../../../src/libsanitizer/asan/asan_interceptors.cpp:234
+#10 <address> [PAC] in ?? () from /lib/aarch64-linux-gnu/libc.so.6
+#11 <address> in ?? () from /lib/aarch64-linux-gnu/libc.so.6
+
+Thread 4 (Thread <address> (LWP 242072) "rwx-shard-1"):
+#0  __asan::FakeStack::Allocate (this=..., stack_size_log=..., class_id=..., real_stack=...) at ../../../../src/libsanitizer/asan/asan_fake_stack.cpp:96
+#1  __asan::OnMalloc (class_id=..., size=...) at ../../../../src/libsanitizer/asan/asan_fake_stack.cpp:229
+#2  __asan_stack_malloc_1 (size=...) at ../../../../src/libsanitizer/asan/asan_fake_stack.cpp:274
+#3  <address> [PAC] in std::basic_string_view<char, std::char_traits<char> >::substr (this=..., __pos=..., __n=...) at /usr/include/c++/13/string_view:334
+#4  <address> in std::basic_string_view<char, std::char_traits<char> >::starts_with (this=..., __x=...) at /usr/include/c++/13/string_view:389
+#5  <address> in std::basic_string_view<char, std::char_traits<char> >::starts_with (this=..., __x=...) at /usr/include/c++/13/string_view:399
+#6  <address> in robotweax::srt::PacketFilterConfiguration::sensor_profile (this=...) at <source>/include/robotweax/srt/packet_filter.hpp:86
+#7  <address> in robotweax::srt::PacketFilterPolicy::sensor_profile (this=...) at <source>/include/robotweax/srt/packet_filter.hpp:166
+#8  robotweax::srt::ReliabilitySession::compact_sensor_retired_prefix (this=...) at <source>/src/session.cpp:753
+#9  <address> in robotweax::srt::ReliabilitySession::drop_expired_sender_message (this=..., now_microseconds=...) at <source>/src/session.cpp:1670
+#10 <address> in robotweax::srt::compat::ConnectionRuntime::poll_locked (this=...) at <source>/src/compat/transport_runtime.cpp:5047
+#11 <address> in robotweax::srt::compat::ConnectionRuntime::poll (this=..., remaining_send_attempts=...) at <source>/src/compat/transport_runtime.cpp:4981
+
+Thread 3 (Thread <address> (LWP 242071) "rwx-shard-0"):
+#0  <address> in ?? () from /lib/aarch64-linux-gnu/libc.so.6
+#1  <address> in pthread_cond_clockwait () from /lib/aarch64-linux-gnu/libc.so.6
+#2  <address> in std::__condvar::wait_until (this=..., __m=..., __clock=..., __abs_time=...) at /usr/include/c++/13/bits/std_mutex.h:185
+#3  <address> in std::condition_variable::__wait_until_impl<std::chrono::duration<long, std::ratio<1l, 1000000000l> > > (this=..., __lock=..., __atime=...) at /usr/include/c++/13/condition_variable:203
+#4  <address> in std::condition_variable::wait_until<std::chrono::duration<long, std::ratio<1l, 1000000000l> > > (__atime=..., __lock=..., this=...) at /usr/include/c++/13/condition_variable:111
+#5  robotweax::srt::compat::RuntimeScheduler::run (this=..., shard_index=...) at <source>/src/compat/runtime_scheduler.cpp:751
+#6  <address> in operator() (__closure=...) at <source>/src/compat/runtime_scheduler.cpp:230
+#7  <address> in std::__invoke_impl<void, robotweax::srt::compat::RuntimeScheduler::start()::<lambda()> > (__f=...) at /usr/include/c++/13/bits/invoke.h:60
+#8  std::__invoke<robotweax::srt::compat::RuntimeScheduler::start()::<lambda()> > (__fn=...) at /usr/include/c++/13/bits/invoke.h:96
+#9  std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeScheduler::start()::<lambda()> > >::_M_invoke<0> (this=...) at /usr/include/c++/13/bits/std_thread.h:292
+#10 std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeScheduler::start()::<lambda()> > >::operator() (this=...) at /usr/include/c++/13/bits/std_thread.h:299
+#11 std::thread::_State_impl<std::thread::_Invoker<std::tuple<robotweax::srt::compat::RuntimeScheduler::start()::<lambda()> > > >::_M_run(void) (this=...) at /usr/include/c++/13/bits/std_thread.h:244
+
+Thread 1 (Thread <address> (LWP 242068) "robotweax_srt_t"):
+#0  <address> in ?? () from /lib/aarch64-linux-gnu/libc.so.6
+#1  <address> in pthread_cond_wait () from /lib/aarch64-linux-gnu/libc.so.6
+#2  <address> in std::condition_variable::wait<robotweax::srt::compat::ListenerHandshakeActor::stop()::<lambda()> >(std::unique_lock<std::mutex> &, struct {...}) (this=..., __lock=..., __p=...) at /usr/include/c++/13/condition_variable:105
+#3  <address> in robotweax::srt::compat::ListenerHandshakeActor::stop (this=...) at <source>/src/compat/listener_handshake_sources.cpp:431
+#4  <address> in robotweax::srt::compat::ListenerRuntime::close (this=...) at <source>/src/compat/connection.cpp:6216
+#5  <address> in robotweax::srt::compat::(anonymous namespace)::shutdown_record (record=..., honor_linger=..., broken_connection=...) at <source>/src/compat/socket_registry.cpp:521
+#6  <address> in robotweax::srt::compat::SocketRegistry::close (this=..., socket=...) at <source>/src/compat/socket_registry.cpp:742
+#7  <address> in srt_close (socket=...) at <source>/src/compat/srt_api.cpp:387
+#8  <address> in (anonymous namespace)::Peers::~Peers (this=..., __in_chrg=...) at <source>/tests/test_multicast_dispatch.cpp:230
+#9  <address> in (anonymous namespace)::CoordinatedNative::~CoordinatedNative (this=..., __in_chrg=...) at <source>/tests/test_multicast_dispatch.cpp:1904
+#10 std::default_delete<(anonymous namespace)::CoordinatedNative>::operator() (this=..., __ptr=...) at /usr/include/c++/13/bits/unique_ptr.h:99
+#11 <address> in std::unique_ptr<(anonymous namespace)::CoordinatedNative, std::default_delete<(anonymous namespace)::CoordinatedNative> >::~unique_ptr (this=..., __in_chrg=...) at /usr/include/c++/13/bits/unique_ptr.h:404

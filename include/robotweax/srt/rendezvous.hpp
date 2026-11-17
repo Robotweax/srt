@@ -67,6 +67,9 @@ public:
 
     explicit RendezvousHandshakeMachine(
         Configuration configuration) noexcept;
+    // Shared with the transport wrapper to filter before metadata/crypto work.
+    [[nodiscard]] bool ignores_setup_message(
+        const HandshakeMessage& message) const noexcept;
 
     [[nodiscard]] RendezvousState state() const noexcept
     {
