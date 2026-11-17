@@ -35,10 +35,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-26.04, macos-latest]
         profile: [default-off, enabled]
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             profile: sanitized
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
@@ -95,7 +95,7 @@ jobs:
           peer/peer_authentication_wire > evidence/legacy-wire.txt
           python3 -c 'import hashlib,pathlib; expected=pathlib.Path("tests/peer_authentication_peer/legacy-wire.sha256").read_text().split()[0]; actual=hashlib.sha256(pathlib.Path("evidence/legacy-wire.txt").read_bytes()).hexdigest(); assert actual == expected, (actual, expected)'
       - name: Pinned reference for black-box compatibility
-        if: matrix.os == 'ubuntu-latest' && matrix.profile == 'enabled'
+        if: matrix.os == 'ubuntu-26.04' && matrix.profile == 'enabled'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Haivision/srt
@@ -103,7 +103,7 @@ jobs:
           path: reference-source
           persist-credentials: false
       - name: Legacy success and REQUIRED rejection in both roles
-        if: matrix.os == 'ubuntu-latest' && matrix.profile == 'enabled'
+        if: matrix.os == 'ubuntu-26.04' && matrix.profile == 'enabled'
         shell: bash
         run: |
           cmake -S tests/peer_authentication_peer -B reference-peer \
@@ -127,7 +127,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-26.04, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
@@ -175,7 +175,7 @@ jobs:
 
   fuzz:
     name: Seeded peer-authentication fuzzing
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

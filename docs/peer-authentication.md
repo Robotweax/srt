@@ -1011,7 +1011,7 @@ cryptographic review:
   sanitizers. This bounded smoke test does not establish exhaustive coverage or
   replace cryptographic review.
 
-The [peer-authentication workflow](../.github/workflows/experimental-peerauth.yml)
+The peer-authentication workflow, `.github/workflows/experimental-peerauth.yml`,
 runs enabled and default-off builds on Linux/macOS and an enabled ASan/UBSan
 build on Linux. It checks the fixed-input wire digest and runs the pinned
 upstream compatibility cases on Linux. Additional jobs exercise installed shared
