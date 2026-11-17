@@ -33,6 +33,7 @@ void epoll_initialize() noexcept;
 [[nodiscard]] int epoll_uwait(
     int eid, SRT_EPOLL_EVENT* events, int event_count,
     std::int64_t timeout_milliseconds) noexcept;
+[[nodiscard]] int epoll_wake(int eid) noexcept;
 [[nodiscard]] std::int32_t epoll_set(
     int eid, std::int32_t flags) noexcept;
 [[nodiscard]] int epoll_release(int eid) noexcept;
