@@ -4726,6 +4726,16 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         policy_rejection = SRT_REJ_ROGUE;
         policy_error = SRT_ECONNREJ;
     }
+    // A valid offer means the caller abandons setup unless it is echoed.
+    // Admitting it here would hand the application a connection that the
+    // caller has already closed, so an OFF listener rejects it explicitly.
+    if (!policy_rejected
+        && public_options.npd_policy == ROBOTWEAX_SRT_EXTENSION_OFF
+        && conclusion.has_npd && conclusion.npd_valid) {
+        policy_rejected = true;
+        policy_rejection = SRT_REJ_ROGUE;
+        policy_error = SRT_ECONNREJ;
+    }
     if (!policy_rejected
         && (public_options.path_identifier_required
                 != conclusion.has_path_identifier

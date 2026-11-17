@@ -5,6 +5,8 @@
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/codec.hpp"
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <mutex>
 
 #include <algorithm>
@@ -475,6 +477,11 @@ TEST(npd_policy_mismatch_fails_real_connection_in_both_roles)
                 reinterpret_cast<const sockaddr*>(&address), sizeof(address)),
             SRT_ERROR);
         REQUIRE(srt_getsockstate(sockets.caller) != SRTS_CONNECTED);
+        // Neither mismatch may surface a connection to the listener.
+        set(sockets.listener, SRTO_RCVSYN, 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        REQUIRE_EQ(
+            srt_accept(sockets.listener, nullptr, nullptr), SRT_INVALID_SOCK);
     }
 }
 

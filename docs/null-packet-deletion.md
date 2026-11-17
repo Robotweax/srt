@@ -29,7 +29,7 @@ NPD reuses the existing optional-extension policy values
 | OFF or stock | IF_OFFERED | Ordinary SRT; the listener emits no record |
 | OFF or stock | REQUIRED | Listener rejects setup |
 | REQUIRED | IF_OFFERED or REQUIRED | NPD active in both directions |
-| REQUIRED | OFF | Setup fails; the caller receives no echo |
+| REQUIRED | OFF | Listener rejects the valid offer; no connection is accepted |
 | REQUIRED | Stock | Setup fails; interoperability is not claimed |
 
 A listener never sends an NPD record to a caller that did not offer one. An
@@ -105,8 +105,12 @@ A REQUIRED caller offers the record. A REQUIRED or `IF_OFFERED` listener echoes
 it byte for byte in its CONCLUSION response and commits to NPD for that
 connection. The caller activates NPD only on an exact echo.
 
-- With policy OFF NPD content validity is not enforced. The record is ignored
-  like an unknown record; the enclosing extension chain must still be valid.
+- An OFF listener rejects a CONCLUSION that carries a valid offer. The caller
+  would abandon setup without an echo, so admitting it would hand the listening
+  application a connection that is already closed at the other end.
+- With policy OFF NPD content validity is not enforced. An invalid record is
+  ignored like an unknown record; the enclosing extension chain must still be
+  valid.
 - A REQUIRED listener rejects a CONCLUSION without a valid offer.
 - A REQUIRED caller that receives no echo fails setup and closes.
 - Under REQUIRED, an echo that differs from the offer fails setup. An OFF
