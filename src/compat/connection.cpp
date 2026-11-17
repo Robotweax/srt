@@ -665,6 +665,22 @@ handshake_peer_address(IpEndpoint endpoint) noexcept
     return {};
 }
 
+// A listener that answered CONCLUSION has already admitted this caller. When
+// the caller then abandons setup, one SHUTDOWN lets that listener retire the
+// connection at once instead of holding it until its peer-idle timeout. Best
+// effort: a lost packet leaves the listener on that timeout, as before.
+void send_setup_shutdown(DatagramChannel& channel, IpEndpoint peer,
+    std::uint32_t destination_socket_id, Clock::time_point origin) noexcept
+{
+    std::array<std::byte, packet_header_size + 4U> datagram {};
+    const auto encoded = encode_reliability_action(
+        {.kind = ReliabilityActionKind::shutdown}, timestamp_since(origin),
+        destination_socket_id, datagram);
+    if (encoded)
+        (void)channel.send_datagram(
+            std::span {datagram}.first(encoded.bytes_written), peer);
+}
+
 struct CallerHandshakeSendContext {
     DatagramChannel* channel = nullptr;
     IpEndpoint peer {};
@@ -2291,11 +2307,24 @@ public:
             0);
     }
 
+    // Limited to an unechoed NPD offer; every other rejection keeps its
+    // released wire behavior.
+    void release_admitted_peer() noexcept
+    {
+        const auto admitted =
+            driver_.protocol().admitted_peer_after_npd_rejection();
+        if (admitted == 0U || !setup_.channel || admitted_peer_released_)
+            return;
+        admitted_peer_released_ = true;
+        send_setup_shutdown(*setup_.channel, peer_, admitted, origin_);
+    }
+
     [[nodiscard]] int fail_event(
         const CallerHandshakeEventResult& result) noexcept
     {
         switch (result.outcome) {
         case CallerHandshakeEventOutcome::rejected:
+            release_admitted_peer();
             return fail_connect(
                 socket_, SRT_ECONNREJ, 0, result.rejection_reason);
         case CallerHandshakeEventOutcome::failed:
@@ -2380,6 +2409,7 @@ private:
     CallerSetup& setup_;
     std::shared_ptr<DatagramInbox> inbox_;
     Clock::time_point origin_ {};
+    bool admitted_peer_released_ = false;
     CallerHandshakeEventDriver driver_;
     bool defer_peer_rejection_ = false;
     std::optional<CallerPeerRejection> peer_rejection_;
@@ -2850,6 +2880,7 @@ private:
     void finish_event(const CallerHandshakeEventResult& result) noexcept
     {
         if (result.outcome == CallerHandshakeEventOutcome::rejected) {
+            establishment_->release_admitted_peer();
             defer_peer_rejection({SRT_ECONNREJ, 0, result.rejection_reason});
             return;
         }

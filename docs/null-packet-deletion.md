@@ -47,6 +47,13 @@ construction, without relying on how a stock peer treats unknown records.
 A stock listener that receives an offer may ignore it, reject it or time out.
 The caller fails setup in every case.
 
+A listener that ignores the offer answers with ordinary SRT and admits the
+caller. The caller then rejects that answer and sends one SHUTDOWN to the
+listener's socket, so the listening application's connection ends at once
+instead of lingering until its peer-idle timeout. The packet is best effort;
+if it is lost the listener falls back to that timeout. No other rejection path
+sends it.
+
 *Open:* a caller-side fallback value that offers NPD and continues with
 ordinary SRT when no echo arrives. It would be a new policy value, and it
 depends on stock listeners skipping an unknown CONFIG record. The
@@ -120,7 +127,8 @@ connection. The caller activates NPD only on an exact echo.
   ignored like an unknown record; the enclosing extension chain must still be
   valid.
 - A REQUIRED listener rejects a CONCLUSION without a valid offer.
-- A REQUIRED caller that receives no echo fails setup and closes.
+- A REQUIRED caller that receives no echo fails setup, sends SHUTDOWN to the
+  listener that admitted it, and closes.
 - Under REQUIRED, an echo that differs from the offer fails setup. An OFF
   caller ignores an unsolicited record, preserving unknown-record behavior.
 - Under a non-OFF policy, wrong magic, an unknown version, nonzero flags or

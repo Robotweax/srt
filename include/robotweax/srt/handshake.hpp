@@ -309,6 +309,12 @@ public:
     {
         return rejection_reason_;
     }
+    // Socket ID of a listener whose CONCLUSION response a REQUIRED NPD caller
+    // rejected locally, or zero. That listener holds an admitted connection.
+    [[nodiscard]] std::uint32_t admitted_peer_after_npd_rejection() const noexcept
+    {
+        return admitted_peer_after_npd_rejection_;
+    }
     [[nodiscard]] bool has_negotiated_packet_filter() const noexcept
     {
         return negotiated_packet_filter_.enabled;
@@ -382,6 +388,7 @@ private:
     HandshakeAction session_challenge_ {}, session_confirmation_ {};
     HandshakeState state_ = HandshakeState::idle;
     std::uint32_t peer_socket_id_ = 0;
+    std::uint32_t admitted_peer_after_npd_rejection_ = 0;
     std::uint32_t peer_flow_window_ = 0;
     std::uint32_t cookie_ = 0;
     std::uint32_t retry_count_ = 0;

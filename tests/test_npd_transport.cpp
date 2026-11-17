@@ -1,6 +1,7 @@
 #include "test.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include "srt/srt.h"
+#include "null_packet_deletion.hpp"
 #include "compat/socket_registry.hpp"
 #include "compat/transport_runtime.hpp"
 #include "robotweax/srt/codec.hpp"
@@ -483,6 +484,89 @@ TEST(npd_policy_mismatch_fails_real_connection_in_both_roles)
         REQUIRE_EQ(
             srt_accept(sockets.listener, nullptr, nullptr), SRT_INVALID_SOCK);
     }
+}
+
+namespace {
+// Makes the listener see what a stock peer effectively sees: a CONCLUSION
+// with no NPD offer. It answers with ordinary SRT and admits the caller.
+UdpIoResult strip_offer(
+    std::span<const std::byte> bytes, IpEndpoint peer, void* context) noexcept
+{
+    auto& channel = *static_cast<compat::DatagramChannel*>(context);
+    std::array<std::byte, 12> record {};
+    const auto encoded = npd::encode_record(record);
+    if (encoded && bytes.size() > 64 + record.size()
+        && std::equal(record.begin(), record.end(), bytes.end() - 12)) {
+        std::vector<std::byte> stripped(bytes.begin(), bytes.end() - 12);
+        stripped[23] &= ~std::byte {4};
+        return channel.socket.send_to(stripped, peer);
+    }
+    return channel.socket.send_to(bytes, peer);
+}
+}
+
+static void release_listener_that_ignores_the_offer(bool blocking)
+{
+    Sockets sockets;
+    set(sockets.caller, SRTO_ROBOTWEAX_NPD_POLICY,
+        ROBOTWEAX_SRT_EXTENSION_REQUIRED);
+    set(sockets.caller, SRTO_CONNTIMEO, 1000);
+    const auto address = listen(sockets.listener);
+    sockaddr_in local {};
+    local.sin_family = AF_INET;
+    local.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(sockets.caller, reinterpret_cast<sockaddr*>(&local),
+                   sizeof(local)),
+        0);
+    std::shared_ptr<compat::DatagramChannel> channel;
+    {
+        const auto record =
+            compat::SocketRegistry::instance().find(sockets.caller);
+        std::lock_guard lock(record->mutex);
+        channel = record->channel;
+    }
+    REQUIRE(channel != nullptr);
+    channel->set_send_hook_for_testing(strip_offer, channel.get());
+    if (blocking) {
+        REQUIRE_EQ(srt_connect(sockets.caller,
+                       reinterpret_cast<const sockaddr*>(&address),
+                       sizeof(address)),
+            SRT_ERROR);
+    } else {
+        set(sockets.caller, SRTO_RCVSYN, 0);
+        (void)srt_connect(sockets.caller,
+            reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+        const auto failed =
+            std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (srt_getsockstate(sockets.caller) == SRTS_CONNECTING
+            && std::chrono::steady_clock::now() < failed)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        REQUIRE(srt_getsockstate(sockets.caller) != SRTS_CONNECTED);
+        REQUIRE(srt_getsockstate(sockets.caller) != SRTS_CONNECTING);
+    }
+    REQUIRE_EQ(srt_getrejectreason(sockets.caller), SRT_REJ_ROGUE);
+    channel->set_send_hook_for_testing(nullptr, nullptr);
+    // The listener admitted the caller. Its connection must end on the
+    // caller's SHUTDOWN, well inside the five-second peer-idle timeout.
+    set(sockets.listener, SRTO_RCVSYN, 0);
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    bool released = false;
+    while (!released && std::chrono::steady_clock::now() < deadline) {
+        if (sockets.accepted == SRT_INVALID_SOCK)
+            sockets.accepted = srt_accept(sockets.listener, nullptr, nullptr);
+        released = sockets.accepted != SRT_INVALID_SOCK
+            && srt_getsockstate(sockets.accepted) != SRTS_CONNECTED;
+        if (!released)
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    REQUIRE(released);
+}
+
+TEST(npd_required_caller_releases_a_listener_that_ignores_the_offer)
+{
+    release_listener_that_ignores_the_offer(true);
+    release_listener_that_ignores_the_offer(false);
 }
 
 TEST(npd_payload_ceiling_reservation_tracks_mss_fec_and_restores_on_off)

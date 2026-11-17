@@ -1042,8 +1042,12 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                     || message.has_group_membership
                     || configuration_.congestion_controller
                         != CongestionController::live
-                    || buffer_mode(message.extension_parameters)))
+                    || buffer_mode(message.extension_parameters))) {
+                // This CONCLUSION answered the caller's cookie, so the
+                // listener has admitted a connection the caller now abandons.
+                admitted_peer_after_npd_rejection_ = incoming.socket_id;
                 return reject_locally(rogue_rejection_reason);
+            }
             if (message.has_path_identifier
                     != configuration_.require_path_identifier
                 || (message.has_path_identifier
