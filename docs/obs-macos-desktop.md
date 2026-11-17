@@ -28,11 +28,26 @@ application test. It does not install into `/Applications`, sign for
 distribution, archive, package, or upload the app. The CI job uploads text
 logs, frame hashes, CMake cache and window/provider observations only.
 
+The desktop form builds OBS 32.2.2 against the Qt archive of obs-deps
+`2026-10-23` instead of the `2026-07-15` archive that OBS 32.2.2 pins. Both
+contain Qt 6.11.1; the later one, pinned by OBS 33.0.1, backports the fix for
+QTBUG-147602. Without it Qt releases the color space of an ICC-tagged image
+before Core Graphics reads it, and OBS stops with `EXC_BREAKPOINT` on its first
+wait cursor on macOS 26.7 and later. The build verifies the archive hash and
+fails if CMake resolves any Qt package from another prefix. The OBS source, its
+other prebuilt dependencies, FFmpeg and Robotweax SRT are unchanged, and the
+module-only profile does not use Qt.
+
 The desktop test creates a fresh private macOS Application Support directory
 for every launch. It sets both `HOME` and `CFFIXED_USER_HOME`; macOS Foundation
 does not necessarily honor `HOME` alone for Application Support. It never reads
 or changes a real OBS profile. The test uses public synthetic media and a
 synthetic passphrase.
+
+The restricted FFmpeg build includes PNG decoding and image demuxing for OBS's
+preview assets. Before launching the desktop, the fixture decodes the bundled
+`overflow.png` into one hashed video frame. Missing desktop codec support fails
+this preflight instead of repeatedly exercising an image-load failure path.
 
 ## Acceptance covered by CI
 
@@ -47,6 +62,32 @@ video and audio must decode. The process must shut down normally with its
 allocation count no higher than the idle baseline. Build cache, app contents,
 and running mappings must identify Robotweax SRT and the selected FFmpeg,
 without a competing SRT provider.
+
+The dedicated macOS CI job enables kernel core dumps in a runner-temporary
+directory and verifies core generation and LLDB symbolization with a small
+crash probe before building OBS. A failed endpoint's recorded PID selects its
+core for LLDB's all-thread backtrace, registers, loaded images and fault-frame
+disassembly. Only text diagnostics are uploaded; binary cores remain on the
+temporary runner. Missing cores or debugger failures are reported explicitly.
+This captures a reconnect crash without attaching a debugger to the running
+qualification or changing its media deadlines.
+
+The desktop recipe applies `tests/obs/prepare_desktop_swapchain.py` to the
+pinned OBS 32.2.2 OpenGL backend. OBS defers each swap-chain framebuffer update
+to the main queue and adopts the replacement texture only as its last step; an
+update that runs after shutdown has deleted the framebuffer object fails to bind
+it and leaves that texture allocated. Hosted run 43232416015 showed this as an
+intermittent idle allocation count of two, with
+`glBindFramebuffer failed` logged immediately after shutdown began and the
+80-byte texture record traced to `device_texture_create`. The independently
+authored correction releases any texture the swap chain did not adopt. It
+validates the original file's SHA-256, is idempotent, and rejects unknown or
+partially modified source. The allocation limits remain unchanged.
+
+The isolated desktop build also has opt-in allocation tracing. At the existing
+shutdown allocation-count check it records live libobs allocation sizes, bounded
+contents and allocation stacks. The runner resolves those stacks with `atos`
+before uploading text evidence. The allocation limits remain unchanged.
 
 This profile uses IPv4 loopback, AES-CTR with a 128-bit key, synthetic MPEG-TS,
 software encoding and the hosted macOS GUI session. It does not qualify capture

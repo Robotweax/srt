@@ -252,7 +252,8 @@ def desktop_command(executable: Path, config: Path, *, stream: bool):
         for key, value in os.environ.items()
         if not key.startswith(("DYLD_", "OBS_", "QT_"))
     }
-    env.update(HOME=str(home), CFFIXED_USER_HOME=str(home), LC_ALL="C")
+    env.update(HOME=str(home), CFFIXED_USER_HOME=str(home), LC_ALL="C",
+               ROBOTWEAX_OBS_TRACE_ALLOCATIONS="1")
     command = [
         str(executable),
         "--multi",
@@ -277,12 +278,33 @@ def obs_log(config: Path, destination: Path) -> str:
     return text
 
 
-def wait_for(child: subprocess.Popen, condition, label: str, timeout: int = 40):
+def wait_for(
+    child: subprocess.Popen,
+    condition,
+    label: str,
+    timeout: int = 40,
+    *,
+    status: Path | None = None,
+):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if condition():
             return
         if child.poll() is not None:
+            if status is not None:
+                # collect_macos_failure.py matches crash reports by these PIDs.
+                status.write_text(
+                    json.dumps(
+                        {
+                            "label": label,
+                            "observed_at": time.time(),
+                            "desktop_pid": child.pid,
+                            "desktop_exit": child.returncode,
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
             raise RuntimeError(f"{label}: OBS exited with {child.returncode}")
         time.sleep(0.2)
     raise RuntimeError(f"{label}: timeout")
@@ -474,6 +496,18 @@ def run_desktop(args, executable: Path, config: Path, label: str, *, stream: boo
     return command, env, stdout
 
 
+def verify_preview_asset(executable: Path, ffmpeg: Path, artifacts: Path):
+    image = executable.parents[1] / "Resources/images/overflow.png"
+    result = subprocess.run(
+        [str(ffmpeg), "-v", "error", "-i", str(image), "-frames:v", "1",
+         "-c:v", "rawvideo", "-pix_fmt", "rgba", "-f", "framehash", "-"],
+        check=True, capture_output=True, text=True, timeout=15,
+    )
+    (artifacts / "preview-asset.frames").write_text(result.stdout)
+    if len(re.findall(r"^0,.*?, ([0-9a-f]{64})$", result.stdout, re.M)) != 1:
+        raise RuntimeError("OBS preview PNG did not decode into one frame")
+
+
 def qualify(args: argparse.Namespace) -> None:
     args.artifacts.mkdir(parents=True, exist_ok=False)
     executable = bundle_contract(args)
@@ -496,6 +530,7 @@ def qualify(args: argparse.Namespace) -> None:
     )
     reference_env = reference_environment(args.reference_prefix)
     ffmpeg = args.ffmpeg_prefix / "bin/ffmpeg"
+    verify_preview_asset(executable, ffmpeg, args.artifacts)
     if not args.fixture.is_file() or not args.reference_peer.is_file():
         raise RuntimeError(
             "the module qualification did not produce a fixture and reference peer"
@@ -514,6 +549,7 @@ def qualify(args: argparse.Namespace) -> None:
                 child, probe, args.artifacts / "idle-window.txt", idle_config
             ),
             "visible idle OBS window",
+            status=args.artifacts / "idle-startup-endpoint-status.json",
         )
         baseline = stop_desktop(child, idle_config, stdout, args.artifacts, "idle")
     print(
@@ -538,6 +574,7 @@ def qualify(args: argparse.Namespace) -> None:
                     child, probe, args.artifacts / "native-window.txt", config
                 ),
                 "visible streaming OBS window",
+                status=args.artifacts / "native-startup-endpoint-status.json",
             )
             wait_decoded(child, receiver, ffmpeg, output, args.artifacts, "native")
             verify_maps(child, args, args.artifacts / "native-maps.txt")
@@ -608,6 +645,7 @@ def qualify(args: argparse.Namespace) -> None:
                         child, probe, args.artifacts / "source-window.txt", config
                     ),
                     "visible OBS source window",
+                    status=args.artifacts / "source-startup-endpoint-status.json",
                 )
                 module.until(source, sender_log, "QUEUED", 35)
                 wait_decoded(

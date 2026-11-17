@@ -1,6 +1,7 @@
 #pragma once
 
 #include "robotweax/srt/codec.hpp"
+#include "robotweax/srt/connection_group.hpp"
 #include "robotweax/srt/fec.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
 #include "robotweax/srt/session.hpp"
@@ -12,6 +13,7 @@
 #include "compat/readiness.hpp"
 #include "compat/socket_readiness.hpp"
 #include "compat/statistics.hpp"
+#include "compat/hybrid/hybrid_native.hpp"
 #ifdef ENABLE_MAXREXMITBW
 #include "compat/retransmission_budget.hpp"
 #endif
@@ -39,8 +41,39 @@ namespace robotweax::srt::compat {
 class ConnectionRuntime;
 class DispatchTransmitState;
 class RuntimeWorkExecutor;
+class GroupRuntimeAdmission;
+class GroupSendBinding;
+struct GroupRuntimeSendState;
 struct GroupRecord;
 struct RetainedGroupReceiveBatch;
+
+// Local routing metadata, never inferred from a packet's destination ID.
+enum class PacketIngress : std::uint8_t {
+    unicast_session,
+    multicast_data,
+};
+
+// A source announcement is wire metadata; a scope selector belongs to the
+// receiver's local interface. Neither is learned from incoming datagrams.
+struct MulticastIngressConfiguration {
+    MulticastSource source;
+    std::uint32_t interface_scope_id = 0;
+};
+
+// Immutable after route publication. Shared ownership keeps an old identity
+// alive across the route lookup/admission gap, preventing address reuse (ABA).
+class DatagramChannel;
+class MulticastIngressBinding {
+    friend class DatagramChannel;
+    friend class ConnectionRuntime;
+    friend struct MulticastIngressTestAccess;
+    std::uint64_t generation_ = 0;
+    std::uint32_t destination_socket_id_ = 0;
+    IpEndpoint source_ {};
+    // The channel that published this identity. A replacement retires the
+    // route there, so no stale entry outlives the identity it carried.
+    std::weak_ptr<DatagramChannel> owner_;
+};
 
 struct HandshakeRouteKey {
     IpEndpoint peer{};
@@ -60,6 +93,10 @@ struct HandshakeEnvelope {
     HandshakeMessage message{};
     ControlHeader control{};
     IpEndpoint peer{};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::array<std::byte, 1500> raw_datagram {};
+    std::size_t raw_size = 0;
+#endif
 };
 
 struct DatagramEnvelope {
@@ -190,6 +227,11 @@ struct RuntimePollResult {
     bool immediate_work = false;
     std::optional<std::chrono::microseconds> next_work_delay = std::nullopt;
     bool receive_wait_safe = false;
+    // Set when every known deadline lies in the future: the wait until the
+    // earliest one. While traffic is sparse the channel may then wait for
+    // socket readiness this long instead of using the short poll. Dense
+    // traffic ignores it and keeps next_work_delay unchanged.
+    std::optional<std::chrono::microseconds> quiet_receive_wait = std::nullopt;
     bool coarse_timer_probe = false;
     std::optional<std::chrono::steady_clock::time_point> next_work_deadline =
         std::nullopt;
@@ -206,6 +248,9 @@ struct MessageIoResult {
 };
 
 class DatagramChannel : public std::enable_shared_from_this<DatagramChannel> {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    friend class hybrid::MembershipRecovery;
+#endif
 public:
     using SendHook = UdpIoResult (*)(
         std::span<const std::byte>,
@@ -228,6 +273,14 @@ public:
         IpEndpoint peer) noexcept;
     [[nodiscard]] UdpIoResult try_send_monitoring_datagram(
         std::span<const std::byte> bytes, IpEndpoint peer) noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+    // Submits one connection's due datagrams in order and returns the
+    // accepted prefix length; see UdpSocket::send_batch for `rejection`. The
+    // testing send hook sees every datagram of the prefix, one call each.
+    [[nodiscard]] std::size_t send_datagram_batch(
+        std::span<const std::span<const std::byte>> datagrams, IpEndpoint peer,
+        UdpIoResult& rejection) noexcept;
+#endif
     void set_send_hook_for_testing(
         SendHook hook, void* context) noexcept;
     [[nodiscard]] bool register_connection(
@@ -245,10 +298,22 @@ public:
     // to `runtime` without polling it from this channel: the runtime stays
     // driven by the channel it sends on. A dispatch receiver uses this on
     // the socket joined to the multicast group, keyed by the dispatch group
-    // ID the Listener announced. Removed with unregister_connection.
+    // ID the Listener announced. Removed with unregister_connection. Callers
+    // must distinguish the dedicated multicast socket from unicast aliases.
+    // The optional source is supplied only after bilateral negotiation; absent
+    // metadata retains the legacy complete unicast-peer endpoint as source.
     [[nodiscard]] bool register_ingress_route(std::uint32_t protocol_socket_id,
-        std::shared_ptr<ConnectionRuntime> runtime) noexcept;
-    void unregister_connection(std::uint32_t protocol_socket_id) noexcept;
+        std::shared_ptr<ConnectionRuntime> runtime, PacketIngress provenance,
+        std::optional<MulticastIngressConfiguration> multicast = std::nullopt,
+        std::shared_ptr<const void> membership = {}) noexcept;
+    [[nodiscard]] bool has_ingress_route(std::uint32_t protocol_socket_id,
+        const ConnectionRuntime*, PacketIngress) noexcept;
+    // With `expected`, only a route to that runtime is removed. With
+    // `expected_binding` as well, only the route that still carries that
+    // multicast identity: a route registered again since is left alone.
+    void unregister_connection(std::uint32_t protocol_socket_id,
+        const ConnectionRuntime* expected = nullptr,
+        const MulticastIngressBinding* expected_binding = nullptr) noexcept;
     [[nodiscard]] bool replay_established_handshake(
         const HandshakeEnvelope& envelope) noexcept;
     [[nodiscard]] bool register_setup_inbox(std::uint32_t protocol_socket_id,
@@ -317,6 +382,7 @@ public:
     }
 
 private:
+    friend struct MulticastIngressTestAccess;
     struct ScheduledWorkContext {
         std::weak_ptr<DatagramChannel> owner;
     };
@@ -344,48 +410,26 @@ private:
     [[nodiscard]] RuntimePollResult run_receive_slice(
         Receive&& receive) noexcept
     {
-        constexpr std::size_t maximum_receive_batch = 64;
-        std::array<std::byte, 1500> datagram {};
+        std::array<std::byte, receive_slot_size> datagram {};
         std::size_t received_count = 0;
         for (; received_count < maximum_receive_batch; ++received_count) {
             const UdpIoResult received = receive(datagram);
-            if (received.error == Error::would_block) {
+            if (!accept_received(received, datagram)) {
                 break;
             }
-            if (received.error == Error::buffer_too_small) {
-                continue;
-            }
-            if (received.error == Error::io_error
-                && UdpSocket::is_transient_receive_error(
-                    received.system_error)) {
-                // A queued ICMP report or interrupted call for one peer
-                // is not a fault of the shared socket.
-                continue;
-            }
-            if (!received) {
-                mark_connections_broken(received.system_error);
-                break;
-            }
-            const auto ingress = std::chrono::steady_clock::now();
-            const auto decoded = decode_packet(
-                std::span {datagram}.first(received.bytes_transferred));
-            if (decoded) {
-                dispatch(decoded.packet,
-                    std::span {datagram}.first(received.bytes_transferred),
-                    received.peer, ingress);
-            }
         }
-
-        auto result = poll_connections();
-        // A full slice can leave UDP input unread. After would_block, however,
-        // the receive queue is drained: preserve the connection poll deadline
-        // instead of forcing another empty receive and complete route sweep.
-        if (received_count == maximum_receive_batch) {
-            result.immediate_work = true;
-            result.next_work_delay.reset();
-        }
-        return result;
+        return finish_receive_slice(received_count);
     }
+    static constexpr std::size_t maximum_receive_batch = 64;
+    static constexpr std::size_t receive_slot_size = 1500;
+    // Handles one receive result. Returns false when the slice must stop
+    // receiving: the socket is drained, or it failed and every connection
+    // was marked broken.
+    [[nodiscard]] bool accept_received(const UdpIoResult& received,
+        std::span<const std::byte> datagram) noexcept;
+    // Polls the connections after a slice consumed received_count results.
+    [[nodiscard]] RuntimePollResult finish_receive_slice(
+        std::size_t received_count) noexcept;
     [[nodiscard]] RuntimePollResult poll_connections(
         std::optional<std::chrono::steady_clock::time_point> injected_now =
             std::nullopt,
@@ -406,6 +450,14 @@ private:
     void stop() noexcept;
     void notify_work(bool receive_release) noexcept;
 
+    // Written and read only by the thread that runs the current slice.
+#if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
+    // Slots for one batched receive, allocated by the first slice.
+    std::unique_ptr<std::byte[]> receive_batch_storage_;
+#endif
+    static constexpr int quiet_traffic_intervals = 10;
+    bool slice_quiet_ = false;
+    std::chrono::steady_clock::time_point last_datagram_time_ {};
     std::mutex send_mutex_;
     std::mutex lifecycle_mutex_;
     std::condition_variable lifecycle_idle_;
@@ -414,6 +466,8 @@ private:
     std::mutex routes_mutex_;
     struct ConnectionRoute {
         std::shared_ptr<ConnectionRuntime> runtime;
+        PacketIngress provenance = PacketIngress::unicast_session;
+        std::shared_ptr<const MulticastIngressBinding> multicast_binding {};
         ConnectionRoute* previous = nullptr;
         ConnectionRoute* next = nullptr;
     };
@@ -477,6 +531,16 @@ private:
 };
 
 class ConnectionRuntime {
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    friend class hybrid::CoordinatorBridge;
+    friend class hybrid::MembershipRecovery;
+    friend class hybrid::StartupSession;
+    friend struct HybridBridgeTestAccess;
+    friend struct HybridAutomaticTestAccess;
+    friend std::shared_ptr<hybrid::NativeService> hybrid::attach_native_control(
+        const std::shared_ptr<ConnectionRuntime>&,
+        hybrid::NativeOptions) noexcept;
+#endif
 public:
     [[nodiscard]] const std::shared_ptr<ReadinessSource>&
     readiness_source() const noexcept
@@ -538,6 +602,20 @@ public:
 
     explicit ConnectionRuntime(Configuration configuration);
     ~ConnectionRuntime();
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    [[nodiscard]] bool publish_hybrid_conclusions(
+        std::shared_ptr<const hybrid::Conclusions>, bool caller) noexcept;
+    [[nodiscard]] std::shared_ptr<const hybrid::Conclusions>
+    hybrid_conclusions() const noexcept;
+    [[nodiscard]] std::optional<hybrid::ReceiveDataProgress>
+    hybrid_receive_progress(const hybrid::NativeService*,
+        std::uint64_t absolute_origin) const noexcept;
+    [[nodiscard]] bool hybrid_multicast_fence(
+        const hybrid::NativeService*, std::uint64_t epoch) const noexcept;
+    [[nodiscard]] std::optional<hybrid::MulticastCoverage>
+    hybrid_multicast_coverage(const hybrid::NativeService*, std::uint64_t begin,
+        std::uint64_t through, std::uint64_t origin) const noexcept;
+#endif
 
     [[nodiscard]] MessageIoResult queue_message(
         std::span<const std::byte> message,
@@ -569,15 +647,24 @@ public:
     // group with the dispatch group ID as destination; the others
     // (`suppress`) record the packet as submitted without a datagram.
     // Retransmissions always use the member's own unicast path. `normal`
-    // is the bonding behaviour.
+    // is the bonding behaviour. `external_originals` reserves this member for
+    // canonical recovery history; a group-owned emitter submits originals and
+    // reports their exact completion through the admission binding.
     struct GroupDataEgress {
-        enum class Mode : std::uint8_t { normal, suppress, redirect };
+        enum class Mode : std::uint8_t {
+            normal,
+            suppress,
+            redirect,
+            external_originals
+        };
         Mode mode = Mode::normal;
         IpEndpoint destination {};
         std::uint32_t destination_socket_id = 0;
         // Shared by every member of one dispatch sender: the repeat tally
         // and the multicast-path counters. Null for bonding members.
         std::shared_ptr<DispatchTransmitState> transmit;
+        // Null retains legacy emission from the member's control channel.
+        std::shared_ptr<DatagramChannel> transmit_channel;
         // Distinct receivers that must repeat one sequence before it is
         // repeated once on the multicast path instead; 0 keeps every
         // repeat unicast.
@@ -586,12 +673,20 @@ public:
     };
     void set_group_data_egress(const GroupDataEgress& egress) noexcept;
     [[nodiscard]] GroupDataEgress group_data_egress() const noexcept;
-    // Packets routed to this runtime from an address other than its peer's
-    // and dropped before any processing; a dispatch receiver reports them
-    // with its multicast-path filter count.
+    // Complete source endpoint rejections: the established unicast peer or
+    // the currently bound multicast source. Stale route identities are
+    // counted in rejected_multicast_packets(). Dispatch receivers fold both
+    // into their filter count.
     [[nodiscard]] std::uint64_t foreign_peer_packets() const noexcept
     {
         return foreign_peer_packets_.load(std::memory_order_relaxed);
+    }
+    // Multicast datagrams routed to this member and rejected before any
+    // decoding: a stale or replaced route identity, a kind other than DATA,
+    // an oversize payload, or arrival after this runtime closed or broke.
+    [[nodiscard]] std::uint64_t rejected_multicast_packets() const noexcept
+    {
+        return rejected_multicast_packets_.load(std::memory_order_relaxed);
     }
     [[nodiscard]] MessageIoResult queue_stream(
         std::span<const std::byte> bytes,
@@ -623,7 +718,10 @@ public:
         bool blocking,
         std::int32_t timeout_milliseconds) noexcept;
     void process_packet(const PacketView& packet, IpEndpoint peer,
-        std::optional<Clock::time_point> ingress = std::nullopt) noexcept;
+        std::optional<Clock::time_point> ingress = std::nullopt,
+        PacketIngress provenance = PacketIngress::unicast_session,
+        const std::shared_ptr<const MulticastIngressBinding>&
+            multicast_binding = {}) noexcept;
     [[nodiscard]] bool process_handshake(
         const HandshakeMessage& message,
         IpEndpoint peer) noexcept;
@@ -632,6 +730,11 @@ public:
         std::size_t& remaining_send_attempts) noexcept;
     void apply_options(const SocketOptions& options) noexcept;
     void mark_broken(int system_error) noexcept;
+    // Break an established connection from this side and tell the peer once
+    // with SHUTDOWN, as the idle expiry does: no retry, no queued DATA. The
+    // peer observes a lost connection. No effect on a terminal or closed
+    // runtime. Callers hold no group, socket or coordinator lock.
+    void disconnect_peer() noexcept;
     [[nodiscard]] bool report_peer_error(
         std::int32_t error_code) noexcept;
     void close() noexcept;
@@ -673,6 +776,21 @@ public:
 private:
     friend class DatagramChannel;
     friend struct ConnectionRuntimeTestAccess;
+    friend struct MulticastIngressTestAccess;
+    friend class GroupRuntimeAdmission;
+    friend struct GroupRuntimeAdmissionTestAccess;
+    // Binding operations follow routes_mutex_ -> mutex_ and never acquire
+    // channel locks or perform socket I/O while holding the runtime mutex.
+    // `replaced` receives the identity this activation superseded, if any,
+    // so its publisher can retire the stale route.
+    [[nodiscard]] bool activate_multicast_ingress(
+        const std::shared_ptr<MulticastIngressBinding>& binding,
+        const std::shared_ptr<const void>& membership,
+        std::shared_ptr<const MulticastIngressBinding>& replaced) noexcept;
+    [[nodiscard]] bool lose_multicast_ingress(
+        const std::shared_ptr<const MulticastIngressBinding>&) noexcept;
+    void revoke_multicast_ingress(
+        const std::shared_ptr<const MulticastIngressBinding>& binding) noexcept;
     friend void close_connection_runtime(
         const std::shared_ptr<ConnectionRuntime>& runtime,
         std::shared_ptr<RuntimeWorkExecutor> executor,
@@ -714,6 +832,14 @@ private:
         DataHeader data {};
         ControlType control = ControlType::keepalive;
         std::size_t payload_size = 0;
+        std::shared_ptr<const GroupSendBinding> group_binding {};
+        std::uint64_t group_position = 0;
+        // Only unicast repairs carry this state, including native retries.
+        std::shared_ptr<DispatchTransmitState> unicast_repeat_state {};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+        // Set when staging already counted this packet against its key.
+        bool key_use_counted = false;
+#endif
     };
 
     struct PendingDatagram {
@@ -734,6 +860,51 @@ private:
     [[nodiscard]] bool complete_datagram(std::span<const std::byte> bytes,
         const DatagramCompletion& completion, std::uint64_t now) noexcept;
     [[nodiscard]] bool flush_pending_datagrams(std::uint64_t now) noexcept;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+    // DATA that one poll found due is staged here and submitted with one
+    // batch call. Nothing a staged datagram's completion would change has
+    // advanced yet, with two exceptions. The pacer is advanced at staging so
+    // that only datagrams that are due share a batch, and each entry keeps
+    // the pacer as it stood before it, to restore if UDP does not accept the
+    // entry. An encrypted original is counted against its key at staging,
+    // when its ciphertext exists: the next packet's key preparation needs
+    // that count, and a position counts whether or not UDP takes the packet.
+    struct StagedDatagram {
+        std::size_t size = 0;
+        std::uint64_t now = 0;
+        DatagramCompletion completion {};
+        PacketPacer pacer_before {1, 1};
+    };
+    struct SendStage {
+        static constexpr std::size_t capacity = 64;
+        std::array<StagedDatagram, capacity> entries {};
+        std::size_t size = 0;
+        std::unique_ptr<std::byte[]> bytes;
+    };
+    [[nodiscard]] bool stageable_datagram(
+        const DatagramCompletion& completion) const noexcept;
+    [[nodiscard]] bool stage_datagram(std::span<const std::byte> bytes,
+        const DatagramCompletion& completion, std::uint64_t now) noexcept;
+    [[nodiscard]] bool flush_send_stage() noexcept;
+    [[nodiscard]] bool send_budget_beyond_stage() const noexcept;
+    std::unique_ptr<SendStage> send_stage_;
+    // True only inside the DATA loop of poll_locked(), while mutex_ is held.
+    bool send_stage_open_ = false;
+    // True while a staged datagram completes: its pacing is already counted.
+    bool completing_staged_datagram_ = false;
+#endif
+    [[nodiscard]] UdpIoResult send_budgeted_datagram(DatagramChannel&,
+        std::span<const std::byte>, const DatagramCompletion&,
+        bool& budget_wait) noexcept;
+    [[nodiscard]] bool current_group_datagram(
+        const DatagramCompletion&) const noexcept;
+    [[nodiscard]] bool hold_group_budget_datagram(
+        std::span<const std::byte>, const DatagramCompletion&) noexcept;
+    [[nodiscard]] bool flush_group_budget_datagram(std::uint64_t now) noexcept;
+    [[nodiscard]] std::optional<std::chrono::microseconds> quiet_receive_wait(
+        std::uint64_t now) noexcept;
+    [[nodiscard]] RuntimePollResult group_budget_poll_result(
+        std::uint64_t now) noexcept;
     [[nodiscard]] bool defer_send_error(
         const UdpIoResult& failure, std::uint64_t now) noexcept;
     [[nodiscard]] RuntimePollResult pending_send_poll_result(
@@ -782,7 +953,9 @@ private:
     [[nodiscard]] bool process_reliability_packet_locked(
         const PacketView& packet, std::uint64_t now_microseconds,
         ReliabilityReceiveContext context = {}, bool wire_received = true,
-        std::span<const std::byte> authenticated_plaintext = {}) noexcept;
+        std::span<const std::byte> authenticated_plaintext = {},
+        std::optional<hybrid::DataPath> observation_path = std::nullopt,
+        std::uint64_t observation_arrival_us = 0) noexcept;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS
     void process_experimental_filter_locked(
         const PacketView& packet, std::uint64_t now) noexcept;
@@ -834,12 +1007,35 @@ private:
     void receive_standby_rtt(const PacketView&, std::uint64_t ingress) noexcept;
     [[nodiscard]] bool send_standby_rtt(const StandbyRttMessage&) noexcept;
     mutable std::mutex mutex_;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::shared_ptr<const hybrid::Conclusions> hybrid_conclusions_;
+    std::uint32_t hybrid_local_socket_id_ = 0;
+    bool hybrid_caller_ = false, hybrid_attempted_ = false;
+    std::shared_ptr<hybrid::NativeService> hybrid_service_;
+    std::unique_ptr<hybrid::ReceiveProgress> hybrid_receive_;
+    std::uint64_t hybrid_receive_route_ = 0;
+    std::shared_ptr<const void> hybrid_membership_;
+    bool hybrid_membership_claimed_ = false, hybrid_membership_live_ = false,
+         hybrid_membership_recoverable_ = false,
+         hybrid_membership_loss_ = false;
+    std::uint64_t hybrid_membership_loss_at_ = 0;
+    [[nodiscard]] bool hybrid_observation_current() const noexcept;
+#endif
     std::condition_variable receive_ready_;
     std::condition_variable send_ready_;
     std::weak_ptr<DatagramChannel> channel_;
     GroupDataEgress group_data_egress_ {};
+    // Allocated only on explicit internal external-original binding. Ownership
+    // remains latched after revocation: ordinary member send cannot become an
+    // accidental alternate producer for this stream incarnation.
+    std::unique_ptr<GroupRuntimeSendState> group_send_state_;
+    // One active multicast route per member. Never wrap/reuse generations;
+    // exhaustion rejects registration without disturbing the current binding.
+    std::uint64_t multicast_ingress_generation_ = 0;
+    std::shared_ptr<const MulticastIngressBinding> multicast_ingress_binding_;
     std::uint64_t last_key_material_revision_sent_ = 0;
     std::atomic<std::uint64_t> foreign_peer_packets_ {0};
+    std::atomic<std::uint64_t> rejected_multicast_packets_ {0};
     IpEndpoint peer_{};
     std::uint32_t peer_socket_id_ = 0;
     bool npd_enabled_ = false;
@@ -852,6 +1048,12 @@ private:
     RetransmissionBudget retransmission_budget_;
 
 #endif
+    // Remember the smallest refused repair for the next credit wakeup.
+    // A queue revision bounds scanning across polls without making rotations
+    // look like new NAKs or blocking unclassified multicast/skip repairs.
+    std::optional<std::pair<SequenceNumber, std::size_t>> unicast_repeat_wait_;
+    std::optional<std::uint64_t> unicast_repeat_scan_revision_;
+    std::size_t unicast_repeat_scan_remaining_ = 0;
     [[nodiscard]] bool retransmission_ready(std::uint64_t now) noexcept;
     // Protected by mutex_; accepted payload DATA, independent of app reads
     // and of statistics interval resets. Control/undecryptable traffic cannot
@@ -870,6 +1072,9 @@ private:
     // attempts; yielding for the channel budget is not UDP backpressure.
     std::size_t* poll_send_budget_ = nullptr;
     std::unique_ptr<PendingDatagram> pending_datagram_head_;
+    // Exactly one prepared canonical DATA can wait for the aggregate quota,
+    // outside the native-error FIFO so periodic controls/KM remain runnable.
+    std::unique_ptr<PendingDatagram> group_budget_pending_;
     PendingDatagram* pending_datagram_tail_ = nullptr;
     std::size_t pending_datagram_size_ = 0;
     std::uint64_t next_datagram_retry_microseconds_ = 0;

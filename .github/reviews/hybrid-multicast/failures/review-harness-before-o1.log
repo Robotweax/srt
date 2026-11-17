@@ -1,0 +1,7 @@
+[RUN] hybrid_soak_network_upper_profile_ctr
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==238239==ERROR: AddressSanitizer: SEGV on unknown address <address> (pc <address> bp <address> sp <address> T0)
+==238239==The signal is caused by a READ memory access.
+AddressSanitizer:DEADLYSIGNAL
+AddressSanitizer: nested bug in the same thread, aborting.

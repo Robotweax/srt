@@ -11,6 +11,11 @@ Listener sender to multiple Caller receivers with the experimental dispatch
 group API. It uses raw media without synthetic framing. See the
 [multicast audio/video guide](../../docs/multicast-media.md) for a live picture
 and tone, playback, recording, encryption, and separate-machine configuration.
+It also supports opt-in hybrid multicast with authenticated startup and automatic
+unicast fallback/multicast return in static hybrid-enabled builds. Unlike its
+ordinary mode, this uses internal experimental APIs. See the guide's
+[hybrid setup and live catch-up contract](../../docs/multicast-media.md#hybrid-multicast-with-automatic-fallback-and-return)
+for pairwise credentials, bounded automation, and reported media gaps.
 
 Contribution supports real MPEG-TS ingress, recording, and UDP playback output.
 Its default mode, plus recovery and device workloads, uses synthetic 1,316-byte

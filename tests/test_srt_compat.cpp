@@ -8290,6 +8290,12 @@ struct DuplicateHandoff {
     std::shared_ptr<DatagramChannel> listener_channel;
     std::condition_variable response_ready;
     std::size_t induction_responses = 0;
+    // Diagnostics for the one hosted failure seen so far (macOS, "observed 2"):
+    // every callback records the admitted handle and its time, so a repeat
+    // tells whether the first admission failed before the duplicate was
+    // admitted or whether two admissions both connected.
+    std::array<SRTSOCKET, 4> callback_sockets {};
+    std::array<std::chrono::steady_clock::time_point, 4> callback_at {};
     std::shared_ptr<HandshakeInbox> inbox;
     std::mutex mutex;
     HandshakeEnvelope conclusion;
@@ -8339,17 +8345,35 @@ UdpIoResult observe_handoff_response(
 void require_single_handoff_callback(const DuplicateHandoff& test)
 {
     const auto observed = test.callbacks.load();
-    if (observed != 1U)
-        throw std::runtime_error("expected one listener callback; observed "
-            + std::to_string(observed));
+    if (observed == 1U)
+        return;
+    std::string detail;
+    for (std::size_t i = 0; i < std::min<std::size_t>(observed, 4U); ++i) {
+        const auto socket = test.callback_sockets[i];
+        const auto offset =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                test.callback_at[i] - test.callback_at[0])
+                .count();
+        detail += " [" + std::to_string(i) + "] socket "
+            + std::to_string(socket) + " state "
+            + std::to_string(static_cast<int>(srt_getsockstate(socket)))
+            + " at +" + std::to_string(offset) + " ms";
+    }
+    throw std::runtime_error("expected one listener callback; observed "
+        + std::to_string(observed) + detail);
 }
 int queue_handoff_duplicates(
-    void* context, SRTSOCKET, int, const sockaddr*, const char*)
+    void* context, SRTSOCKET accepted, int, const sockaddr*, const char*)
 {
     auto& test = *static_cast<DuplicateHandoff*>(context);
     std::lock_guard lock(test.mutex);
     if (!test.captured)
         return -1;
+    const auto index = test.callbacks.load();
+    if (index < test.callback_sockets.size()) {
+        test.callback_sockets[index] = accepted;
+        test.callback_at[index] = std::chrono::steady_clock::now();
+    }
     if (++test.callbacks != 1U)
         return 0;
     // Queue the real, cookie-valid conclusion after admission, before the

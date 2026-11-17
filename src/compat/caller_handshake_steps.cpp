@@ -28,7 +28,7 @@ CallerHandshakeStep CallerHandshakeSteps::start() noexcept
 CallerHandshakeStep CallerHandshakeSteps::receive(
     const HandshakeMessage& message) noexcept
 {
-    if (machine_.is_stale_induction(message)) {
+    if (machine_.ignores_setup_message(message)) {
         return step({});
     }
     peer_socket_id_ = message.packet.socket_id;

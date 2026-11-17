@@ -178,9 +178,9 @@ def run_case(directory, name, caller_peer, listener_peer, caller_policy,
     summary = relay.summary()
     if reject:
         if caller_policy == 1:
-            if not any(command == 0x7f15 for command, _ in summary["extension_records"]["caller"]):
+            if not any(command == 0x7f19 for command, _ in summary["extension_records"]["caller"]):
                 raise RuntimeError(f"{name}: required caller never offered NPD")
-            if any(command == 0x7f15 for command, _ in summary["extension_records"]["listener"]):
+            if any(command == 0x7f19 for command, _ in summary["extension_records"]["listener"]):
                 raise RuntimeError(f"{name}: reference unexpectedly echoed NPD")
             if "reject_reason=4" not in caller.stderr:
                 raise RuntimeError(f"{name}: failure was not the expected missing-echo rejection")

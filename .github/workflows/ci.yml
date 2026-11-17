@@ -48,7 +48,7 @@ concurrency:
 jobs:
   changes:
     name: Change classification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -219,7 +219,7 @@ jobs:
 
   dco:
     name: DCO sign-off
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -252,7 +252,7 @@ jobs:
     name: Documentation
     needs: changes
     if: needs.changes.outputs.documentation == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -265,7 +265,7 @@ jobs:
     name: Python harness tests
     needs: changes
     if: needs.changes.outputs.python == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -285,7 +285,7 @@ jobs:
     name: C++ format guard
     needs: changes
     if: needs.changes.outputs.format == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -327,7 +327,7 @@ jobs:
       needs.changes.outputs.cpp == 'true'
       || needs.changes.outputs.examples == 'true'
       || needs.changes.outputs.package == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -347,9 +347,11 @@ jobs:
           -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_CONTROLLERS=ON
           -DROBOTWEAX_SRT_BUILD_EXAMPLES=${{ needs.changes.outputs.examples }}
           -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
+      # A fixed job count: an unlimited --parallel starts every compile at
+      # once, and the runner killed this build when the test sources grew.
       - name: Build
         if: needs.changes.outputs.core_tests == 'true'
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 4
       - name: Build selected public consumers
         if: needs.changes.outputs.core_tests != 'true'
         shell: bash
@@ -384,14 +386,41 @@ jobs:
           ctest --test-dir build -C Release -L "$pattern" \
             --parallel 1 --no-tests=error --output-on-failure
 
+  udp_batching:
+    name: Experimental UDP batching (Linux)
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare multicast test interface
+        uses: ./.github/actions/multicast-interface
+      # Experimental controllers stay off here: a connection that uses one
+      # keeps the unbatched send path, which the other jobs already cover.
+      - name: Configure recvmmsg, sendmmsg and UDP_SEGMENT
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DROBOTWEAX_SRT_WARNINGS_AS_ERRORS=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING=ON
+          -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION=ON
+          -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
   gcc_release:
     name: GCC 15 Release epoll
     needs: changes
     if: needs.changes.outputs.cpp == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     container:
-      image: ubuntu:26.10@sha256:93e29beff5257b2cdf1c024d831f6d2997e53655a653ff76a811fc9e6564a719
+      image: ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
     env:
       CC: gcc-15
       CXX: g++-15
@@ -423,7 +452,7 @@ jobs:
     if: >-
       needs.changes.outputs.timing == 'true'
       && needs.changes.outputs.core_tests != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -497,7 +526,7 @@ jobs:
           -DROBOTWEAX_SRT_BUILD_TOOLS=${{ needs.changes.outputs.core_tests }}
       - name: Build
         if: needs.changes.outputs.core_tests == 'true'
-        run: cmake --build build --config Release --parallel ${{ runner.os == 'macOS' && '3' || '' }}
+        run: cmake --build build --config Release --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
       - name: Build selected public consumers
         if: needs.changes.outputs.core_tests != 'true'
         shell: bash
@@ -545,7 +574,7 @@ jobs:
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-26.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -560,8 +589,10 @@ jobs:
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Debug
           -DROBOTWEAX_SRT_BUILD_BENCHMARKS=OFF
+      # A fixed job count on every runner: an unlimited --parallel starts
+      # every compile at once, and the Linux runner stalled in this build.
       - name: Build
-        run: cmake --build build --config Debug --parallel ${{ runner.os == 'macOS' && '3' || '' }}
+        run: cmake --build build --config Debug --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
       - name: Test
         if: runner.os != 'macOS'
         run: >-
@@ -582,7 +613,7 @@ jobs:
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-26.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -600,7 +631,7 @@ jobs:
         run: >-
           cmake --build build
           --config Release
-          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
+          --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
           --target robotweax_srt_shared_lifecycle_tests
           robotweax_srt_global_lifecycle_tests
           robotweax_srt_late_cleanup_tests
@@ -617,7 +648,7 @@ jobs:
       - name: Configure legacy packaging
         run: cmake -S . -B build -DROBOTWEAX_SRT_INSTALL_LAYOUT=legacy
       - name: Relink legacy library
-        run: cmake --build build --config Release --parallel ${{ runner.os == 'macOS' && '3' || '' }} --target robotweax_srt
+        run: cmake --build build --config Release --parallel ${{ runner.os == 'macOS' && '3' || '4' }} --target robotweax_srt
       - name: Test legacy package consumer
         run: >-
           ctest --test-dir build -C Release
@@ -631,7 +662,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-26.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -664,7 +695,7 @@ jobs:
     name: FFmpeg integration
     needs: changes
     if: needs.changes.outputs.ffmpeg == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -740,7 +771,7 @@ jobs:
     name: GStreamer integration
     needs: changes
     if: needs.changes.outputs.gstreamer == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -793,7 +824,7 @@ jobs:
     name: OBS integration
     needs: changes
     if: needs.changes.outputs.obs == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1025,10 +1056,21 @@ jobs:
           ref: ${{ env.FFMPEG_COMMIT }}
           path: ffmpeg-source
           persist-credentials: false
+      - name: Verify macOS core and debugger capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/obs-macos-cores"
+          sudo sysctl -w kern.coredump=1
+          sudo sysctl -w "kern.corefile=$RUNNER_TEMP/obs-macos-cores/core.%P"
+          ulimit -c unlimited
+          python3 tests/obs/macos_core_backtrace.py self-test \
+            "$RUNNER_TEMP/obs-macos-cores" "$RUNNER_TEMP/obs-core-probe.txt"
       - name: Build and qualify OBS Qt desktop on Apple Silicon
         shell: bash
         run: |
           set -euo pipefail
+          ulimit -c unlimited
           xcodebuild -version
           JOBS=3 tests/obs/build_macos.sh \
             "$GITHUB_WORKSPACE/obs-desktop-source" \
@@ -1037,12 +1079,22 @@ jobs:
       - name: Collect failed endpoint crash reports
         if: failure()
         run: python3 tests/obs/collect_macos_failure.py "$RUNNER_TEMP/obs-macos-desktop-qualification/evidence/desktop"
+      - name: Capture failed endpoint debugger backtraces
+        if: failure()
+        run: |
+          python3 tests/obs/macos_core_backtrace.py collect \
+            "$RUNNER_TEMP/obs-macos-cores" \
+            "$RUNNER_TEMP/obs-macos-desktop-qualification/evidence/desktop"
+      - name: Symbolize outstanding OBS allocations
+        if: always()
+        run: python3 tests/obs/symbolize_allocations.py "$RUNNER_TEMP/obs-macos-desktop-qualification/evidence/desktop"
       - name: Preserve macOS OBS desktop text diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: obs-macos-desktop-evidence
           path: |
+            ${{ runner.temp }}/obs-core-probe.txt
             ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/*.log
             ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/*.txt
             ${{ runner.temp }}/obs-macos-desktop-qualification/evidence/desktop/*.log
@@ -1057,7 +1109,7 @@ jobs:
     name: VLC integration
     needs: changes
     if: needs.changes.outputs.vlc == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1111,6 +1163,8 @@ jobs:
             ${{ runner.temp }}/vlc-qualification/evidence/*.log
             ${{ runner.temp }}/vlc-qualification/evidence/*.txt
             ${{ runner.temp }}/vlc-qualification/evidence/*.frames
+            ${{ runner.temp }}/vlc-qualification/evidence/*.ts
+            ${{ runner.temp }}/vlc-qualification/evidence/*.m2v
             ${{ runner.temp }}/vlc-qualification/vlc-build/config.log
             ${{ runner.temp }}/vlc-qualification/gst-build/meson-logs/
           retention-days: 7
@@ -1124,7 +1178,7 @@ jobs:
     strategy:
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-26.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -1146,14 +1200,14 @@ jobs:
         run: >-
           cmake --build build-aead-static
           --config Release
-          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
+          --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
           --target robotweax_srt
       - name: Build AES-GCM public demos
         if: needs.changes.outputs.examples == 'true'
         run: >-
           cmake --build build-aead-static
           --config Release
-          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
+          --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
           --target robotweax_srt_message_demo robotweax_srt_file_demo robotweax_srt_group_demo robotweax_srt_udp_bridge robotweax_srt_contribution robotweax_srt_recovery robotweax_srt_device robotweax_srt_multicast
       - name: Test explicit CTR and GCM demo modes
         if: needs.changes.outputs.examples == 'true'
@@ -1188,7 +1242,7 @@ jobs:
         run: >-
           cmake --build build-aead-shared
           --config Release
-          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
+          --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
       - name: Test shared ABI, exports, and package consumers
         if: needs.changes.outputs.aead_platform == 'true'
         run: >-
@@ -1215,14 +1269,14 @@ jobs:
         run: >-
           cmake --build build-maxrexmit-static
           --config Release
-          --parallel ${{ runner.os == 'macOS' && '3' || '' }}
+          --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
           --target robotweax_srt_tests
       - name: Test optional retransmission limit
         if: needs.changes.outputs.aead_platform == 'true'
         run: >-
           ctest --test-dir build-maxrexmit-static
           -C Release
-          -R "^robotweax_srt_(tests|socket_api_tests|session_auth_admission_tests|transport_runtime_tests|stale_drop_coverage_tests|stale_nak_tests|local_address_tests|group_pathid_tests|group_acquire_tests|key_length_tests|delayed_key_response_tests|gcm_profile_tests|sensor_gcm_aes(128|192|256)_tests)$"
+          -R "^robotweax_srt_(tests|group_unit_tests|hybrid_model_tests|hybrid_investigation_tests|socket_api_tests|session_auth_admission_tests|transport_runtime_tests|stale_drop_coverage_tests|stale_nak_tests|local_address_tests|group_pathid_tests|group_acquire_tests|key_length_tests|delayed_key_response_tests|gcm_profile_tests|sensor_gcm_aes(128|192|256)_tests)$"
           --no-tests=error
           --output-on-failure
           --timeout 120
@@ -1231,7 +1285,7 @@ jobs:
     name: Address/undefined sanitizers
     needs: changes
     if: needs.changes.outputs.sanitizers == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
       CFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
@@ -1261,7 +1315,9 @@ jobs:
           cmake --build build --target robotweax_srt_ubsan_canary
           python3 tests/sanitizers/verify_ubsan.py build/robotweax_srt_ubsan_canary
       - name: Build
-        run: cmake --build build --parallel
+        # An unbounded Make job count exhausts the hosted runner's memory
+        # with sanitizer instrumentation and the runner is shut down.
+        run: cmake --build build --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
@@ -1269,7 +1325,7 @@ jobs:
     name: Thread sanitizer
     needs: changes
     if: needs.changes.outputs.thread_sanitizer == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1319,7 +1375,7 @@ jobs:
     name: Fuzz smoke
     needs: changes
     if: needs.changes.outputs.fuzz == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
       UBSAN_OPTIONS: halt_on_error=1
@@ -1392,7 +1448,7 @@ jobs:
     if: >-
       needs.changes.outputs.interop == 'true'
       || needs.changes.outputs.benchmark == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1727,7 +1783,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.changes.outputs.reference_matrix) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     env:
       LD_LIBRARY_PATH: ${{ github.workspace }}/reference-build
@@ -2330,7 +2386,7 @@ jobs:
       - changes
       - reference_interop_prepare
       - reference_interop_shard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Require preparation and every selected shard to pass
@@ -2447,13 +2503,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             backend: openssl
           - os: macos-latest
             backend: openssl
           - os: windows-latest
             backend: openssl
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             backend: mbedtls
           - os: windows-latest
             backend: bcrypt
@@ -2512,6 +2568,7 @@ jobs:
       - python_tests
       - format_check
       - linux_release
+      - udp_batching
       - gcc_release
       - live_timing
       - portable_release
@@ -2533,7 +2590,7 @@ jobs:
       - reference_interop
       - mbedtls_backend
       - multicast_qualification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       # A successful run plus this successful step proves full selection.
@@ -2550,6 +2607,7 @@ jobs:
           PYTHON_TESTS: ${{ needs.python_tests.result }}
           FORMAT_CHECK: ${{ needs.format_check.result }}
           LINUX_RELEASE: ${{ needs.linux_release.result }}
+          UDP_BATCHING: ${{ needs.udp_batching.result }}
           GCC_RELEASE: ${{ needs.gcc_release.result }}
           LIVE_TIMING: ${{ needs.live_timing.result }}
           PORTABLE_RELEASE: ${{ needs.portable_release.result }}
@@ -2579,6 +2637,7 @@ jobs:
           EXPECT_python_tests: ${{ needs.changes.outputs.python == 'true' }}
           EXPECT_format_check: ${{ needs.changes.outputs.format == 'true' }}
           EXPECT_linux_release: ${{ needs.changes.outputs.cpp == 'true' || needs.changes.outputs.examples == 'true' || needs.changes.outputs.package == 'true' }}
+          EXPECT_udp_batching: ${{ needs.changes.outputs.cpp == 'true' }}
           EXPECT_gcc_release: ${{ needs.changes.outputs.cpp == 'true' }}
           EXPECT_live_timing: ${{ needs.changes.outputs.timing == 'true' && needs.changes.outputs.core_tests != 'true' }}
           EXPECT_portable_release: ${{ needs.changes.outputs.portable == 'true' }}
@@ -2608,6 +2667,7 @@ jobs:
             "python-tests=$PYTHON_TESTS" \
             "format-check=$FORMAT_CHECK" \
             "linux-release=$LINUX_RELEASE" \
+            "udp-batching=$UDP_BATCHING" \
             "gcc-release=$GCC_RELEASE" \
             "live-timing=$LIVE_TIMING" \
             "portable-release=$PORTABLE_RELEASE" \

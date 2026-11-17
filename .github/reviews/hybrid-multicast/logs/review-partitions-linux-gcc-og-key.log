@@ -1,0 +1,35 @@
+Internal ctest changing into directory: <source>/build-linux-sanitized-og
+Test project <source>/build-linux-sanitized-og
+    Start 21: robotweax_srt_hybrid_key_timing_tests
+1/4 Test #21: robotweax_srt_hybrid_key_timing_tests ...........   Passed    6.46 sec
+    Start 22: robotweax_srt_hybrid_key_response_tests
+2/4 Test #22: robotweax_srt_hybrid_key_response_tests .........   Passed    4.44 sec
+    Start 23: robotweax_srt_hybrid_key_multi_receiver_tests
+3/4 Test #23: robotweax_srt_hybrid_key_multi_receiver_tests ...***Timeout  30.06 sec
+[RUN] hybrid_key_network_multi_receiver_pending_response_preserves_healthy_uc_mc_ctr_gcm
+1794154736685231/269469226317664W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+
+    Start 24: robotweax_srt_hybrid_key_admission_tests
+4/4 Test #24: robotweax_srt_hybrid_key_admission_tests ........***Failed    1.32 sec
+[RUN] hybrid_key_network_multi_receiver_late_admission_during_pending_rotation_ctr_gcm
+1794154766742975/263795480999776W:socket: UDP receive buffer: requested=12288000 effective=212992 kernel=425984 bytes; attempts=1 fallback=no
+[FAIL] hybrid_key_network_multi_receiver_late_admission_during_pending_rotation_ctr_gcm: multi control peer=0 next=30 fresh=0 closed=0 mode=1 revision=1
+[TIME] hybrid_key_network_multi_receiver_late_admission_during_pending_rotation_ctr_gcm 1253244 us
+0/1 tests passed
+
+
+50% tests passed, 2 tests failed out of 4
+
+Label Time Summary:
+fault-injection    =  42.28 sec*proc (4 tests)
+hybrid             =  42.28 sec*proc (4 tests)
+integration        =  42.28 sec*proc (4 tests)
+key-management     =  42.28 sec*proc (4 tests)
+network            =  42.28 sec*proc (4 tests)
+
+Total Test time (real) =  42.28 sec
+
+The following tests FAILED:
+	 23 - robotweax_srt_hybrid_key_multi_receiver_tests (Timeout)
+	 24 - robotweax_srt_hybrid_key_admission_tests (Failed)
+Errors while running CTest

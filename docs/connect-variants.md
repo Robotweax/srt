@@ -39,7 +39,7 @@ core.
 
 ## Established peer endpoint and NAT rebinding
 
-The 0.3.2 connection contract keeps an established socket bound to the peer IP
+The 0.3.3 connection contract keeps an established socket bound to the peer IP
 address and UDP port selected during its handshake. This applies to Caller,
 Listener and Rendezvous connections, including each Broadcast or Backup member.
 A NAT rebinding can change the source port, address, or both without changing

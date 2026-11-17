@@ -10,7 +10,7 @@
 namespace robotweax::srt::npd {
 
 // Provisional identifiers, negotiated through SRTO_ROBOTWEAX_NPD_POLICY.
-inline constexpr std::uint16_t extension_command = 0x7f15;
+inline constexpr std::uint16_t extension_command = 0x7f19;
 inline constexpr std::size_t unit_size = 188;
 inline constexpr std::size_t maximum_units = 7;
 inline constexpr std::array<std::byte, 8> record_content {std::byte {0x53},

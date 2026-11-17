@@ -423,3 +423,117 @@ TEST(srt_statistics_api_reports_runtime_data_and_sender_buffer)
     REQUIRE_EQ(srt_close(socket), 0);
     REQUIRE_EQ(srt_cleanup(), 0);
 }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
+namespace {
+
+struct BatchedSendObserver {
+    std::size_t data_budget = 0;
+    std::size_t data_attempts = 0;
+    std::array<std::uint32_t, 16> accepted {};
+    std::size_t accepted_count = 0;
+};
+
+UdpIoResult observe_batched_send(
+    std::span<const std::byte> bytes, Ipv4Endpoint, void* context) noexcept
+{
+    auto& observer = *static_cast<BatchedSendObserver*>(context);
+    // The first bit distinguishes a control packet from DATA.
+    if (bytes.size() < 4U || (bytes[0] & std::byte {0x80}) != std::byte {0}) {
+        return {.bytes_transferred = bytes.size()};
+    }
+    ++observer.data_attempts;
+    if (observer.data_budget == 0U) {
+        return {.error = Error::would_block};
+    }
+    --observer.data_budget;
+    if (observer.accepted_count < observer.accepted.size()) {
+        observer.accepted[observer.accepted_count++] =
+            (std::to_integer<std::uint32_t>(bytes[0]) << 24U)
+            | (std::to_integer<std::uint32_t>(bytes[1]) << 16U)
+            | (std::to_integer<std::uint32_t>(bytes[2]) << 8U)
+            | std::to_integer<std::uint32_t>(bytes[3]);
+    }
+    return {.bytes_transferred = bytes.size()};
+}
+
+// Every reading moves time on, so each packet's pacing interval has passed
+// when the next one is selected and one poll finds several DATA due.
+std::uint64_t advancing_now(void* context) noexcept
+{
+    return *static_cast<std::uint64_t*>(context) += 1'000;
+}
+
+} // namespace
+
+TEST(runtime_send_batch_completes_exactly_the_accepted_prefix)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    const SRTSOCKET socket = srt_create_socket();
+    REQUIRE(socket != SRT_INVALID_SOCK);
+    const auto record = SocketRegistry::instance().find(socket);
+    REQUIRE(record != nullptr);
+    const auto channel = std::make_shared<DatagramChannel>();
+    BatchedSendObserver observer;
+    channel->set_send_hook_for_testing(observe_batched_send, &observer);
+    std::uint64_t now = 1'000;
+    const auto runtime =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = {.address = {192, 0, 2, 91}, .port = 19'001},
+            .peer_socket_id = 901,
+            .initial_sequence = SequenceNumber {90},
+            .flow_window_packets = 256,
+            .options = SocketOptions {},
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = advancing_now,
+            .now_context = &now,
+        });
+    {
+        std::lock_guard lock(record->mutex);
+        record->state = SRTS_CONNECTED;
+        record->runtime = runtime;
+        record->channel = channel;
+    }
+
+    constexpr std::size_t messages = 6;
+    const std::array<std::byte, 3> payload {
+        std::byte {1}, std::byte {2}, std::byte {3}};
+    for (std::size_t index = 0; index < messages; ++index) {
+        REQUIRE_EQ(runtime->queue_message(payload, 0, true, false, -1).status,
+            MessageIoStatus::success);
+    }
+
+    // UDP takes three datagrams and refuses the fourth. The batch stops
+    // there: nothing behind the refusal is offered, and only the accepted
+    // prefix counts as sent.
+    observer.data_budget = 3;
+    (void)runtime->poll();
+    REQUIRE_EQ(observer.data_attempts, 4U);
+    REQUIRE_EQ(observer.accepted_count, 3U);
+    SRT_TRACEBSTATS statistics {};
+    REQUIRE_EQ(srt_bistats(socket, &statistics, 0, 1), 0);
+    REQUIRE_EQ(statistics.pktSentTotal, 3);
+    REQUIRE_EQ(statistics.pktSentUniqueTotal, 3);
+
+    // The rest waited in submission order and completes once UDP takes it.
+    observer.data_budget = messages;
+    for (int attempt = 0; attempt < 8 && observer.accepted_count < messages;
+        ++attempt) {
+        (void)runtime->poll();
+    }
+    REQUIRE_EQ(observer.accepted_count, messages);
+    for (std::size_t index = 0; index < messages; ++index) {
+        REQUIRE_EQ(observer.accepted[index], 90U + index);
+    }
+    REQUIRE_EQ(observer.data_attempts, messages + 1U);
+    REQUIRE_EQ(srt_bistats(socket, &statistics, 0, 1), 0);
+    REQUIRE_EQ(statistics.pktSentTotal, 6);
+    REQUIRE_EQ(statistics.pktSentUniqueTotal, 6);
+    REQUIRE_EQ(statistics.pktRetransTotal, 0);
+
+    channel->set_send_hook_for_testing(nullptr, nullptr);
+    REQUIRE_EQ(srt_close(socket), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+#endif

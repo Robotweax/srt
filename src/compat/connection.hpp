@@ -82,8 +82,11 @@ private:
     std::shared_ptr<ResultContext> result_context_;
 };
 
-[[nodiscard]] int listen_socket(
-    std::shared_ptr<SocketRecord> socket, int backlog) noexcept;
+// The optional hook lets tests interleave an option setter after native
+// setup and before live-profile validation, without relying on scheduling.
+[[nodiscard]] int listen_socket(std::shared_ptr<SocketRecord> socket,
+    int backlog, void (*before_commit)(void*) noexcept = nullptr,
+    void* context = nullptr) noexcept;
 [[nodiscard]] int set_listen_callback(
     std::shared_ptr<SocketRecord> socket,
     srt_listen_callback_fn* callback,

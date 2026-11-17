@@ -1,0 +1,58 @@
+Internal ctest changing into directory: <source>/build-linux-release
+Test project <source>/build-linux-release
+      Start  6: robotweax_srt_hybrid_model_tests
+ 1/20 Test  #6: robotweax_srt_hybrid_model_tests ................   Passed    1.37 sec
+      Start  7: robotweax_srt_hybrid_investigation_tests
+ 2/20 Test  #7: robotweax_srt_hybrid_investigation_tests ........   Passed   10.62 sec
+      Start  9: robotweax_srt_multicast_dispatch_tests
+ 3/20 Test  #9: robotweax_srt_multicast_dispatch_tests ..........   Passed    9.58 sec
+      Start 10: robotweax_srt_multicast_independent_tests
+ 4/20 Test #10: robotweax_srt_multicast_independent_tests .......   Passed    5.51 sec
+      Start 11: robotweax_srt_multicast_coordinated_tests
+ 5/20 Test #11: robotweax_srt_multicast_coordinated_tests .......   Passed   12.18 sec
+      Start 12: robotweax_srt_multicast_startup_tests
+ 6/20 Test #12: robotweax_srt_multicast_startup_tests ...........   Passed    5.84 sec
+      Start 13: robotweax_srt_multicast_conclusions_tests
+ 7/20 Test #13: robotweax_srt_multicast_conclusions_tests .......   Passed    4.49 sec
+      Start 14: robotweax_srt_multicast_control_tests
+ 8/20 Test #14: robotweax_srt_multicast_control_tests ...........   Passed   10.01 sec
+      Start 15: robotweax_srt_multicast_source_error_tests
+ 9/20 Test #15: robotweax_srt_multicast_source_error_tests ......   Passed    2.69 sec
+      Start 16: robotweax_srt_multicast_rejoin_tests
+10/20 Test #16: robotweax_srt_multicast_rejoin_tests ............   Passed    2.90 sec
+      Start 17: robotweax_srt_hybrid_harness_tests
+11/20 Test #17: robotweax_srt_hybrid_harness_tests ..............   Passed    1.46 sec
+      Start 18: robotweax_srt_hybrid_network_tests
+12/20 Test #18: robotweax_srt_hybrid_network_tests ..............   Passed    9.24 sec
+      Start 19: robotweax_srt_hybrid_multi_control_tests
+13/20 Test #19: robotweax_srt_hybrid_multi_control_tests ........   Passed    8.09 sec
+      Start 20: robotweax_srt_hybrid_multi_quota_tests
+14/20 Test #20: robotweax_srt_hybrid_multi_quota_tests ..........   Passed    6.69 sec
+      Start 21: robotweax_srt_hybrid_key_timing_tests
+15/20 Test #21: robotweax_srt_hybrid_key_timing_tests ...........   Passed    5.53 sec
+      Start 22: robotweax_srt_hybrid_key_response_tests
+16/20 Test #22: robotweax_srt_hybrid_key_response_tests .........   Passed    3.62 sec
+      Start 23: robotweax_srt_hybrid_key_multi_receiver_tests
+17/20 Test #23: robotweax_srt_hybrid_key_multi_receiver_tests ...   Passed    4.62 sec
+      Start 24: robotweax_srt_hybrid_key_admission_tests
+18/20 Test #24: robotweax_srt_hybrid_key_admission_tests ........   Passed    4.59 sec
+      Start 25: robotweax_srt_hybrid_load_tests
+19/20 Test #25: robotweax_srt_hybrid_load_tests .................   Passed   13.95 sec
+      Start 26: robotweax_srt_hybrid_soak_tests
+20/20 Test #26: robotweax_srt_hybrid_soak_tests .................   Passed   11.00 sec
+
+100% tests passed, 0 tests failed out of 20
+
+Label Time Summary:
+fault-injection    =  68.79 sec*proc (10 tests)
+hybrid             = 106.72 sec*proc (17 tests)
+integration        = 132.61 sec*proc (19 tests)
+key-management     =  18.36 sec*proc (4 tests)
+lifecycle          =   1.46 sec*proc (1 test)
+load               =  13.95 sec*proc (1 test)
+multicast          =  43.62 sec*proc (7 tests)
+network            = 132.61 sec*proc (19 tests)
+soak               =  11.00 sec*proc (1 test)
+unit               =   1.37 sec*proc (1 test)
+
+Total Test time (real) = 134.00 sec

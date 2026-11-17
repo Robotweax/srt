@@ -20,7 +20,7 @@ HISTORICAL_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.1.0.txt"
 FROZEN_0_2_0_ABI_PATH = (
     ROOT / "cmake" / "abi" / "robotweax-srt-0.2.0.txt"
 )
-CURRENT_PROJECT_VERSION = "0.3.2"
+CURRENT_PROJECT_VERSION = "0.3.3"
 FROZEN_0_3_0_ABI_PATH = ROOT / "cmake/abi/robotweax-srt-0.3.0.txt"
 PREVIOUS_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.2.8.txt"
 CURRENT_ABI_PATH = (
@@ -217,10 +217,10 @@ class AeadContractTests(unittest.TestCase):
                     "Linux Release",
                     "macos-latest Release",
                     "windows-latest Release",
-                    "Shared library (ubuntu-latest)",
+                    "Shared library (ubuntu-26.04)",
                     "Shared library (macos-latest)",
                     "Shared library (windows-latest)",
-                    "AES-GCM platform/ABI (ubuntu-latest)",
+                    "AES-GCM platform/ABI (ubuntu-26.04)",
                     "AES-GCM platform/ABI (macos-latest)",
                     "AES-GCM platform/ABI (windows-latest)",
                     "Address/undefined sanitizers",
@@ -268,7 +268,7 @@ class AeadContractTests(unittest.TestCase):
 
         workflow = CI_PATH.read_text(encoding="utf-8")
         self.assertIn("aead_platform:", workflow)
-        self.assertIn("os: [ubuntu-latest, macos-latest, windows-latest]", workflow)
+        self.assertIn("os: [ubuntu-26.04, macos-latest, windows-latest]", workflow)
         self.assertGreaterEqual(
             workflow.count("-DENABLE_AEAD_API_PREVIEW=ON"), 5
         )

@@ -95,6 +95,15 @@ when authenticated DATA is required.
 
 ### Optional session binding
 
+During caller setup, responses and rejections after induction must match the
+learned cookie. The induction socket ID is not pinned: compatible listeners may
+echo the caller ID and then assign a child ID at conclusion. Rendezvous packets
+must match the learned peer cookie, socket ID and flow window. Mismatched or
+out-of-state setup packets are ignored before crypto and metadata processing;
+they do not reset retry budgets. Legitimate early rejections remain supported
+before peer binding exists. Compatible setup is not cryptographically
+authenticated, and endpoint spoofing before binding remains a protocol limit.
+
 The explicitly enabled, default-off `SRTO_ROBOTWEAX_SESSIONAUTH` extension
 authenticates session key establishment and runtime KM controls. Both peers
 must support it; enabled sessions do not interoperate with ordinary Haivision
@@ -150,6 +159,15 @@ budget. Negotiation must reserve capacity for a first member before attaching
 a transport runtime; additional members release any unnecessary reservation.
 These limits preserve group joins without permitting unbounded setup work
 through group-marked conclusions.
+
+Every group also has a durable membership limit, including pending and connected
+members. The build option `ROBOTWEAX_SRT_MAX_GROUP_MEMBERS` defaults to 64
+(range 1..65536); coordinated multicast additionally retains its 64-member
+implementation limit. Enrollment reserves a slot under the group lock before
+transport attachment, including joins that do not publish an accept. Failed
+enrollment leaves the group unchanged; rollback and removal free the slot.
+Broken members remain charged until removed. This is a per-group limit, not a
+process-wide quota; applications must still bound the number of groups.
 
 ## Secure integration guidance
 

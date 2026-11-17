@@ -1129,6 +1129,51 @@ class RendezvousInteropUnitTests(unittest.TestCase):
             observation["retransmission_ciphertext_matches"]
         )
 
+    def test_nak_window_rejects_early_rto_and_opens_only_for_matching_forwarded_nak(self):
+        fault = srt_handshake_trace.RendezvousFault(
+            action="drop", direction="sender_to_receiver", occurrence=1,
+            suppress_until_nak=True,
+        )
+        proxy, sender, receiver = self.make_fake_fault_proxy(fault)
+        original = self.data_packet(10, payload=b"missing")
+        retry = self.data_packet(10, retransmitted=True, payload=b"missing")
+        later = self.data_packet(11, payload=b"later")
+        unrelated = struct.pack(">IIIII", 0x8003_0000, 0, 0, 0, 9)
+        matching = struct.pack(">IIIII", 0x8003_0000, 0, 0, 0, 10)
+        proxy._forward(original, "sender_to_receiver")
+        proxy._forward(retry, "sender_to_receiver")
+        proxy._forward(unrelated, "receiver_to_sender")
+        proxy._forward(retry, "sender_to_receiver")
+        self.assertEqual(receiver.sent, [])
+        self.assertNotIn("retransmission_observed", proxy.fault_observation())
+        proxy._forward(later, "sender_to_receiver")
+        proxy._forward(matching, "receiver_to_sender")
+        proxy._forward(retry, "sender_to_receiver")
+        self.assertEqual([p for p, _ in receiver.sent], [later, retry])
+        self.assertEqual([p for p, _ in sender.sent], [unrelated, matching])
+        observation = proxy.fault_observation()
+        self.assertEqual(observation["suppressed_retransmissions"], 2)
+        self.assertTrue(observation["later_data_observed_before_retransmission"])
+        self.assertTrue(observation["loss_report_forwarded"])
+        self.assertTrue(observation["retransmission_ciphertext_matches"])
+        self.assertLess(observation["loss_report_relay_ordinal"],
+                        observation["retransmission_relay_ordinal"])
+
+    def test_nak_window_fails_closed_without_a_peer_loss_report(self):
+        fault = srt_handshake_trace.RendezvousFault(
+            action="drop", direction="sender_to_receiver", occurrence=1,
+            suppress_until_nak=True,
+        )
+        proxy, _, receiver = self.make_fake_fault_proxy(fault)
+        proxy._forward(self.data_packet(10, payload=b"missing"), "sender_to_receiver")
+        retry = self.data_packet(10, retransmitted=True, payload=b"missing")
+        for _ in range(16):
+            proxy._forward(retry, "sender_to_receiver")
+        with self.assertRaisesRegex(OSError, "16 suppressed retries"):
+            proxy._forward(retry, "sender_to_receiver")
+        self.assertEqual(receiver.sent, [])
+        self.assertNotIn("retransmission_observed", proxy.fault_observation())
+
     def test_persistent_drop_suppresses_retries_until_cumulative_ack(
         self,
     ) -> None:

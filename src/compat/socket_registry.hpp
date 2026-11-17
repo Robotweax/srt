@@ -25,7 +25,12 @@ template <typename T> class ProcessOwned;
 
 class ListenerRuntime;
 class ConnectHandshakeOperation;
-
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+namespace hybrid {
+struct StartupOptions;
+class StartupSession;
+}
+#endif
 
 struct SocketRecord {
     enum class Purpose { transport, option_template };
@@ -39,7 +44,14 @@ struct SocketRecord {
     PublicSocketOptions public_options;
     SocketOptions native_options;
     std::shared_ptr<DatagramChannel> channel;
+    // Send-only, independently bound multicast socket; dispatch groups retain it.
+    std::shared_ptr<DatagramChannel> multicast_transmit_channel;
+    IpEndpoint multicast_transmit_source {};
     std::shared_ptr<ConnectionRuntime> runtime;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::shared_ptr<const hybrid::StartupOptions> hybrid_startup_options;
+    std::shared_ptr<hybrid::StartupSession> hybrid_startup_session;
+#endif
     std::shared_ptr<CryptoSession> crypto;
     // Receive-direction key-material state from connection setup when no
     // local session exists (optional encryption without a usable secret).
@@ -103,6 +115,7 @@ struct SocketRecord {
     // not own SocketRecord pointers, and sockets do not own group records.
     SRTSOCKET group_id = SRT_INVALID_SOCK;
     std::uint64_t group_generation = 0;
+    bool coordinated_member = false;
     std::uint64_t member_generation = 0;
     SRT_GROUP_TYPE group_type = SRT_GTYPE_UNDEFINED;
     std::uint16_t group_weight = 0;

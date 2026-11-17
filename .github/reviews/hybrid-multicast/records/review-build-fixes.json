@@ -1,0 +1,127 @@
+{
+  "source_commit": "e710d4e6f9ab027483e399f222c8cef7837c8d5d",
+  "build_clean": true,
+  "source_binary_binding": "Fresh default directory; after-fix incremental build on committed source. Binary SHA recorded, but no embedded commit binding; qualifier tooling gap BL-6 remains open.",
+  "focused": {
+    "enabled": {
+      "compat_group_budget": "9/9 tests passed",
+      "compat_group_wire_budget": "7/7 tests passed",
+      "compat_group_coordinator": "23/23 tests passed",
+      "investigation_hybrid": "6/6 tests passed"
+    },
+    "sanitized": {
+      "compat_group_budget": "9/9 tests passed",
+      "compat_group_wire_budget": "7/7 tests passed",
+      "compat_group_coordinator": "23/23 tests passed",
+      "investigation_hybrid": "6/6 tests passed"
+    }
+  },
+  "settings": {
+    "default": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_CXX_FLAGS": "",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "ENABLE_AEAD_API_PREVIEW": "OFF",
+      "ENABLE_MAXREXMITBW": "OFF",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "OFF",
+      "binary_sha256": "394a2bb6584fdbf975bce7be31d6b9ae7e023920c1de1d3a12de96cd8c27b9db"
+    },
+    "enabled": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_CXX_FLAGS": "",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "OFF",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON",
+      "binary_sha256": "4ff91c45e6d383ba493ff123704d2f38f3b803c6296599ec23330892a13243f1"
+    },
+    "sanitized": {
+      "CMAKE_BUILD_TYPE": "Debug",
+      "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+      "CMAKE_CXX_FLAGS_DEBUG": "-g",
+      "ENABLE_AEAD_API_PREVIEW": "ON",
+      "ENABLE_MAXREXMITBW": "ON",
+      "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+      "ROBOTWEAX_SRT_BUILD_TOOLS": "OFF",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "ON",
+      "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "ON",
+      "binary_sha256": "cc5fd6e2596a01981fca76425bd49b45472b3a8e8fc4c3638faad2c88bcea5d3"
+    }
+  },
+  "windows_native": "not run on this host; pending hosted Windows x64/Win32 CI",
+  "scope": "Review batch BL-1/BL-2 only; not complete requalification of the feature or closure of all review findings.",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "compiler": "Apple clang version 21.0.0 (clang-2100.4.1.1)\nTarget: arm64-apple-darwin25.6.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin\n",
+  "configure_command": [
+    "cmake",
+    "-S",
+    ".",
+    "-B",
+    "build-review-default",
+    "-G",
+    "Ninja",
+    "-DCMAKE_BUILD_TYPE=Release"
+  ],
+  "build_command": [
+    "cmake",
+    "--build",
+    "build-review-default",
+    "--parallel",
+    "4"
+  ],
+  "ctest_command": [
+    "ctest",
+    "--test-dir",
+    "build-review-default",
+    "--output-on-failure",
+    "-j1"
+  ],
+  "ctest_gates_passed": 84,
+  "ctest_gates_selected": 84,
+  "general_cpp": "1225/1225",
+  "python_per_suite": 854,
+  "skip_records": [
+    "srt_compat_bind_acquire_reuseport_routes_distinct_ipv4_channels: Linux SO_REUSEPORT distribution test",
+    "srt_compat_bind_acquire_reuseport_routes_distinct_ipv6_channels: Linux SO_REUSEPORT distribution test",
+    "srt_compat_bind_acquire_reuseaddr_does_not_allow_distinct_channels: Linux adopted endpoint conflict test",
+    "srt_compat_bind_acquire_reuseport_rejects_duplicate_native_socket: Linux native socket identity test",
+    "srt_compat_bind_acquire_reuseport_rejects_outgoing_ipv4_group: Linux reuseport caller restriction test",
+    "srt_compat_bind_acquire_reuseport_rejects_outgoing_ipv6_group: Linux reuseport caller restriction test",
+    "srt_compat_bind_acquire_single_reuseport_socket_retains_caller_support: Linux single reuseport caller compatibility test",
+    "srt_compat_bind_acquire_reuseport_rejects_group_after_caller_setup: Linux caller/adoption ordering test"
+  ],
+  "default_cache_settings": {
+    "CMAKE_BUILD_TYPE": "Release",
+    "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+    "CMAKE_CXX_FLAGS": "",
+    "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+    "ENABLE_AEAD_API_PREVIEW": "OFF",
+    "ENABLE_MAXREXMITBW": "OFF",
+    "ROBOTWEAX_SRT_BUILD_BENCHMARKS": "ON",
+    "ROBOTWEAX_SRT_BUILD_TESTS": "ON",
+    "ROBOTWEAX_SRT_BUILD_TOOLS": "ON",
+    "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1": "OFF",
+    "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL": "OFF"
+  },
+  "cache_sha256": "982ba257df4fdc42cb4a925a38fd9774e60bf2855ffc9c60448777c76f58c1ad",
+  "review": "https://github.com/Robotweax/srt/pull/387#issuecomment-6722547185",
+  "old_default_label": "The historical 91-gate mac-default log was hybrid-off/ACP1-off but AEAD-preview-ON, not repository-default.",
+  "original_failures": {
+    "BL-1": {
+      "source_commit": "4af9c86cc86bd915fb67bda22463bbd0ec068a05",
+      "local_default_object_build": "failed: unguarded SRTO_CRYPTOMODE"
+    },
+    "BL-2": {
+      "source_commit": "4af9c86cc86bd915fb67bda22463bbd0ec068a05",
+      "ci_job": "https://github.com/Robotweax/srt/actions/runs/42485429848/job/128746131649",
+      "diagnostic": "MSVC C4244/C2220, uint64_t to size_t under /WX",
+      "validation_after_fix": "Native Win32/MSVC CI pending; not run on this macOS host."
+    }
+  }
+}

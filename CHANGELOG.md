@@ -4,12 +4,60 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
-## Unreleased — NPD feature branch
+## Unreleased
 
 - Add default-OFF experimental MPEG-TS null packet deletion for individual Live
   Caller/Listener sockets, with strict negotiation, encrypted DATA/FEC support
   and private cumulative counters. See the [NPD contract](docs/null-packet-deletion.md)
   for provisional identifiers, validation evidence and remaining release scope.
+
+## 0.3.3 — Hybrid Multicast and Transport Hardening
+
+See the [release notes](docs/release-notes-0.3.3.md) for upgrade behavior and limits.
+
+- Add opt-in independent-source and coordinated IPv4 multicast, bounded canonical
+  history and aggregate wire budgets, explicit source recovery and receiver
+  detachment reporting. Existing default multicast behavior remains separate.
+- Add default-off authenticated hybrid startup, bounded automatic unicast fallback
+  and multicast return, membership recovery, and exact overlap coverage. The
+  multicast sample supports this through internal APIs in static enabled builds;
+  live catch-up can discard unread media and reports discontinuity events.
+- Hold a one-millisecond Windows timer period while the runtime scheduler exists;
+  `ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD=OFF` leaves timer resolution to the host.
+- Prevent overdue timers from starving listener-close work, apply multicast
+  profiles at listen commit, and retire superseded routes only for their binding.
+- Enforce hybrid soak source-directory provenance and split long native lifecycle
+  cases into serial bounded test partitions without changing protocol assertions.
+
+- A default (not coordinated) multicast dispatch sender with a positive group
+  `SRTO_MAXBW` now limits the unicast repeats of all its members together to
+  four times that rate. Previously only each member's own pacer applied, so a
+  loss shared by N receivers could draw N times the repair traffic. Groups
+  without a positive `SRTO_MAXBW` behave as before; the coordinated profile
+  keeps its own aggregate budget. No wire-format or public ABI change. See
+  [Connection groups](docs/connection-groups.md#multicast-dispatch-groups).
+- Route delayed DATA that arrives after the KMREQ replacing its key selector by
+  accepted sequence position instead of the receive frontier alone. A burst
+  loss or delay longer than the pre-announcement window no longer decrypts
+  retired-generation packets with the replacement key (wrong CTR plaintext,
+  GCM authentication failure). Wire format and KM messages are unchanged.
+- A retired receive key generation is no longer eligible once the receive
+  frontier has advanced half the sequence space past its retirement, so an
+  old packet is rejected after its sequence is reused. Where an entire
+  companion generation was lost, AES-GCM verifies the tag against the
+  generations the position rules still allow; AES-CTR applies a documented
+  policy until a companion packet is accepted or the companion generation is
+  retired.
+- A failed authenticated open preserves the ciphertext and tag, including an
+  overlapping destination buffer, erases only destination bytes outside them,
+  and never publishes unauthenticated output. Direct `CryptoSession::open`
+  callers now receive `invalid_payload_size` above the maximum DATA payload.
+
+- The Linux readiness watcher copies each epoll payload before storing it.
+  glibc packs `epoll_event` on x86-64, so the previous code bound a reference
+  to a misaligned member, which is undefined behavior that Clang's sanitizer
+  reports. No behavior change is known on x86-64; other architectures and the
+  kqueue and Windows paths were not affected.
 
 ## 0.3.2 — Multicast and Recovery Stabilization
 

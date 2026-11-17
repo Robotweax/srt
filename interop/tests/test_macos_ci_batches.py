@@ -86,7 +86,7 @@ class MacosCiBatchesTests(unittest.TestCase):
             original = block.split("      - name: Test\n", 1)[1].split("      - name:", 1)[0]
             self.assertIn("runner.os != 'macOS'", original)
             self.assertIn("ctest --test-dir build", original)
-            self.assertIn("--parallel ${{ runner.os == 'macOS' && '3' || '' }}", block)
+            self.assertIn("--parallel ${{ runner.os == 'macOS' && '3' || '4' }}", block)
 
     @unittest.skipUnless(shutil.which("ctest"), "requires the CTest regex engine")
     def test_ctest_engine_assigns_every_actual_registration_once(self):

@@ -2,12 +2,30 @@
 
 #include "robotweax/srt/codec.hpp"
 #include "robotweax/srt/standby_rtt.hpp"
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+#include "compat/hybrid/hybrid_control.hpp"
+#endif
 
 #include <algorithm>
 #include <limits>
 
 namespace robotweax::srt {
 namespace {
+bool hybrid_version(std::uint8_t version) noexcept
+{
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    return version == hybrid_control_session_version;
+#else
+    (void)version;
+    return false;
+#endif
+}
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
+bool control_version(std::uint8_t version) noexcept
+{
+    return is_acp1_session_version(version) || hybrid_version(version);
+}
+#endif
 bool zero(std::span<const std::byte> bytes) noexcept
 {
     std::byte value {};
@@ -76,7 +94,7 @@ Error SessionAuthentication::start(bool caller, std::uint8_t version) noexcept
 {
     if (version != session_authentication_version
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
-        && !is_acp1_session_version(version)
+        && !is_acp1_session_version(version) && !hybrid_version(version)
 #endif
     )
         return Error::invalid_state;
@@ -103,6 +121,10 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
     if (!started_ || ready_ || passphrase.empty() || !local_socket_id
         || !peer_socket_id)
         return Error::invalid_state;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_version(parameters_.version) && hybrid_revoked_)
+        return Error::invalid_state;
+#endif
     const bool rendezvous =
         parameters_.version == acp1_rendezvous_session_version
         || parameters_.version == acp1_group_rendezvous_session_version;
@@ -114,7 +136,10 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
         ? acp1_group_context_size
         : parameters_.version == acp1_group_rendezvous_session_version
         ? acp1_group_rendezvous_context_size
-        : 0U;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+        : hybrid_version(parameters_.version) ? hybrid_control_context_size
+#endif
+                                              : 0U;
     if (group_context.size() != context_size)
         return Error::invalid_key_material;
     if (peer.version != parameters_.version)
@@ -129,7 +154,15 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
             return Error::invalid_key_material;
         parameters_.caller_nonce = peer.caller_nonce;
     }
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    compat::hybrid::Context hybrid_context;
+    if (hybrid_version(parameters_.version)
+        && !compat::hybrid::decode(group_context, hybrid_context))
+        return Error::invalid_key_material;
+    std::array<std::byte, 112 + hybrid_control_context_size> salt {};
+#else
     std::array<std::byte, 112 + acp1_group_rendezvous_context_size> salt {};
+#endif
     std::copy(domain_label.begin(), domain_label.end(), salt.begin());
     salt[14] =
         std::byte {static_cast<unsigned char>('0' + parameters_.version)};
@@ -158,7 +191,7 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
         return result;
     }
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_ACP1
-    if (is_acp1_session_version(parameters_.version)) {
+    if (control_version(parameters_.version)) {
         // RFC 5869 single-block Expand, with the session root as PRK.
         std::array<std::byte, 18> info {};
         constexpr char label[] = "RWSRT-ACP1-1";
@@ -178,6 +211,14 @@ Error SessionAuthentication::establish(std::span<const std::byte> passphrase,
         }
     }
 #endif
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_version(parameters_.version)) {
+        std::copy(group_context.begin(), group_context.end(),
+            hybrid_context_.begin());
+        hybrid_local_socket_id_ = local_socket_id;
+        hybrid_peer_socket_id_ = peer_socket_id;
+    }
+#endif
     ready_ = true;
     return Error::none;
 }
@@ -185,9 +226,18 @@ Error SessionAuthentication::mac(std::uint8_t domain, bool caller,
     std::uint64_t counter, std::span<const std::byte> input,
     std::span<std::byte, 32> output) noexcept
 {
-    if (!ready_ || input.size() > last_sent_.size())
+    auto maximum = last_sent_.size();
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_version(parameters_.version))
+        maximum = hybrid_control_maximum_proof_material;
+#endif
+    if (!ready_ || input.size() > maximum)
         return Error::invalid_state;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    std::array<std::byte, 28 + hybrid_control_maximum_proof_material> bytes {};
+#else
     std::array<std::byte, 156> bytes {};
+#endif
     std::copy(domain_label.begin(), domain_label.end(), bytes.begin());
     bytes[14] =
         std::byte {static_cast<unsigned char>('0' + parameters_.version)};
@@ -205,22 +255,33 @@ Error SessionAuthentication::handshake_proof(bool caller,
     SessionAuthenticationParameters& output) noexcept
 {
     output = parameters_;
+    if (hybrid_version(parameters_.version) && caller != caller_)
+        return Error::invalid_state;
     return mac(1, caller, 0, initial_material, output.proof);
 }
 bool SessionAuthentication::verify_handshake(bool caller,
     std::span<const std::byte> initial_material,
     const SessionAuthenticationParameters& peer) noexcept
 {
-    SessionAuthenticationParameters expected;
-    return handshake_proof(caller, initial_material, expected) == Error::none
+    if (hybrid_version(parameters_.version) && caller == caller_)
+        return false;
+    auto expected = parameters_;
+    const bool valid =
+        mac(1, caller, 0, initial_material, expected.proof) == Error::none
         && expected.matches(peer);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (valid && hybrid_version(parameters_.version))
+        hybrid_peer_confirmed_ = true;
+#endif
+    return valid;
 }
 Error SessionAuthentication::seal(bool response,
     std::span<const std::byte> material, std::span<std::byte> output,
     std::size_t& written) noexcept
 {
     written = 0;
-    if (!ready_ || material.empty() || material.size() > last_sent_.size()
+    if (hybrid_version(parameters_.version) || !ready_ || material.empty()
+        || material.size() > last_sent_.size()
         || output.size() < material.size() + authenticated_key_overhead)
         return Error::invalid_state;
     auto counter = response ? received_counter_ : sent_counter_;
@@ -254,7 +315,8 @@ bool SessionAuthentication::open(bool response,
     std::span<const std::byte>& material) noexcept
 {
     material = {};
-    if (!ready_ || input.size() <= authenticated_key_overhead
+    if (hybrid_version(parameters_.version) || !ready_
+        || input.size() <= authenticated_key_overhead
         || input.size() > last_received_.size() + authenticated_key_overhead)
         return false;
     const auto counter = get64(input.first<8>());
@@ -317,7 +379,8 @@ Error SessionAuthentication::seal_fec(const DataHeader& header,
     std::size_t& written) noexcept
 {
     written = 0;
-    if (fec_sent_counter_ == std::numeric_limits<std::uint64_t>::max()
+    if (hybrid_version(parameters_.version)
+        || fec_sent_counter_ == std::numeric_limits<std::uint64_t>::max()
         || output.size() < parity.size() + authenticated_fec_overhead)
         return Error::invalid_state;
     const auto counter = fec_sent_counter_ + 1;
@@ -339,7 +402,8 @@ bool SessionAuthentication::open_fec(const DataHeader& header,
     std::span<const std::byte>& parity) noexcept
 {
     parity = {};
-    if (input.size() <= authenticated_fec_overhead
+    if (hybrid_version(parameters_.version)
+        || input.size() <= authenticated_fec_overhead
         || input.size() > maximum_data_payload_size)
         return false;
     const auto counter = get64(input.first<8>());
@@ -375,6 +439,15 @@ bool acp1_control(const PacketView& packet, std::uint8_t version) noexcept
     if (packet.kind != PacketKind::control
         || !has_valid_control_payload_shape(packet.payload))
         return false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_version(version)) {
+        compat::hybrid::Message message;
+        return packet.control.type == ControlType::user_defined
+            && packet.control.subtype == compat::hybrid::control_subtype
+            && packet.control.type_specific == 0
+            && compat::hybrid::decode(packet.payload, message);
+    }
+#endif
     if (packet.control.type == ControlType::handshake)
         return false;
     if (packet.control.type == ControlType::user_defined)
@@ -386,11 +459,20 @@ bool acp1_control(const PacketView& packet, std::uint8_t version) noexcept
     return packet.control.subtype == 0;
 }
 }
+bool SessionAuthentication::control_ready() const noexcept
+{
+    if (!ready_ || !control_version(parameters_.version))
+        return false;
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+    if (hybrid_version(parameters_.version))
+        return hybrid_peer_confirmed_;
+#endif
+    return true;
+}
 Error SessionAuthentication::control_mac(bool caller,
     std::span<const std::byte> wire, std::span<std::byte, 32> tag) noexcept
 {
-    if (!ready_ || !is_acp1_session_version(parameters_.version)
-        || wire.size() > 1500U - 32U)
+    if (!control_ready() || wire.size() > 1500U - 32U)
         return Error::invalid_state;
     // Keys already separate session, profile and direction. This domain
     // additionally separates envelope tags from key expansion.
@@ -407,7 +489,7 @@ Error SessionAuthentication::seal_control(std::span<const std::byte> packet,
     std::span<std::byte> output, std::size_t& written) noexcept
 {
     written = 0;
-    if (!ready_ || !is_acp1_session_version(parameters_.version)
+    if (!control_ready()
         || packet.size() > 1500U - authenticated_control_overhead
         || output.size() < packet.size() + authenticated_control_overhead
         || control_sent_counter_ == std::numeric_limits<std::uint64_t>::max())
@@ -444,8 +526,7 @@ bool SessionAuthentication::open_control(
     const PacketView& envelope, PacketView& packet) noexcept
 {
     packet = {};
-    if (!ready_ || !is_acp1_session_version(parameters_.version)
-        || envelope.kind != PacketKind::control
+    if (!control_ready() || envelope.kind != PacketKind::control
         || envelope.control.type != ControlType::user_defined
         || envelope.control.subtype != authenticated_control_subtype
         || envelope.control.type_specific != 0
@@ -499,6 +580,37 @@ bool SessionAuthentication::open_control(
     }
     packet = decoded.packet;
     return true;
+}
+#endif
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL
+bool SessionAuthentication::hybrid_control_ready(
+    bool caller, std::span<const std::byte> context) const noexcept
+{
+    return hybrid_version(parameters_.version) && ready_
+        && hybrid_peer_confirmed_ && caller == caller_
+        && equal(context, hybrid_context_);
+}
+bool SessionAuthentication::claim_hybrid_control(
+    bool caller, std::span<const std::byte> context) noexcept
+{
+    if (!hybrid_control_ready(caller, context) || hybrid_claimed_
+        || control_sent_counter_ || control_received_counter_)
+        return false;
+    hybrid_claimed_ = true;
+    return true;
+}
+void SessionAuthentication::revoke_hybrid_control() noexcept
+{
+    if (!hybrid_version(parameters_.version))
+        return;
+    ready_ = false;
+    hybrid_revoked_ = true;
+    hybrid_peer_confirmed_ = false;
+    hybrid_claimed_ = true;
+    provider_.secure_erase(key_);
+    provider_.secure_erase(caller_control_key_);
+    provider_.secure_erase(listener_control_key_);
 }
 #endif
 

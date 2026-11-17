@@ -39,7 +39,7 @@ void round_trip(std::span<const std::byte> source, std::size_t deleted)
 TEST(npd_record_has_exact_wire_bytes_and_rejects_every_single_bit_mutation)
 {
     constexpr std::array<std::byte, 12> expected {std::byte {0x7f},
-        std::byte {0x15}, std::byte {0}, std::byte {2}, std::byte {0x53},
+        std::byte {0x19}, std::byte {0}, std::byte {2}, std::byte {0x53},
         std::byte {0x4e}, std::byte {0x50}, std::byte {0x44}, std::byte {1},
         std::byte {0}, std::byte {0}, std::byte {0}};
     std::array<std::byte, 12> bytes {};
@@ -48,7 +48,7 @@ TEST(npd_record_has_exact_wire_bytes_and_rejects_every_single_bit_mutation)
     REQUIRE_EQ(npd::decode_record(bytes), Error::none);
     const auto extension = decode_extension(bytes);
     REQUIRE(extension);
-    REQUIRE_EQ(static_cast<std::uint16_t>(extension.extension.type), 0x7f15);
+    REQUIRE_EQ(static_cast<std::uint16_t>(extension.extension.type), 0x7f19);
     REQUIRE_EQ(extension.extension.content.size(), 8U);
     for (std::size_t i = 0; i < bytes.size(); ++i) {
         for (unsigned bit = 0; bit < 8; ++bit) {

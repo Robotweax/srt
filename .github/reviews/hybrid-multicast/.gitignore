@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: MIT
+# Publish only the curated, redacted review logs in this directory.
+!*.log

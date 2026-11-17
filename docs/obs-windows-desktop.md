@@ -44,7 +44,9 @@ listener as its FFmpeg media source, while OBS forwards the decoded picture
 and sound through a different encrypted native SRT output. The reference
 sender remains active until the round-trip capture proves moving video and
 audible audio. Results and diagnostic logs are in the fresh work
-directory's `evidence` folder; CI uploads text diagnostics only.
+directory's `evidence` folder; CI uploads text diagnostics only. A reference
+receiver records a `RECEIVE_END` line with its byte count, socket state and
+SRT error when reception ends, so an empty capture can be attributed.
 
 Use [`-Desktop -Preview`](obs-windows-preview.md) to assemble a separate
 portable ZIP after the same strict qualification. This is an optional local

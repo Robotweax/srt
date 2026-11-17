@@ -1,0 +1,6 @@
+{"mode":"ctr","scenario":"ordered-control","delayed_position":23,"sequence":123,"last_accepted_before_reuse":155,"km_exchanges":2,"error":0,"plaintext_matches":true}
+{"mode":"ctr","scenario":"lagging-frontier","delayed_position":23,"sequence":123,"last_accepted_before_reuse":122,"km_exchanges":2,"error":0,"plaintext_matches":false}
+{"mode":"ctr","scenario":"advanced-frontier-control","delayed_position":23,"sequence":123,"last_accepted_before_reuse":155,"km_exchanges":2,"error":0,"plaintext_matches":true}
+{"mode":"gcm","scenario":"ordered-control","delayed_position":23,"sequence":123,"last_accepted_before_reuse":155,"km_exchanges":2,"error":0,"plaintext_matches":true}
+{"mode":"gcm","scenario":"lagging-frontier","delayed_position":23,"sequence":123,"last_accepted_before_reuse":122,"km_exchanges":2,"error":15,"plaintext_matches":false}
+{"mode":"gcm","scenario":"advanced-frontier-control","delayed_position":23,"sequence":123,"last_accepted_before_reuse":155,"km_exchanges":2,"error":0,"plaintext_matches":true}

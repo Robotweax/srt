@@ -613,6 +613,168 @@ TEST(listener_handshake_actor_close_is_terminal_without_input)
     scheduler->stop();
 }
 
+namespace {
+// Finite pressure makes a failed regression drain safely. A checkpoint after
+// the second overdue timer observes dispatch progress, never elapsed time.
+struct ClosePressure : std::enable_shared_from_this<ClosePressure> {
+    static constexpr unsigned turns = 8;
+    RuntimeScheduler* scheduler = nullptr;
+    std::shared_ptr<ListenerHandshakeActor> actor;
+    RuntimeScheduler::ServiceToken service;
+    std::mutex mutex;
+    std::condition_variable changed;
+    unsigned timer_calls = 0, service_calls = 0, services_at_checkpoint = 0;
+    bool statuses_valid = true, closed_at_checkpoint = false;
+
+    static void timer(void* context) noexcept
+    {
+        auto& self = *static_cast<ClosePressure*>(context);
+        {
+            std::lock_guard lock(self.mutex);
+            ++self.timer_calls;
+            if (self.timer_calls == 2) {
+                self.closed_at_checkpoint = self.actor->snapshot().terminal;
+                self.services_at_checkpoint = self.service_calls;
+            }
+            if (self.timer_calls < turns) {
+                const auto next = self.scheduler->schedule_at(0,
+                    std::chrono::steady_clock::time_point::min(),
+                    {timer, self.weak_from_this().lock()});
+                self.statuses_valid &=
+                    next.status == RuntimeScheduler::SubmitStatus::accepted;
+            }
+        }
+        self.changed.notify_all();
+    }
+    static void run_service(void* context) noexcept
+    {
+        auto& self = *static_cast<ClosePressure*>(context);
+        {
+            std::lock_guard lock(self.mutex);
+            ++self.service_calls;
+            if (self.service_calls < turns)
+                self.statuses_valid &=
+                    self.scheduler->notify_service(self.service)
+                    == RuntimeScheduler::SubmitStatus::accepted;
+            else
+                self.statuses_valid &=
+                    self.scheduler->release_service(self.service);
+        }
+        self.changed.notify_all();
+    }
+};
+struct ClosePressureDrain {
+    std::shared_ptr<RuntimeScheduler> scheduler;
+    std::shared_ptr<ListenerHandshakeActor> actor;
+    std::shared_ptr<Gate> gate;
+    ~ClosePressureDrain()
+    {
+        release_gate(gate);
+        actor->stop();
+        scheduler->stop();
+    }
+};
+void close_under_due_pressure(bool with_service, bool admission_pending)
+{
+    auto scheduler = std::make_shared<RuntimeScheduler>(
+        RuntimeScheduler::Configuration {1, 2, 1, with_service ? 1U : 0U});
+    REQUIRE(scheduler->start());
+    auto gate = std::make_shared<Gate>();
+    auto inbox = std::make_shared<HandshakeInbox>(2);
+    auto time_window = std::make_shared<std::uint64_t>(42U);
+    auto actor = std::make_shared<ListenerHandshakeActor>(scheduler, 0U, inbox,
+        admission_configuration(), 2U, fixed_listener_time_window, time_window);
+    const ClosePressureDrain drain {scheduler, actor, gate};
+    REQUIRE_EQ(actor->start(), ListenerHandshakeDispatchStatus::completed);
+    if (admission_pending) {
+        const auto induction = admission_induction();
+        const auto peer = IpEndpoint::loopback(9'000U);
+        REQUIRE(inbox->push({.message = induction, .peer = peer}));
+        const auto response = actor->wait();
+        REQUIRE_EQ(
+            response.step.kind, ListenerHandshakeAdmissionStepKind::send);
+        REQUIRE(inbox->push({.message = admission_conclusion(induction,
+                                 response.step.response.packet.syn_cookie),
+            .peer = peer}));
+        REQUIRE_EQ(
+            actor->wait().step.kind, ListenerHandshakeAdmissionStepKind::admit);
+    }
+    REQUIRE_EQ(scheduler->submit(0, {wait_at_gate, gate}),
+        RuntimeScheduler::SubmitStatus::accepted);
+    wait_until_started(gate);
+    REQUIRE_EQ(actor->snapshot().admission_pending, admission_pending);
+    auto pressure = std::make_shared<ClosePressure>();
+    pressure->scheduler = scheduler.get();
+    pressure->actor = actor;
+    if (with_service) {
+        const auto reserved = scheduler->reserve_service(
+            0, {ClosePressure::run_service, pressure});
+        REQUIRE_EQ(reserved.status, RuntimeScheduler::SubmitStatus::accepted);
+        pressure->service = reserved.token;
+        REQUIRE_EQ(scheduler->notify_service(reserved.token),
+            RuntimeScheduler::SubmitStatus::accepted);
+    }
+    REQUIRE_EQ(
+        scheduler
+            ->schedule_at(0, std::chrono::steady_clock::time_point::min(),
+                {ClosePressure::timer, pressure})
+            .status,
+        RuntimeScheduler::SubmitStatus::accepted);
+    actor->close();
+    // The actor's actual close completion sits behind the blocked shard.
+    // Due timer work and (optionally) a service are already published.
+    REQUIRE(!actor->snapshot().terminal);
+    const auto queued = scheduler->snapshot();
+    REQUIRE_EQ(queued.queued, 1U);
+    REQUIRE_EQ(queued.timers, 1U);
+    REQUIRE_EQ(queued.services_pending, with_service ? 1U : 0U);
+    release_gate(gate);
+    actor->stop();
+    {
+        std::unique_lock lock(pressure->mutex);
+        REQUIRE(pressure->changed.wait_for(lock, std::chrono::seconds {2}, [&] {
+            return pressure->timer_calls == ClosePressure::turns
+                && (!with_service
+                    || pressure->service_calls == ClosePressure::turns);
+        }));
+    }
+    scheduler->stop();
+    REQUIRE(pressure->statuses_valid);
+    REQUIRE_EQ(pressure->timer_calls, ClosePressure::turns);
+    REQUIRE_EQ(
+        pressure->service_calls, with_service ? ClosePressure::turns : 0U);
+    REQUIRE(pressure->closed_at_checkpoint);
+    if (with_service) {
+        REQUIRE(pressure->services_at_checkpoint > 0);
+        REQUIRE(pressure->services_at_checkpoint < ClosePressure::turns);
+        REQUIRE(scheduler->service_quiescent(pressure->service));
+    }
+    REQUIRE(actor->snapshot().terminal);
+    REQUIRE(!actor->snapshot().admission_pending);
+    REQUIRE_EQ(actor->wait().kind, ListenerHandshakeActorResultKind::closed);
+    REQUIRE(!inbox->push(HandshakeEnvelope {}));
+    REQUIRE(!actor->complete_admission());
+}
+}
+TEST(listener_handshake_actor_close_progresses_under_due_timer_pressure)
+{
+    close_under_due_pressure(false, false);
+}
+TEST(listener_handshake_actor_close_pending_admission_under_due_timer_pressure)
+{
+    close_under_due_pressure(false, true);
+}
+TEST(
+    listener_handshake_actor_close_progresses_under_due_timer_and_service_pressure)
+{
+    close_under_due_pressure(true, false);
+}
+TEST(
+    listener_handshake_actor_close_pending_admission_under_due_timer_and_service_pressure)
+{
+    close_under_due_pressure(true, true);
+}
+
 TEST(listener_handshake_actor_rejects_a_stopped_scheduler)
 {
     auto scheduler =

@@ -209,13 +209,16 @@ struct SocketReadiness::State {
             return errno == EINTR ? 0 : -1;
         }
         for (int index = 0; index < result; ++index) {
-            if (events[static_cast<std::size_t>(index)].data.u64
-                == wake_marker) {
+            // glibc packs epoll_event on x86-64, which leaves data.u64 at a
+            // four-byte offset. Copy it: push_back takes a reference, and a
+            // reference to the packed member would be misaligned.
+            const std::uint64_t payload =
+                events[static_cast<std::size_t>(index)].data.u64;
+            if (payload == wake_marker) {
                 woken = true;
                 continue;
             }
-            payloads.push_back(
-                events[static_cast<std::size_t>(index)].data.u64);
+            payloads.push_back(payload);
         }
         return result;
     }

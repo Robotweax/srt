@@ -29,6 +29,14 @@ storage and worker stacks grow with the requested count. The default remains
 conservative; CPU count does not automatically choose workers or account for
 container quotas. Connection count alone is not a reason to raise the setting.
 
+Each shard also preallocates 128 persistent service slots, separate from ordinary
+task and timer capacity. A [coordinated multicast sender](connection-groups.md#coordinated-ipv4-sender-opt-in)
+reserves two slots on one affinity shard for source emission and completion
+fanout. Each service has its own reserved deadline; ordinary queue saturation
+cannot discard accepted source work. Exhaustion rejects new group admission,
+including when affinity makes one shard full before the others. Closing the
+group retires both slots; final cleanup closes groups before stopping workers.
+
 ## What scales today
 
 Each UDP channel receives a fixed affinity, assigned in channel creation order

@@ -241,6 +241,48 @@ bool HandshakeMachine::valid_standby_rtt_configuration() const noexcept
                         == GroupType::backup);
 }
 
+bool HandshakeMachine::valid_multicast_source_configuration() const noexcept
+{
+    if (!configuration_.require_multicast_source)
+        return configuration_.multicast_source == IpEndpoint {};
+    if (!configuration_.group_membership_policy.admit_multicast_dispatch
+        || configuration_.congestion_controller != CongestionController::live
+        || buffer_mode(configuration_.extension_parameters)
+        || configuration_.packet_filter_configuration.enabled)
+        return false;
+    if (configuration_.role == ConnectionRole::caller)
+        return configuration_.multicast_source == IpEndpoint {}
+        && configuration_.has_group_membership
+            && configuration_.group_membership.type == GroupType::multicast;
+    return configuration_.group_membership_negotiator != nullptr
+        && configuration_.multicast_dispatch_provider != nullptr
+        && valid_multicast_source({.kind = MulticastSourceKind::announcement,
+            .group_id = group_handle_mask | 1U,
+            .endpoint = configuration_.multicast_source});
+}
+
+bool HandshakeMachine::accepts_multicast_source_offer(
+    const HandshakeMessage& message) const noexcept
+{
+    return message.has_multicast_source
+        == configuration_.require_multicast_source
+        && (!message.has_multicast_source
+            || (valid_multicast_source(message.multicast_source)
+                && message.multicast_source.kind == MulticastSourceKind::offer
+                && message.has_group_membership
+                && message.group_membership.type == GroupType::multicast
+                && validate_group_membership(message.group_membership,
+                       configuration_.group_membership_policy)
+                    == GroupMembershipValidation::compatible
+                && (!has_peer_group_membership_
+                    || (message.group_membership.group_id
+                            == peer_group_membership_.group_id
+                        && message.group_membership.flags
+                            == peer_group_membership_.flags
+                        && message.group_membership.weight
+                            == peer_group_membership_.weight))));
+}
+
 HandshakeActions HandshakeMachine::start() noexcept
 {
     HandshakeActions actions;
@@ -249,7 +291,9 @@ HandshakeActions HandshakeMachine::start() noexcept
                 || configuration_.congestion_controller
                     != CongestionController::live
                 || buffer_mode(configuration_.extension_parameters)))
-        || !valid_standby_rtt_configuration() || state_ != HandshakeState::idle
+        || !valid_standby_rtt_configuration()
+        || !valid_multicast_source_configuration()
+        || state_ != HandshakeState::idle
         || configuration_.role != ConnectionRole::caller
         || (configuration_.require_path_identifier
             && (!configuration_.has_group_membership
@@ -332,11 +376,37 @@ bool HandshakeMachine::is_stale_induction(
         && message.packet.request == HandshakeRequest::induction;
 }
 
+bool HandshakeMachine::ignores_setup_message(
+    const HandshakeMessage& message) const noexcept
+{
+    if (configuration_.role != ConnectionRole::caller)
+        return false;
+    const auto& packet = message.packet;
+    const bool rejection = static_cast<std::int32_t>(packet.request) >= 1'000;
+    if (state_ == HandshakeState::awaiting_induction_response) {
+        // Compatible early rejections precede learning a cookie. Endpoint
+        // filtering remains the available binding in this phase.
+        return !rejection
+            && (packet.request != HandshakeRequest::induction
+                || packet.syn_cookie == 0U);
+    }
+    if (state_ == HandshakeState::awaiting_conclusion_response) {
+        // INDUCTION may echo our ID (reference libsrt) or identify a listener,
+        // not the accepted child. Do not pin that ID across CONCLUSION.
+        return (!rejection && packet.request != HandshakeRequest::conclusion)
+            || packet.syn_cookie != cookie_;
+    }
+    return true;
+}
+
 HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noexcept
 {
     HandshakeActions actions;
     const auto& incoming = message.packet;
-    if (!valid_standby_rtt_configuration()) {
+    if (ignores_setup_message(message))
+        return actions;
+    if (!valid_standby_rtt_configuration()
+        || !valid_multicast_source_configuration()) {
         state_ = HandshakeState::failed;
         actions.push({.kind = HandshakeActionKind::failed});
         return actions;
@@ -362,6 +432,10 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
 
     if (configuration_.role == ConnectionRole::listener) {
         if (state_ == HandshakeState::awaiting_authentication_confirmation) {
+            if (incoming.request == HandshakeRequest::conclusion
+                    ? !accepts_multicast_source_offer(message)
+                    : message.has_multicast_source)
+                return actions;
             const StandbyRttIdentity expected =
                 incoming.request == HandshakeRequest::conclusion
                 ? StandbyRttIdentity {.caller = standby_rtt_identity_.caller}
@@ -450,6 +524,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             if (incoming.version != handshake_version_5) {
                 return reject(version_rejection_reason);
             }
+            if (!accepts_multicast_source_offer(message))
+                return reject(group_rejection_reason);
             // An HSv5 CONCLUSION must carry HSREQ: without it there is no
             // peer version, no latency and no flags to negotiate from, and
             // libsrt rejects the caller as rogue rather than assume defaults.
@@ -604,6 +680,15 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                         return reject(group_rejection_reason);
                     }
                     has_dispatch = true;
+                    if (configuration_.require_multicast_source) {
+                        local_multicast_source_ = {
+                            .kind = MulticastSourceKind::announcement,
+                            .group_id = dispatch.group_id,
+                            .endpoint = configuration_.multicast_source};
+                        if (configuration_.multicast_source.family
+                            != dispatch.multicast_group.family)
+                            return reject(group_rejection_reason);
+                    }
                 }
                 peer_group_membership_ =
                     message.group_membership;
@@ -682,6 +767,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .path_identifier = peer_path_identifier_,
                 .has_multicast_dispatch = has_local_multicast_dispatch_,
                 .multicast_dispatch = local_multicast_dispatch_,
+                .has_multicast_source = configuration_.require_multicast_source,
+                .multicast_source = local_multicast_source_,
                 .has_standby_rtt = configuration_.require_standby_rtt,
                 .standby_rtt = standby_rtt_identity_,
                 .implementation_identity =
@@ -708,6 +795,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
         if (state_ == HandshakeState::connected
             && incoming.request == HandshakeRequest::conclusion
             && incoming.syn_cookie == cookie_) {
+            if (!accepts_multicast_source_offer(message))
+                return actions;
             if (incoming.version != handshake_version_5
                 || incoming.socket_id != peer_socket_id_
                 || (configuration_.require_npd
@@ -761,6 +850,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .path_identifier = peer_path_identifier_,
                 .has_multicast_dispatch = has_local_multicast_dispatch_,
                 .multicast_dispatch = local_multicast_dispatch_,
+                .has_multicast_source = configuration_.require_multicast_source,
+                .multicast_source = local_multicast_source_,
                 .has_standby_rtt = configuration_.require_standby_rtt,
                 .standby_rtt = standby_rtt_identity_,
                 .implementation_identity =
@@ -819,6 +910,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .group_membership = configuration_.group_membership,
                 .has_path_identifier = configuration_.require_path_identifier,
                 .path_identifier = configuration_.path_identifier,
+                .has_multicast_source = configuration_.require_multicast_source,
+                .multicast_source = {},
                 .has_standby_rtt = configuration_.require_standby_rtt,
                 .standby_rtt = {.caller = configuration_.standby_rtt_nonce},
                 .implementation_identity =
@@ -968,6 +1061,20 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                         || (message.extension_parameters.flags & tsbpd)
                             != tsbpd)))
                 return reject_locally(group_rejection_reason);
+            if (message.has_multicast_source
+                    != configuration_.require_multicast_source
+                || (message.has_multicast_source
+                    && (!valid_multicast_source(message.multicast_source)
+                        || message.multicast_source.kind
+                            != MulticastSourceKind::announcement
+                        || !message.has_multicast_dispatch
+                        || !valid_multicast_dispatch(message.multicast_dispatch)
+                        || message.multicast_source.group_id
+                            != message.multicast_dispatch.group_id
+                        || message.multicast_source.endpoint.family
+                            != message.multicast_dispatch.multicast_group
+                                .family)))
+                return reject_locally(group_rejection_reason);
             if (configuration_.has_group_membership) {
                 const bool dispatch_expected =
                     configuration_.group_membership.type
@@ -1046,6 +1153,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 session_confirmation_.standby_rtt = standby_rtt_identity_;
                 actions.push(session_confirmation_);
             }
+            peer_multicast_source_ = message.multicast_source;
+            has_peer_multicast_source_ = message.has_multicast_source;
             state_ = HandshakeState::connected;
             actions.push({.kind = HandshakeActionKind::connected});
             return actions;
@@ -1114,6 +1223,8 @@ HandshakeActions HandshakeMachine::timeout() noexcept
             .group_membership = configuration_.group_membership,
             .has_path_identifier = configuration_.require_path_identifier,
             .path_identifier = configuration_.path_identifier,
+            .has_multicast_source = configuration_.require_multicast_source,
+            .multicast_source = {},
             .has_standby_rtt = configuration_.require_standby_rtt,
             .standby_rtt = {.caller = configuration_.standby_rtt_nonce},
             .implementation_identity = configuration_.implementation_identity,

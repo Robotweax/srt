@@ -6,6 +6,14 @@ Caller/Listener negotiation, encrypted DATA, FEC, retransmission, pacing input
 accounting and counters are integrated. Identifiers remain provisional and
 unregistered. This is not a released feature or a RIST compatibility claim.
 
+**Identifier change.** Release 0.3.3 assigned `0x7f15`, `0x01000018` and
+`0x01000019` to fixed-source multicast. When this branch was brought up to that
+release, NPD moved to CONFIG command `0x7f19` and options `0x0100001b` and
+`0x0100001c`. Qualification evidence recorded below before that change was
+captured with the earlier values and has not been repeated with the new ones.
+Builds of this branch from before and after the change do not negotiate NPD
+with each other.
+
 Development remains on the feature branch. Merging to `main` requires explicit
 maintainer approval after feature completion. Remaining release qualification
 includes deployed MPEG-TS corpora, physical-network pacing measurements, and
@@ -60,8 +68,8 @@ Private options:
 
 | Option | Contract |
 | --- | --- |
-| `SRTO_ROBOTWEAX_NPD_POLICY` (`0x01000018`) | PRE `int32_t`, default OFF: OFF, REQUIRED or IF_OFFERED; inherited by accepted sockets, which report the negotiated result as REQUIRED or OFF |
-| `SRTO_ROBOTWEAX_NPD_STATS` (`0x01000019`) | Read-only `ROBOTWEAX_SRT_NPD_STATS_V1`, cumulative, no clear-on-read; groups return `SRT_EINVOP` |
+| `SRTO_ROBOTWEAX_NPD_POLICY` (`0x0100001b`) | PRE `int32_t`, default OFF: OFF, REQUIRED or IF_OFFERED; inherited by accepted sockets, which report the negotiated result as REQUIRED or OFF |
+| `SRTO_ROBOTWEAX_NPD_STATS` (`0x0100001c`) | Read-only `ROBOTWEAX_SRT_NPD_STATS_V1`, cumulative, no clear-on-read; groups return `SRT_EINVOP` |
 
 The stats structure is 32 bytes: two `uint32_t` fields (`abi_version`, always
 `ROBOTWEAX_SRT_NPD_STATS_VERSION` = 1, and `active`, 0 or 1), followed by three
@@ -90,7 +98,7 @@ for connections that negotiate OFF.
 
 ## Handshake record
 
-The HSv5 CONFIG command is `0x7f15`. INDUCTION is unchanged. The record is
+The HSv5 CONFIG command is `0x7f19`. INDUCTION is unchanged. The record is
 emitted only with a CONCLUSION that carries HSREQ or HSRSP, after the existing
 private records in canonical order. Content is exactly 8 bytes (2 words):
 
@@ -596,5 +604,5 @@ Evidence must be reproducible and black-box, as required by
 - A pacing comparison showing no added sender delay for bursts after null runs.
 - Measured bandwidth saving on real constant-bitrate streams, with and without
   FEC.
-- Relay probes for an unknown `0x7f15` record against each reference build, if
+- Relay probes for an unknown `0x7f19` record against each reference build, if
   the caller-side fallback is adopted.

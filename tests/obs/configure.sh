@@ -27,10 +27,12 @@ esac
 source_exclusions=(':!plugins/CMakeLists.txt')
 if [[ "$profile" == desktop ]]; then
     source_exclusions+=(':!plugins/obs-ffmpeg/obs-ffmpeg-mpegts.c')
+    source_exclusions+=(':!libobs/util/bmem.c' ':!frontend/OBSApp.cpp' ':!frontend/widgets/OBSBasic_Hotkeys.cpp')
 fi
 [[ -z "$(git -C "$source_directory" status --porcelain --untracked-files=no -- . "${source_exclusions[@]}")" ]]
 if [[ "$profile" == desktop ]]; then
     "$repository/tools/python" "$repository/tests/obs/prepare_desktop_lifecycle.py" "$source_directory"
+    "$repository/tools/python" "$repository/tests/obs/prepare_desktop_trace.py" "$source_directory"
 fi
 "$repository/tools/python" "$repository/tests/obs/prepare_source.py" "$source_directory" --profile "$profile"
 export PKG_CONFIG_PATH="$srt_prefix/lib/pkgconfig:$ffmpeg_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"

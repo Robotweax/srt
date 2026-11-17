@@ -506,6 +506,7 @@ struct DispatchProviderContext {
     bool fail = false;
     bool wrong_id = false;
     int calls = 0;
+    bool ipv6 = false;
 };
 
 bool provide_test_dispatch(MulticastDispatch& dispatch, void* context) noexcept
@@ -526,6 +527,13 @@ bool provide_test_dispatch(MulticastDispatch& dispatch, void* context) noexcept
         .timestamp_origin_delta_microseconds = -250,
         .time_to_live = 1,
     };
+    if (provider.ipv6) {
+        dispatch.multicast_group = {
+            .address = {0xff, 0x15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+            .port = 5999,
+            .family = IpAddressFamily::ipv6};
+        dispatch.interface_hint = IpEndpoint::ipv6_any();
+    }
     return true;
 }
 
@@ -1014,4 +1022,361 @@ TEST(
     REQUIRE(
         !decode_handshake_datagram(std::span {bytes}.first(encoded.bytes_written
             + extension_header_size + session_authentication_wire_size)));
+}
+
+namespace {
+
+SessionAuthenticationParameters source_test_auth(unsigned phase)
+{
+    SessionAuthenticationParameters parameters;
+    parameters.caller_nonce[0] = std::byte {1};
+    if (phase != 0) {
+        parameters.listener_nonce[0] = std::byte {2};
+        parameters.proof[0] = static_cast<std::byte>(phase + 2);
+    }
+    return parameters;
+}
+
+struct SourceNegotiation {
+    std::uint32_t cookie = 0x51a251c3U;
+    std::uint32_t mirror = 93U;
+    DispatchProviderContext provider {.mirror_base = mirror};
+    HandshakeMachine caller;
+    HandshakeMachine listener;
+
+    SourceNegotiation(bool caller_requires = true,
+        bool listener_requires = true,
+        IpEndpoint source = IpEndpoint::loopback(6000),
+        bool authenticate = false)
+        : provider {.mirror_base = mirror, .ipv6 = source.is_ipv6()}
+        , caller([&] {
+            auto config = dispatch_caller_configuration(43U);
+            config.require_multicast_source = caller_requires;
+            config.require_session_authentication = authenticate;
+            config.session_authentication = source_test_auth(0);
+            return config;
+        }())
+        , listener(HandshakeMachine::Configuration {
+              .role = ConnectionRole::listener,
+              .local_socket_id = 402,
+              .group_membership_negotiator = negotiate_test_group,
+              .group_membership_context = &mirror,
+              .group_membership_policy = {.admit_multicast_dispatch = true},
+              .multicast_dispatch_provider = provide_test_dispatch,
+              .multicast_dispatch_context = &provider,
+              .cookie_generator = datagram_test_cookie,
+              .cookie_context = &cookie,
+              .require_session_authentication = authenticate,
+              .session_authentication = source_test_auth(1),
+              .session_authentication_confirmation = source_test_auth(2),
+              .require_multicast_source = listener_requires,
+              .multicast_source = listener_requires ? source : IpEndpoint {},
+          })
+    {
+    }
+
+    HandshakeAction offer()
+    {
+        const auto induction = encode_then_decode(caller.start().values[0], 0);
+        REQUIRE(induction);
+        REQUIRE(!induction.message.has_multicast_source);
+        const auto response = encode_then_decode(
+            listener.receive(induction.message).values[0], 401);
+        REQUIRE(response);
+        REQUIRE(!response.message.has_multicast_source);
+        return caller.receive(response.message).values[0];
+    }
+
+    HandshakeAction reply(const HandshakeAction& offer)
+    {
+        const auto request = encode_then_decode(offer, 402);
+        REQUIRE(request);
+        return listener.receive(request.message).values[0];
+    }
+};
+
+} // namespace
+
+TEST(multicast_source_handshake_requires_bilateral_opt_in)
+{
+    for (const bool caller_requires : {false, true}) {
+        for (const bool listener_requires : {false, true}) {
+            SourceNegotiation fixture {caller_requires, listener_requires};
+            const auto offer = fixture.offer();
+            REQUIRE_EQ(offer.has_multicast_source, caller_requires);
+            REQUIRE(offer.multicast_source.kind == MulticastSourceKind::offer);
+            const auto reply = fixture.reply(offer);
+            const auto decoded = encode_then_decode(reply, 401);
+            REQUIRE(decoded);
+            const auto result = fixture.caller.receive(decoded.message);
+            if (caller_requires != listener_requires) {
+                REQUIRE_EQ(
+                    result.values[0].kind, HandshakeActionKind::rejected);
+                REQUIRE_EQ(fixture.caller.rejection_reason(), 15);
+                REQUIRE(!fixture.caller.has_peer_multicast_source());
+                REQUIRE_EQ(fixture.provider.calls, 0);
+            } else {
+                REQUIRE_EQ(
+                    result.values[0].kind, HandshakeActionKind::connected);
+                REQUIRE_EQ(fixture.caller.has_peer_multicast_source(),
+                    caller_requires);
+                REQUIRE_EQ(reply.has_multicast_source, caller_requires);
+                if (caller_requires) {
+                    REQUIRE_EQ(fixture.caller.peer_multicast_source().endpoint,
+                        IpEndpoint::loopback(6000));
+                    REQUIRE_EQ(fixture.caller.peer_multicast_source().group_id,
+                        group_handle_mask | fixture.mirror);
+                }
+            }
+        }
+    }
+}
+
+TEST(multicast_source_handshake_retries_preserve_the_selected_source)
+{
+    SourceNegotiation fixture;
+    const auto offer = fixture.offer();
+    const auto reply = fixture.reply(offer);
+    const auto retry = fixture.caller.timeout();
+    REQUIRE(retry.size != 0);
+    REQUIRE(retry.values[0].has_multicast_source);
+    const auto replay = fixture.reply(retry.values[0]);
+    REQUIRE(replay.multicast_source == reply.multicast_source);
+    REQUIRE(replay.multicast_dispatch == reply.multicast_dispatch);
+    REQUIRE_EQ(fixture.provider.calls, 1);
+    auto changed = encode_then_decode(offer, 402).message;
+    changed.has_multicast_source = false;
+    REQUIRE_EQ(fixture.listener.receive(changed).size, 0U);
+    changed.has_multicast_source = true;
+    changed.multicast_source.endpoint.port = 6001;
+    REQUIRE_EQ(fixture.listener.receive(changed).size, 0U);
+    changed = encode_then_decode(offer, 402).message;
+    changed.group_membership.group_id += 1;
+    REQUIRE_EQ(fixture.listener.receive(changed).size, 0U);
+    REQUIRE_EQ(fixture.listener.state(), HandshakeState::connected);
+}
+
+TEST(multicast_source_handshake_rejects_stripped_or_mismatched_announcements)
+{
+    for (unsigned mutation = 0; mutation < 7; ++mutation) {
+        SourceNegotiation fixture;
+        const auto reply = fixture.reply(fixture.offer());
+        auto message = encode_then_decode(reply, 401).message;
+        switch (mutation) {
+        case 0:
+            message.has_multicast_source = false;
+            break;
+        case 1:
+            message.multicast_source.kind = MulticastSourceKind::offer;
+            break;
+        case 2:
+            message.multicast_source.group_id += 1;
+            break;
+        case 3:
+            message.multicast_source.endpoint = IpEndpoint::ipv6_loopback(6000);
+            break;
+        case 4:
+            message.multicast_source.endpoint = IpEndpoint::any(6000);
+            break;
+        case 5:
+            message.has_multicast_dispatch = false;
+            break;
+        case 6:
+            message.has_group_membership = false;
+            break;
+        }
+        const auto result = fixture.caller.receive(message);
+        REQUIRE_EQ(result.values[0].kind, HandshakeActionKind::rejected);
+        REQUIRE(!fixture.caller.has_peer_multicast_source());
+        REQUIRE(!fixture.caller.has_peer_multicast_dispatch());
+    }
+}
+
+TEST(
+    multicast_source_datagram_rejects_duplicates_wrong_context_and_oversized_records)
+{
+    SourceNegotiation fixture;
+    const auto offer = fixture.offer();
+    const auto reply = fixture.reply(offer);
+    for (unsigned mutation = 0; mutation < 7; ++mutation) {
+        auto invalid = reply;
+        switch (mutation) {
+        case 0:
+            invalid.packet.extension_field &= ~handshake_extension_flag_config;
+            break;
+        case 1:
+            invalid.packet.request = HandshakeRequest::induction;
+            break;
+        case 2:
+            invalid.has_group_membership = false;
+            break;
+        case 3:
+            invalid.multicast_source.group_id += 1;
+            break;
+        case 4:
+            invalid.extension_type = HandshakeExtensionType::handshake_request;
+            break;
+        case 5:
+            invalid.has_multicast_dispatch = false;
+            break;
+        case 6:
+            invalid.packet.maximum_transmission_unit = 100;
+            break;
+        }
+        std::array<std::byte, 1500> bytes {};
+        REQUIRE(!encode_handshake_datagram(invalid, {}, 401, bytes));
+    }
+    std::array<std::byte, 1500> bytes {};
+    const auto encoded = encode_handshake_datagram(reply, {}, 401, bytes);
+    REQUIRE(encoded);
+    // A duplicate valid source record is still ambiguous and must be rejected.
+    const auto appended = encode_multicast_source(reply.multicast_source,
+        std::span {bytes}.subspan(encoded.bytes_written));
+    REQUIRE(appended);
+    REQUIRE(!decode_handshake_datagram(std::span {bytes}.first(
+        encoded.bytes_written + appended.bytes_written)));
+    // Mutate the source record's group independently of the legacy announcement.
+    REQUIRE(encode_handshake_datagram(reply, {}, 401, bytes));
+    bytes[encoded.bytes_written - multicast_source_content_size + 11] ^=
+        std::byte {1};
+    REQUIRE(!decode_handshake_datagram(
+        std::span {bytes}.first(encoded.bytes_written)));
+}
+
+TEST(multicast_source_handshake_invalid_configuration_fails_before_sending)
+{
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+        auto config = dispatch_caller_configuration(43);
+        config.require_multicast_source = true;
+        switch (mutation) {
+        case 0:
+            config.has_group_membership = false;
+            break;
+        case 1:
+            config.group_membership.type = GroupType::backup;
+            break;
+        case 2:
+            config.multicast_source = IpEndpoint::loopback(6000);
+            break;
+        case 3:
+            config.group_membership_policy.admit_multicast_dispatch = false;
+            break;
+        case 4:
+            config.congestion_controller = CongestionController::file;
+            break;
+        }
+        HandshakeMachine caller {config};
+        const auto result = caller.start();
+        REQUIRE_EQ(result.values[0].kind, HandshakeActionKind::failed);
+    }
+}
+
+TEST(multicast_source_handshake_ipv6_and_source_family_mismatch)
+{
+    SourceNegotiation fixture {true, true, IpEndpoint::ipv6_loopback(6000)};
+    const auto reply = fixture.reply(fixture.offer());
+    const auto decoded = encode_then_decode(reply, 401);
+    REQUIRE(decoded);
+    REQUIRE_EQ(fixture.caller.receive(decoded.message).values[0].kind,
+        HandshakeActionKind::connected);
+    REQUIRE_EQ(fixture.caller.peer_multicast_source().endpoint,
+        IpEndpoint::ipv6_loopback(6000));
+    SourceNegotiation mismatched {true, true, IpEndpoint::ipv6_loopback(6000)};
+    mismatched.provider.ipv6 = false;
+    const auto rejected =
+        encode_then_decode(mismatched.reply(mismatched.offer()), 401);
+    REQUIRE(rejected);
+    REQUIRE_EQ(mismatched.caller.receive(rejected.message).values[0].kind,
+        HandshakeActionKind::rejected);
+    REQUIRE(!mismatched.caller.has_peer_multicast_source());
+}
+
+TEST(multicast_source_handshake_authentication_confirmation_and_retry)
+{
+    SourceNegotiation fixture {true, true, IpEndpoint::loopback(6000), true};
+    const auto offer = fixture.offer();
+    const auto reply = fixture.reply(offer);
+    REQUIRE_EQ(fixture.listener.state(),
+        HandshakeState::awaiting_authentication_confirmation);
+    const auto duplicate = fixture.reply(offer);
+    REQUIRE_EQ(duplicate.multicast_source, reply.multicast_source);
+    const auto timer = fixture.listener.timeout();
+    REQUIRE_EQ(timer.values[0].multicast_source, reply.multicast_source);
+    auto changed = encode_then_decode(offer, 402).message;
+    changed.has_multicast_source = false;
+    REQUIRE_EQ(fixture.listener.receive(changed).size, 0U);
+    REQUIRE_EQ(fixture.caller.set_session_authentication(source_test_auth(2)),
+        Error::none);
+    const auto decoded = encode_then_decode(reply, 401);
+    REQUIRE(decoded);
+    const auto done = fixture.caller.receive(decoded.message);
+    REQUIRE_EQ(done.values[0].packet.request, HandshakeRequest::agreement);
+    REQUIRE(fixture.caller.has_peer_multicast_source());
+    // Source metadata belongs to CONCLUSION, not the authentication finish.
+    REQUIRE(!done.values[0].has_multicast_source);
+    const auto finish = encode_then_decode(done.values[0], 402);
+    REQUIRE(finish);
+    (void)fixture.listener.receive(finish.message);
+    REQUIRE_EQ(fixture.listener.state(), HandshakeState::connected);
+}
+
+TEST(
+    multicast_source_handshake_does_not_publish_source_on_authentication_rejection)
+{
+    SourceNegotiation fixture {true, true, IpEndpoint::loopback(6000), true};
+    const auto reply = fixture.reply(fixture.offer());
+    auto message = encode_then_decode(reply, 401).message;
+    message.has_session_authentication = false;
+    REQUIRE_EQ(fixture.caller.receive(message).values[0].kind,
+        HandshakeActionKind::rejected);
+    REQUIRE(!fixture.caller.has_peer_multicast_source());
+}
+
+TEST(multicast_source_datagram_preserves_legacy_bytes_and_exact_mtu_budget)
+{
+    SourceNegotiation legacy {false, false};
+    const auto legacy_reply = legacy.reply(legacy.offer());
+    SourceNegotiation selected;
+    const auto selected_reply = selected.reply(selected.offer());
+    std::array<std::byte, 1500> old_bytes {}, new_bytes {};
+    const auto old_encoded =
+        encode_handshake_datagram(legacy_reply, {}, 401, old_bytes);
+    const auto new_encoded =
+        encode_handshake_datagram(selected_reply, {}, 401, new_bytes);
+    REQUIRE(old_encoded);
+    REQUIRE(new_encoded);
+    REQUIRE_EQ(new_encoded.bytes_written - old_encoded.bytes_written,
+        extension_header_size + multicast_source_content_size);
+    REQUIRE(std::equal(old_bytes.begin(),
+        old_bytes.begin() + old_encoded.bytes_written, new_bytes.begin()));
+    auto exact = selected_reply;
+    exact.packet.maximum_transmission_unit =
+        static_cast<std::uint32_t>(new_encoded.bytes_written + 48);
+    REQUIRE(encode_handshake_datagram(exact, {}, 401,
+        std::span {new_bytes}.first(new_encoded.bytes_written)));
+    REQUIRE(!encode_handshake_datagram(exact, {}, 401,
+        std::span {new_bytes}.first(new_encoded.bytes_written - 1)));
+    REQUIRE(decode_handshake_datagram(
+        std::span {new_bytes}.first(new_encoded.bytes_written)));
+    // Mutate only the peer's advertised MTU in otherwise valid wire input.
+    std::fill_n(new_bytes.begin() + packet_header_size + 12, 4, std::byte {});
+    new_bytes[packet_header_size + 15] = std::byte {100};
+    REQUIRE(!decode_handshake_datagram(
+        std::span {new_bytes}.first(new_encoded.bytes_written)));
+    --exact.packet.maximum_transmission_unit;
+    REQUIRE(!encode_handshake_datagram(exact, {}, 401, new_bytes));
+}
+
+TEST(multicast_source_listener_rejects_missing_or_invalid_configured_source)
+{
+    for (const auto source : {IpEndpoint {}, IpEndpoint::any(6000),
+             IpEndpoint::loopback(), IpEndpoint::ipv6_loopback(6000, 5)}) {
+        SourceNegotiation fixture {true, true, source};
+        const auto start =
+            encode_then_decode(fixture.caller.start().values[0], 0);
+        REQUIRE(start);
+        const auto result = fixture.listener.receive(start.message);
+        REQUIRE_EQ(result.values[0].kind, HandshakeActionKind::failed);
+        REQUIRE_EQ(fixture.provider.calls, 0);
+    }
 }

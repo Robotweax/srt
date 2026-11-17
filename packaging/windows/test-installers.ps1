@@ -97,8 +97,8 @@ try {
     New-Item -ItemType Directory "$Root/older" -Force | Out-Null
     # Immutable, signed, real earlier SDKs: verifies migration from released inventory.
     $OlderHashes = @{
-        openssl='644574ee4f76058cd9125f7ea8617a425f12b3f48ac94d56344a28557de259fa'
-        bcrypt='5c06888bf60c5ffeaa84ae084a8393020292ba587b46e0d2ca300218a179b26c'
+        openssl='ad1998a27cd6e6136111ab024eb450cc666bc7911f2284fd9aae4ed1fbb5aff5'
+        bcrypt='5b1af8638c0bc04622a9cd185e4e10ebf9739f977d4e375f26f15771497f0fa9'
     }
     foreach ($Backend in 'openssl','bcrypt') {
         if ([Environment]::GetEnvironmentVariable(('ROBOTWEAX_SRT_' + $Backend.ToUpperInvariant()),'Machine')) { throw 'Run installer qualification on a fresh Windows host' }
@@ -106,8 +106,8 @@ try {
         if ($Matches.Count -ne 1) { throw "Expected one $Backend installer" }
         $Executables[$Backend] = $Matches[0].FullName
         $Paths[$Backend] = Join-Path $Root $Backend
-        $Older = "$Root/older/robotweax-srt-0.3.1-windows-sdk-$Backend.exe"
-        Invoke-WebRequest "https://github.com/Robotweax/srt/releases/download/v0.3.1/robotweax-srt-0.3.1-windows-sdk-$Backend.exe" -OutFile $Older
+        $Older = "$Root/older/robotweax-srt-0.3.2-windows-sdk-$Backend.exe"
+        Invoke-WebRequest "https://github.com/Robotweax/srt/releases/download/v0.3.2/robotweax-srt-0.3.2-windows-sdk-$Backend.exe" -OutFile $Older
         if ((Get-FileHash $Older).Hash.ToLowerInvariant() -cne $OlderHashes[$Backend]) { throw 'Earlier SDK release digest mismatch' }
         if ((Get-AuthenticodeSignature $Older).Status -ne 'Valid') { throw 'Earlier SDK signature is invalid' }
         $OlderExecutables[$Backend] = $Older

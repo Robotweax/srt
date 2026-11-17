@@ -1,6 +1,15 @@
 #include "test.hpp"
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdio>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #include "robotweax/srt/timing.hpp"
+#include "compat/platform_timer.hpp"
 #include "compat/submillisecond_pacing_platform.hpp"
 
 using namespace robotweax::srt;
@@ -410,4 +419,73 @@ TEST(control_timer_cadence_change_retains_data_send_anchor_and_clamps_zero)
     timer.set_keepalive_interval(0);
     REQUIRE_EQ(timer.poll(600'000).size, 0U);
     REQUIRE_EQ(timer.poll(600'001).size, 1U);
+}
+
+// Not a pass/fail timing check: it reports what a short sleep and a short
+// timed wait really take on this host, first as the process finds it and then
+// while a PlatformTimerResolution is held, as the runtime scheduler holds one.
+// Hosted Windows runners took about 14 ms for a 100 us or 1 ms wait at the
+// default timer period. The only requirement is that a sleep or timed-out
+// wait never returns early.
+TEST(platform_timing_report_measures_short_sleeps_and_timed_waits)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto report = [](const char* phase, const char* kind,
+                            std::chrono::microseconds asked,
+                            std::vector<std::int64_t> taken) {
+        std::sort(taken.begin(), taken.end());
+        std::int64_t sum = 0;
+        for (const auto value : taken)
+            sum += value;
+        REQUIRE(!taken.empty());
+        REQUIRE(taken.front() >= asked.count());
+        std::fprintf(stderr,
+            "[PLATFORM_TIMING] phase=%s kind=%s asked_us=%lld samples=%zu "
+            "min_us=%lld median_us=%lld mean_us=%lld max_us=%lld\n",
+            phase, kind, static_cast<long long>(asked.count()), taken.size(),
+            static_cast<long long>(taken.front()),
+            static_cast<long long>(taken[taken.size() / 2]),
+            static_cast<long long>(
+                sum / static_cast<std::int64_t>(taken.size())),
+            static_cast<long long>(taken.back()));
+    };
+    const auto elapsed = [](Clock::time_point start) {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+            Clock::now() - start)
+            .count();
+    };
+    std::mutex mutex;
+    std::condition_variable wake;
+    const auto measure = [&](const char* phase) {
+        for (const auto asked :
+            {std::chrono::microseconds {100}, std::chrono::microseconds {1000},
+                std::chrono::microseconds {2000},
+                std::chrono::microseconds {10000}}) {
+            const std::size_t samples = asked.count() >= 10000 ? 30 : 100;
+            std::vector<std::int64_t> slept, waited;
+            for (std::size_t i = 0; i < samples; ++i) {
+                auto start = Clock::now();
+                std::this_thread::sleep_for(asked);
+                slept.push_back(elapsed(start));
+                std::unique_lock lock(mutex);
+                start = Clock::now();
+                // Nothing notifies: the predicate keeps the wait going through a
+                // spurious wake until the timeout.
+                (void)wake.wait_for(lock, asked, [] {
+                    return false;
+                });
+                waited.push_back(elapsed(start));
+            }
+            report(phase, "sleep_for", asked, std::move(slept));
+            report(phase, "wait_for", asked, std::move(waited));
+        }
+    };
+    measure("default");
+    {
+        const compat::PlatformTimerResolution resolution;
+        std::fprintf(stderr, "[PLATFORM_TIMING] phase=held finer_period=%d\n",
+            resolution.held() ? 1 : 0);
+        measure("held");
+    }
+    std::fflush(stderr);
 }

@@ -1,13 +1,13 @@
 # Known limitations
 
-Robotweax SRT 0.3.2 is a pre-1.0 release, with an explicit
+Robotweax SRT 0.3.3 is a pre-1.0 release, with an explicit
 support boundary. This document summarizes limits that application developers
 and integrators should account for. Unsupported operations are intended to fail
 with defined errors rather than being silently approximated.
 
 ## Version and ABI boundaries
 
-- The project version is 0.3.2 and the shared-library ABI line is 0.3.
+- The project version is 0.3.3 and the shared-library ABI line is 0.3.
 - Binary compatibility with the 0.1 or 0.2 ABI is not promised. Rebuild applications
   and dependencies against the 0.3 package.
 - The default compatible API target and `srt_getversion()` value are 1.5.7;
@@ -78,6 +78,18 @@ those generations remain in the history. A captured KM announcement older than
 both histories is indistinguishable from a fresh announcement and can install
 an old key and disrupt reception. Recovery at the next rotation is not guaranteed. See
 [Encryption and key rotation](encryption.md) for the bounded rollback rules.
+
+Delayed DATA that arrives after the announcement replacing its key selector is
+routed by accepted sequence position. If a receiver accepts nothing of an
+entire companion generation, the first packets of the replacement generation
+are ambiguous with late packets of the retired generation. AES-GCM resolves
+this by verifying the tag against the generations the position rules still
+allow; AES-CTR cannot and applies a documented policy until one
+companion-generation packet is accepted or the companion generation is itself
+retired, so the packets routed before that, at most one key generation, can
+decrypt to wrong bytes without an error. A retired generation is never used once the frontier has advanced half
+the sequence space past its retirement; the receiver relies on the sender
+rotating keys within that distance, as the default refresh rate does.
 
 Control packets, including KM, ACK, NAK, DROPREQ and KEEPALIVE, are not
 authenticated by the protocol. AES-CTR provides payload confidentiality only;
