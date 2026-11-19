@@ -12,6 +12,17 @@ from process_support import Process, ports
 from test_multicast import wait_event, Collector
 
 
+def validate_path_recovery(modes):
+    # Overlap is provisional: an automatic return can fall back to unicast
+    # before a later attempt commits multicast. Count changes of stable mode,
+    # not repeated unicast observations separated by an aborted overlap.
+    stable = []
+    for mode in modes:
+        if mode != 'overlap' and (not stable or stable[-1] != mode):
+            stable.append(mode)
+    assert stable[:4] == ['unicast', 'multicast', 'unicast', 'multicast'], modes
+
+
 def run(binary, crypto, latency):
     base = ports(6)
     common = ['--endpoint', f'127.0.0.1:{base}', '--interface', '127.0.0.1',
@@ -57,8 +68,7 @@ def run(binary, crypto, latency):
                 events = receiver.finish()
                 modes = [e['mode'] for e in events if e.get('event') == 'hybrid_path']
                 # Initial authenticated UC -> MC, outage -> UC, recovery -> MC.
-                stable = [mode for mode in modes if mode != 'overlap']
-                assert stable[:4] == ['unicast', 'multicast', 'unicast', 'multicast'], modes
+                validate_path_recovery(modes)
                 recorded = (root / ('alice.ts' if index == 0 else 'bob.ts')).read_bytes()
                 assert len(recorded) % 1316 == 0
                 got = [recorded[i:i+1316] for i in range(0, len(recorded), 1316)]
