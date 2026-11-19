@@ -4,8 +4,31 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
-## Unreleased
+## 0.3.4 — Epoll Wake, Setup Hardening and Experimental Profiles
 
+See the [release notes](docs/release-notes-0.3.4.md) for upgrade behavior and limits.
+
+- Bound retained connection-group members, pending and connected together, by
+  the build-time `ROBOTWEAX_SRT_MAX_GROUP_MEMBERS` (default 64). Validate setup
+  input before cryptographic or metadata state changes and ignore unrelated
+  setup packets, preserving Haivision induction-to-conclusion socket-ID changes
+  and early rejections. File receive keeps one handle across waits and delayed
+  truncation and rejects a final symbolic link or reparse point.
+- Schedule successful hybrid freshness refreshes from the confirmation origin
+  instead of reply receipt, so delayed valid replies no longer let a confirmed
+  policy expire between refreshes. Failed and denied operations keep their
+  receipt-based backoff.
+- A channel with buffered DATA and no datagram for 20 ms now waits for its
+  earliest protocol deadline, capped at 10 ms, instead of polling every 2 ms.
+  Denser traffic, a pending key exchange and due deadlines keep the 2 ms poll.
+  Per-packet hot paths drop redundant zero-fills and a per-byte overlap test.
+  `ROBOTWEAX_SRT_ENABLE_LTO` is a new opt-in build option.
+- Add default-off experimental Linux UDP batching:
+  `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_BATCHING` uses `recvmmsg` and
+  `sendmmsg`, and `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION` adds
+  `UDP_SEGMENT`. Selection is compile-time only; FEC, filter, group and
+  experimental-controller connections keep the direct path. See the
+  [UDP I/O backend draft](docs/udp-io-backends.md).
 - Add `robotweax_srt_epoll_wake`, an additive extension that ends one wait on
   an epoll instance from another thread. The wake is sticky and coalescing, a
   wait with events still reports them first, and no descriptor or system-socket

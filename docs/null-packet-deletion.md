@@ -1,10 +1,10 @@
 # Null packet deletion (draft contract)
 
-**Status: experimental implementation on `dev/null-packet-deletion`.** NPD is
+**Status: experimental implementation, first included in release 0.3.4.** NPD is
 available through the private options below, default OFF. Codec, socket policy,
 Caller/Listener negotiation, encrypted DATA, FEC, retransmission, pacing input
 accounting and counters are integrated. Identifiers remain provisional and
-unregistered. This is not a released feature or a RIST compatibility claim.
+unregistered. This is not a supported feature or a RIST compatibility claim.
 
 **Identifier change.** Release 0.3.3 assigned `0x7f15`, `0x01000018` and
 `0x01000019` to fixed-source multicast. When this branch was brought up to that
@@ -23,9 +23,9 @@ built from each pinned reference showed its accepted connection ending 2 ms
 after acceptance on the caller's SHUTDOWN. The Linux container and Network Lab
 records have not been repeated with the new values.
 
-Development remains on the feature branch. Merging to `main` requires explicit
-maintainer approval after feature completion. Remaining release qualification
-includes deployed MPEG-TS corpora, physical-network pacing measurements, and
+The implementation was merged to `main` with maintainer approval on 19 November
+2026 and ships in 0.3.4 as an experimental option. Qualification that remains
+before any support claim includes deployed MPEG-TS corpora, physical-network pacing measurements, and
 the broader loss/reordering, rotation and retransmission combinations listed below.
 
 Null packet deletion (NPD) removes MPEG-TS null packets from live payloads at
