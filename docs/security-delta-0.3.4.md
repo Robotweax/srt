@@ -84,16 +84,18 @@ it does not extend the supported security profile of any experimental feature.
 ## Observations and their disposition
 
 These were found by reading. Four are corrected in the commit that follows the
-inspected revision; the first is documented and remains open.
+inspected revision; the first is accepted as a documented limit.
 
-1. Open, documented. Peer authentication, option on: listener admission is
+1. Accepted as a documented limit. Peer authentication, option on: listener admission is
    serialised, and the serialisation predates this delta. A caller that passes
    the cookie exchange, names a pinned key identifier, which is public, and
    never sends its third message holds the listener's single pending slot until
    the connection timeout (3 seconds by default) or the retry limit. Other
    admissions on that listener wait meanwhile. The
    [draft contract](peer-authentication.md) now lists this as a known limit. A
-   correction changes the listener's setup pipeline and needs a design decision.
+   correction changes the listener's setup pipeline that ordinary connections
+   also use. The maintainer accepted the limit for the experimental, default-off
+   0.3.4 profile on 19 November 2026; no mitigation is implemented.
 2. Corrected. In a default build, setting the peer-authentication policy, key
    or trusted-key option on a listening or connected socket returned
    `SRT_ECONNSOCK` because the state check ran first. The state check now

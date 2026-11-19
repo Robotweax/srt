@@ -769,15 +769,16 @@ The response record is 96 bytes larger than the offer record, and M2 is sent
 only to an address that returned a cookie, so the exchange adds no useful
 amplification.
 
-*Open, known limit:* a listener completes one setup at a time, and a pending
+*Known limit, accepted for 0.3.4:* a listener completes one setup at a time, and a pending
 peer-authentication child holds that slot until its third message arrives or
 its deadline (`SRTO_CONNTIMEO`, 3 seconds by default) passes. A caller that
 passes the cookie exchange, names a pinned key identifier, which is public, and
 then stays silent therefore delays every other admission on that listener,
 INDUCTION included, for that time, and can repeat it. Established connections
-are not affected. The serial setup slot predates peer authentication; no
-mitigation is implemented yet and the choice between a shorter proof deadline
-and several concurrent pending children needs a decision.
+are not affected. The serial setup slot predates peer authentication. The
+maintainer accepted this on 19 November 2026 as a documented limit of the
+experimental 0.3.4 profile; no mitigation is implemented. *Open* for a later
+version: a shorter proof deadline, or several concurrent pending children.
 
 *Open:* whether public-key admissions should draw from their own budget
 instance or cost more than one token. At 64 admissions per second the work is
