@@ -286,7 +286,12 @@ bool HandshakeMachine::accepts_multicast_source_offer(
 HandshakeActions HandshakeMachine::start() noexcept
 {
     HandshakeActions actions;
-    if (!valid_standby_rtt_configuration()
+    if ((configuration_.require_npd
+            && (configuration_.has_group_membership
+                || configuration_.congestion_controller
+                    != CongestionController::live
+                || buffer_mode(configuration_.extension_parameters)))
+        || !valid_standby_rtt_configuration()
         || !valid_multicast_source_configuration()
         || state_ != HandshakeState::idle
         || configuration_.role != ConnectionRole::caller
@@ -448,6 +453,13 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             if (message.has_standby_rtt != configuration_.require_standby_rtt
                 || (message.has_standby_rtt && message.standby_rtt != expected))
                 return actions;
+            if (configuration_.require_npd
+                && (!message.has_npd || !message.npd_valid
+                    || message.has_group_membership
+                    || configuration_.congestion_controller
+                        != CongestionController::live
+                    || buffer_mode(message.extension_parameters)))
+                return actions;
             if (message.has_path_identifier
                     != configuration_.require_path_identifier
                 || (message.has_path_identifier
@@ -541,6 +553,13 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                         || message.session_authentication.caller_nonce
                             != configuration_.session_authentication
                                 .caller_nonce)))
+                return reject(rogue_rejection_reason);
+            if (configuration_.require_npd
+                && (!message.has_npd || !message.npd_valid
+                    || message.has_group_membership
+                    || configuration_.congestion_controller
+                        != CongestionController::live
+                    || buffer_mode(message.extension_parameters)))
                 return reject(rogue_rejection_reason);
             if (message.has_path_identifier
                     != configuration_.require_path_identifier
@@ -729,7 +748,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                     != CongestionController::live;
             if (has_congestion_extension || negotiated_packet_filter_.enabled
                 || has_local_group_response_
-                || configuration_.require_standby_rtt) {
+                || configuration_.require_standby_rtt
+                || configuration_.require_npd) {
                 response.extension_field |= 4U;
             }
             state_ = configuration_.require_session_authentication
@@ -763,6 +783,7 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .standby_rtt = standby_rtt_identity_,
                 .implementation_identity =
                     configuration_.implementation_identity,
+                .has_npd = configuration_.require_npd,
             });
             if (configuration_.require_session_authentication) {
                 auto& response_action = actions.values[0];
@@ -788,6 +809,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 return actions;
             if (incoming.version != handshake_version_5
                 || incoming.socket_id != peer_socket_id_
+                || (configuration_.require_npd
+                    && (!message.has_npd || !message.npd_valid))
                 || message.has_path_identifier
                     != configuration_.require_path_identifier
                 || (message.has_path_identifier
@@ -810,7 +833,8 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                            != CongestionController::live
                        || negotiated_packet_filter_.enabled
                        || has_local_group_response_
-                       || configuration_.require_standby_rtt)
+                       || configuration_.require_standby_rtt
+                       || configuration_.require_npd)
                         ? 4U
                         : 0U);
             actions.push({
@@ -842,6 +866,7 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .standby_rtt = standby_rtt_identity_,
                 .implementation_identity =
                     configuration_.implementation_identity,
+                .has_npd = configuration_.require_npd,
             });
             return actions;
         }
@@ -860,16 +885,16 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
             retry_count_ = 0;
             auto conclusion = base_packet(HandshakeRequest::conclusion);
             conclusion.syn_cookie = cookie_;
-            conclusion.extension_field =
-                1U | (configuration_.key_material_request.size != 0U
-                    ? 2U : 0U)
+            conclusion.extension_field = 1U
+                | (configuration_.key_material_request.size != 0U ? 2U : 0U)
                 | ((configuration_.congestion_controller
-                            != CongestionController::live
-                        || !configuration_.stream_id.empty()
-                        || configuration_
-                            .packet_filter_configuration.enabled
-                        || configuration_.has_group_membership)
-                    ? 4U : 0U);
+                           != CongestionController::live
+                       || !configuration_.stream_id.empty()
+                       || configuration_.packet_filter_configuration.enabled
+                       || configuration_.has_group_membership
+                       || configuration_.require_npd)
+                        ? 4U
+                        : 0U);
             state_ = HandshakeState::awaiting_conclusion_response;
             actions.push({
                 .kind = HandshakeActionKind::send,
@@ -901,6 +926,7 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 .standby_rtt = {.caller = configuration_.standby_rtt_nonce},
                 .implementation_identity =
                     configuration_.implementation_identity,
+                .has_npd = configuration_.require_npd,
             });
             if (configuration_.require_session_authentication) {
                 actions.values[0].packet.extension_field |=
@@ -1021,6 +1047,17 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 });
                 return actions;
             }
+            if (configuration_.require_npd
+                && (!message.has_npd || !message.npd_valid
+                    || message.has_group_membership
+                    || configuration_.congestion_controller
+                        != CongestionController::live
+                    || buffer_mode(message.extension_parameters))) {
+                // This CONCLUSION answered the caller's cookie, so the
+                // listener has admitted a connection the caller now abandons.
+                admitted_peer_after_npd_rejection_ = incoming.socket_id;
+                return reject_locally(rogue_rejection_reason);
+            }
             if (message.has_path_identifier
                     != configuration_.require_path_identifier
                 || (message.has_path_identifier
@@ -1117,6 +1154,7 @@ HandshakeActions HandshakeMachine::receive(const HandshakeMessage& message) noex
                 session_confirmation_.packet.syn_cookie = cookie_;
                 session_confirmation_.packet.extension_field =
                     handshake_extension_flag_config;
+                session_confirmation_.has_npd = configuration_.require_npd;
                 session_confirmation_.has_session_authentication = true;
                 session_confirmation_.session_authentication =
                     configuration_.session_authentication;
@@ -1165,16 +1203,16 @@ HandshakeActions HandshakeMachine::timeout() noexcept
         && state_ == HandshakeState::awaiting_conclusion_response) {
         auto conclusion = base_packet(HandshakeRequest::conclusion);
         conclusion.syn_cookie = cookie_;
-        conclusion.extension_field =
-            1U | (configuration_.key_material_request.size != 0U
-                ? 2U : 0U)
+        conclusion.extension_field = 1U
+            | (configuration_.key_material_request.size != 0U ? 2U : 0U)
             | ((configuration_.congestion_controller
-                        != CongestionController::live
-                    || !configuration_.stream_id.empty()
-                    || configuration_
-                        .packet_filter_configuration.enabled
-                    || configuration_.has_group_membership)
-                ? 4U : 0U);
+                       != CongestionController::live
+                   || !configuration_.stream_id.empty()
+                   || configuration_.packet_filter_configuration.enabled
+                   || configuration_.has_group_membership
+                   || configuration_.require_npd)
+                    ? 4U
+                    : 0U);
         actions.push({
             .kind = HandshakeActionKind::send,
             .packet = conclusion,
@@ -1204,6 +1242,7 @@ HandshakeActions HandshakeMachine::timeout() noexcept
             .has_standby_rtt = configuration_.require_standby_rtt,
             .standby_rtt = {.caller = configuration_.standby_rtt_nonce},
             .implementation_identity = configuration_.implementation_identity,
+            .has_npd = configuration_.require_npd,
         });
     } else if (configuration_.role == ConnectionRole::listener
         && state_ == HandshakeState::awaiting_authentication_confirmation) {

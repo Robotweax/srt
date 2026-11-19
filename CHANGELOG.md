@@ -29,7 +29,11 @@ version returned by `srt_getversion()`.
   `SRT_ECONNREJ` with the listener's reason instead of `SRT_ESECFAIL`, except
   for UNSECURE; P-256 operations no longer leave entries in the calling
   thread's OpenSSL error queue; the socket options moved to
-  `0x0100001b`-`0x0100001f`.
+  `0x0100001d`-`0x01000021`.
+- Add default-OFF experimental MPEG-TS null packet deletion for individual Live
+  Caller/Listener sockets, with strict negotiation, encrypted DATA/FEC support
+  and private cumulative counters. See the [NPD contract](docs/null-packet-deletion.md)
+  for provisional identifiers, validation evidence and remaining release scope.
 
 ## 0.3.3 — Hybrid Multicast and Transport Hardening
 

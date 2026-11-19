@@ -814,11 +814,11 @@ without the [build option](#build-option):
 
 | Option | Contract |
 | --- | --- |
-| `SRTO_ROBOTWEAX_PEERAUTH_POLICY` (`0x0100001b`) | PRE `int32_t`, default OFF: OFF or REQUIRED; inherited by accepted sockets; a listen callback may override it on the provisional child |
-| `SRTO_ROBOTWEAX_PEERAUTH_KEY` (`0x0100001c`) | PRE, write-only: the local identity private key, a 32-byte big-endian P-256 scalar; erased on close |
-| `SRTO_ROBOTWEAX_PEERAUTH_TRUSTED` (`0x0100001d`) | PRE: one to sixteen pinned peer public keys, 64 bytes each, concatenated; setting replaces the set; a listen callback may replace it on the provisional child |
-| `SRTO_ROBOTWEAX_PEERAUTH_OFFERED` (`0x0100001e`) | Read-only in a listen callback: the 32-byte key identifier the caller claims, not yet authenticated |
-| `SRTO_ROBOTWEAX_PEERAUTH_PEER` (`0x0100001f`) | Read-only on a connected socket: the 64-byte public key the peer authenticated with |
+| `SRTO_ROBOTWEAX_PEERAUTH_POLICY` (`0x0100001d`) | PRE `int32_t`, default OFF: OFF or REQUIRED; inherited by accepted sockets; a listen callback may override it on the provisional child |
+| `SRTO_ROBOTWEAX_PEERAUTH_KEY` (`0x0100001e`) | PRE, write-only: the local identity private key, a 32-byte big-endian P-256 scalar; erased on close |
+| `SRTO_ROBOTWEAX_PEERAUTH_TRUSTED` (`0x0100001f`) | PRE: one to sixteen pinned peer public keys, 64 bytes each, concatenated; setting replaces the set; a listen callback may replace it on the provisional child |
+| `SRTO_ROBOTWEAX_PEERAUTH_OFFERED` (`0x01000020`) | Read-only in a listen callback: the 32-byte key identifier the caller claims, not yet authenticated |
+| `SRTO_ROBOTWEAX_PEERAUTH_PEER` (`0x01000021`) | Read-only on a connected socket: the 64-byte public key the peer authenticated with |
 
 REQUIRED without a private key, with an empty pinned set or without AES-GCM
 fails connect or listen with `SRT_ESECFAIL`. A malformed key or a public key that is not on the

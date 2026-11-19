@@ -116,9 +116,10 @@ template <typename Value>
 [[nodiscard]] constexpr bool is_pre_connection(
     SRT_SOCKOPT option) noexcept
 {
-    return option == SRTO_FC || option == SRTO_RENDEZVOUS
-        || option == SRTO_CONNTIMEO || option == SRTO_PEERIDLETIMEO
-        || option == SRTO_PASSPHRASE || option == SRTO_PBKEYLEN
+    return option == SRTO_ROBOTWEAX_NPD_POLICY || option == SRTO_FC
+        || option == SRTO_RENDEZVOUS || option == SRTO_CONNTIMEO
+        || option == SRTO_PEERIDLETIMEO || option == SRTO_PASSPHRASE
+        || option == SRTO_PBKEYLEN
 #ifdef ENABLE_AEAD_API_PREVIEW
         || option == SRTO_CRYPTOMODE
 #endif
@@ -398,6 +399,16 @@ int get_socket_option(
             static_cast<std::int32_t>(socket.peer_srt_version));
     case SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT:
         return write_value(value, value_size, options.identity_advertisement);
+    case SRTO_ROBOTWEAX_NPD_STATS: {
+        const auto snapshot = socket.runtime
+            ? socket.runtime->npd_statistics()
+            : ROBOTWEAX_SRT_NPD_STATS_V1 {.abi_version = 1,
+                  .active = 0,
+                  .deleted_units = 0,
+                  .restored_units = 0,
+                  .malformed_payloads = 0};
+        return write_value(value, value_size, snapshot);
+    }
     case SRTO_ROBOTWEAX_PEER_IDENTITY: {
         const auto& identity = socket.listen_callback_active
             ? socket.incoming_peer_identity
@@ -535,6 +546,8 @@ int get_socket_option(
         return write_value(value, value_size, options.standby_rtt_required);
     case SRTO_ROBOTWEAX_PATHID_REQUIRED:
         return write_value(value, value_size, options.path_identifier_required);
+    case SRTO_ROBOTWEAX_NPD_POLICY:
+        return write_value(value, value_size, options.npd_policy);
     case SRTO_ROBOTWEAX_STANDBYRTT_POLICY:
         return write_value(value, value_size,
             extension_policy(
@@ -1148,6 +1161,10 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         return 0;
     }
     case SRTO_MESSAGEAPI: {
+        bool npd_message = false;
+        if (options.npd_policy != ROBOTWEAX_SRT_EXTENSION_OFF
+            && (!read_boolean(value, value_size, npd_message) || !npd_message))
+            return invalid_parameter();
         bool parsed = false;
         if (!read_boolean(value, value_size, parsed)
             || (!parsed && standby_rtt_enabled(options))) {
@@ -1181,7 +1198,8 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             && parse_congestion_controller(name, selected_controller)
             && is_experimental_congestion_controller(selected_controller))
             return invalid_parameter();
-        if (standby_rtt_enabled(options)) {
+        if (standby_rtt_enabled(options)
+            || options.npd_policy != ROBOTWEAX_SRT_EXTENSION_OFF) {
             SocketOptions selected = socket.native_options;
             if (selected.set_congestion_controller(name) != Error::none
                 || selected.congestion_controller()
@@ -1217,7 +1235,8 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
                 && parsed != static_cast<std::int32_t>(SRTT_CONTROL))) {
             return invalid_parameter();
         }
-        if ((path_identifier_enabled(options) || standby_rtt_enabled(options))
+        if ((path_identifier_enabled(options) || standby_rtt_enabled(options)
+                || options.npd_policy != ROBOTWEAX_SRT_EXTENSION_OFF)
             && parsed != static_cast<std::int32_t>(SRTT_LIVE))
             return invalid_parameter();
         SocketOptions selected = socket.native_options;
@@ -1290,6 +1309,10 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         const std::string_view configuration{
             static_cast<const char*>(value),
             static_cast<std::size_t>(value_size)};
+        if (options.npd_policy != ROBOTWEAX_SRT_EXTENSION_OFF
+            && (configuration.starts_with("rwx-")
+                || configuration == sensor_profile_filter_v1))
+            return invalid_parameter();
         if (configuration.starts_with("rwx-")
             && (options.group_connect || socket.group_id != SRT_INVALID_SOCK))
             return invalid_parameter();
@@ -1337,6 +1360,10 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         return 0;
     }
     case SRTO_RENDEZVOUS: {
+        bool npd_conflict = false;
+        if (options.npd_policy != ROBOTWEAX_SRT_EXTENSION_OFF
+            && (!read_boolean(value, value_size, npd_conflict) || npd_conflict))
+            return invalid_parameter();
         bool parsed = false;
         if (!read_boolean(value, value_size, parsed)) {
             return invalid_parameter();
@@ -1356,6 +1383,10 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         return 0;
     }
     case SRTO_GROUPCONNECT: {
+        bool npd_conflict = false;
+        if (options.npd_policy != ROBOTWEAX_SRT_EXTENSION_OFF
+            && (!read_boolean(value, value_size, npd_conflict) || npd_conflict))
+            return invalid_parameter();
         bool parsed = false;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
         if (socket.native_options.peer_authentication_required()
@@ -1468,6 +1499,8 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     case SRTO_ROBOTWEAX_MCAST_GROUP:
     case SRTO_ROBOTWEAX_MCAST_IFACE: {
         const bool group = option == SRTO_ROBOTWEAX_MCAST_GROUP;
+        if (group && options.npd_policy != ROBOTWEAX_SRT_EXTENSION_OFF)
+            return invalid_parameter();
         IpEndpoint endpoint;
         // The independent-source profile freezes its network options at
         // bind, like every pre-bind option: a bound socket reports that, not
@@ -1545,6 +1578,36 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
             return invalid_parameter();
         options.path_identifier_required = parsed;
         options.path_identifier_if_offered = false;
+        return 0;
+    }
+    case SRTO_ROBOTWEAX_NPD_POLICY: {
+        std::int32_t parsed = 0;
+        if (socket.group_id != SRT_INVALID_SOCK) {
+            set_last_error(SRT_EINVOP);
+            return SRT_ERROR;
+        }
+        if ((socket.state != SRTS_INIT && socket.state != SRTS_OPENED)
+            || socket.listen_callback_active
+            || !read_value(value, value_size, parsed)
+            || parsed < ROBOTWEAX_SRT_EXTENSION_OFF
+            || parsed > ROBOTWEAX_SRT_EXTENSION_IF_OFFERED
+            || (parsed != ROBOTWEAX_SRT_EXTENSION_OFF
+                && (options.rendezvous || options.group_connect
+                    || options.multicast_group_set
+                    || options.transmission_type != SRTT_LIVE
+                    || !options.message_api
+                    || socket.native_options.congestion_controller()
+                        != CongestionController::live
+                    || socket.native_options.packet_filter_configuration()
+                        .experimental())))
+            return invalid_parameter();
+        if (socket.native_options.reserve_npd_prefix(
+                parsed != ROBOTWEAX_SRT_EXTENSION_OFF)
+            != Error::none)
+            return invalid_parameter();
+        options.npd_policy = parsed;
+        options.maximum_payload_size = static_cast<std::int32_t>(
+            socket.native_options.maximum_payload_size());
         return 0;
     }
     case SRTO_ROBOTWEAX_STANDBYRTT_POLICY:
@@ -1697,6 +1760,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
     case SRTO_PEERVERSION:
     case SRTO_GROUPTYPE:
     case SRTO_ROBOTWEAX_PEER_HANDSHAKE:
+    case SRTO_ROBOTWEAX_NPD_STATS:
     case SRTO_ROBOTWEAX_PEER_IDENTITY:
     case SRTO_KMSTATE:
     case SRTO_SNDKMSTATE:

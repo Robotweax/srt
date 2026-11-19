@@ -164,6 +164,8 @@ struct HandshakeAction {
     bool has_peer_authentication = false;
     PeerAuthenticationContent peer_authentication {};
 #endif
+    bool has_npd = false;
+    bool npd_valid = true;
 };
 
 struct HandshakeActions {
@@ -222,6 +224,8 @@ struct HandshakeMessage {
     // a proof transcript from decoded fields or omit unknown extensions.
     PeerAuthenticationPayload peer_authentication_payload {};
 #endif
+    bool has_npd = false;
+    bool npd_valid = true;
 };
 
 using GroupMembershipNegotiator = bool (*)(
@@ -287,6 +291,7 @@ public:
         // generation-checked ingress binding before selecting this profile.
         bool require_multicast_source = false;
         IpEndpoint multicast_source {};
+        bool require_npd = false;
     };
 
     explicit HandshakeMachine(Configuration configuration) noexcept;
@@ -333,6 +338,13 @@ public:
     [[nodiscard]] int rejection_reason() const noexcept
     {
         return rejection_reason_;
+    }
+    // Socket ID of a listener whose CONCLUSION response a REQUIRED NPD caller
+    // rejected locally, or zero. That listener holds an admitted connection.
+    [[nodiscard]] std::uint32_t
+    admitted_peer_after_npd_rejection() const noexcept
+    {
+        return admitted_peer_after_npd_rejection_;
     }
     [[nodiscard]] bool has_negotiated_packet_filter() const noexcept
     {
@@ -407,6 +419,7 @@ private:
     HandshakeAction session_challenge_ {}, session_confirmation_ {};
     HandshakeState state_ = HandshakeState::idle;
     std::uint32_t peer_socket_id_ = 0;
+    std::uint32_t admitted_peer_after_npd_rejection_ = 0;
     std::uint32_t peer_flow_window_ = 0;
     std::uint32_t cookie_ = 0;
     std::uint32_t retry_count_ = 0;

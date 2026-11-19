@@ -3702,3 +3702,46 @@ TEST(peer_auth_transport_adapter_uses_connection_timestamp_origin)
     REQUIRE(repeated);
     REQUIRE_EQ(repeated.control.timestamp.value(), 1100000U);
 }
+
+TEST(peer_auth_public_npd_bidirectional_round_trip)
+{
+    for (const int listener_policy : {ROBOTWEAX_SRT_EXTENSION_REQUIRED,
+             ROBOTWEAX_SRT_EXTENSION_IF_OFFERED}) {
+        PublicPeerSockets sockets;
+        const int required = ROBOTWEAX_SRT_EXTENSION_REQUIRED;
+        REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_ROBOTWEAX_NPD_POLICY,
+                       &required, sizeof(required)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(sockets.listener, SRTO_ROBOTWEAX_NPD_POLICY,
+                       &listener_policy, sizeof(listener_policy)),
+            0);
+        sockets.listen();
+        REQUIRE_EQ(sockets.connect(), 0);
+        sockets.child = srt_accept(sockets.listener, nullptr, nullptr);
+        REQUIRE(sockets.child != SRT_INVALID_SOCK);
+        std::array<char, 188> payload {};
+        payload.fill(static_cast<char>(0xff));
+        payload[0] = 0x47;
+        payload[1] = 0x1f;
+        payload[2] = static_cast<char>(0xff);
+        payload[3] = 0x10;
+        for (const auto sender : {sockets.caller, sockets.child}) {
+            const auto receiver =
+                sender == sockets.caller ? sockets.child : sockets.caller;
+            REQUIRE_EQ(
+                srt_sendmsg(sender, payload.data(), payload.size(), -1, 0),
+                188);
+            std::array<char, 1500> received {};
+            REQUIRE_EQ(
+                srt_recvmsg(receiver, received.data(), received.size()), 188);
+            REQUIRE(
+                std::equal(payload.begin(), payload.end(), received.begin()));
+            ROBOTWEAX_SRT_NPD_STATS_V1 stats {};
+            int size = sizeof(stats);
+            REQUIRE_EQ(srt_getsockflag(
+                           sender, SRTO_ROBOTWEAX_NPD_STATS, &stats, &size),
+                0);
+            REQUIRE_EQ(stats.deleted_units, 1U);
+        }
+    }
+}
