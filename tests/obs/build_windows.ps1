@@ -76,6 +76,10 @@ $ObsOptions = @(
     '-DENABLE_BROWSER=OFF', '-DENABLE_SCRIPTING=OFF',
     '-DENABLE_VIRTUALCAM=OFF', '-DENABLE_WEBSOCKET=OFF', '-DENABLE_AJA=OFF',
     '-DENABLE_VLC=OFF', '-DENABLE_DECKLINK=OFF', '-DENABLE_NEW_MPEGTS_OUTPUT=ON',
+    # The pinned OBS source is not ours to keep warning-free under newer
+    # hosted compilers: MSVC 19.52 reports C4244 in libobs/obs-properties.c.
+    # Robotweax SRT and the qualification peers below keep /W4 /WX.
+    '-DCMAKE_COMPILE_WARNING_AS_ERROR=OFF',
     "-DLibsrt_LIBRARY:FILEPATH=$SrtLibrary",
     "-DLibsrt_INCLUDE_DIR:PATH=$SrtInclude",
     "-DCMAKE_INSTALL_PREFIX=$ObsPrefix"

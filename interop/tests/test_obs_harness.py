@@ -1653,6 +1653,11 @@ class ObsHarnessTests(unittest.TestCase):
             "Invoke-Checked cmake @('--install', $ObsBuild", 1
         )[0]
         self.assertNotIn("'--target'", obs_build)
+        # Only the unmodified third-party OBS source tolerates warnings from a
+        # newer hosted compiler; the qualification peers stay warning-free.
+        self.assertIn("'-DCMAKE_COMPILE_WARNING_AS_ERROR=OFF'", obs_build)
+        self.assertEqual(script.count("'-DCMAKE_COMPILE_WARNING_AS_ERROR=OFF'"), 1)
+        self.assertEqual(script.count("'/W4', '/WX'"), 2)
 
     def test_windows_desktop_build_and_required_ci_job(self):
         script = (ROOT / "tests/obs/build_windows.ps1").read_text()
