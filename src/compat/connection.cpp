@@ -673,9 +673,9 @@ void send_setup_shutdown(DatagramChannel& channel, IpEndpoint peer,
     std::uint32_t destination_socket_id, Clock::time_point origin) noexcept
 {
     std::array<std::byte, packet_header_size + 4U> datagram {};
-    const auto encoded = encode_reliability_action(
-        {.kind = ReliabilityActionKind::shutdown}, timestamp_since(origin),
-        destination_socket_id, datagram);
+    const auto encoded =
+        encode_reliability_action({.kind = ReliabilityActionKind::shutdown},
+            timestamp_since(origin), destination_socket_id, datagram);
     if (encoded)
         (void)channel.send_datagram(
             std::span {datagram}.first(encoded.bytes_written), peer);

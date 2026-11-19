@@ -528,9 +528,9 @@ static void release_listener_that_ignores_the_offer(bool blocking)
     REQUIRE(channel != nullptr);
     channel->set_send_hook_for_testing(strip_offer, channel.get());
     if (blocking) {
-        REQUIRE_EQ(srt_connect(sockets.caller,
-                       reinterpret_cast<const sockaddr*>(&address),
-                       sizeof(address)),
+        REQUIRE_EQ(
+            srt_connect(sockets.caller,
+                reinterpret_cast<const sockaddr*>(&address), sizeof(address)),
             SRT_ERROR);
     } else {
         set(sockets.caller, SRTO_RCVSYN, 0);

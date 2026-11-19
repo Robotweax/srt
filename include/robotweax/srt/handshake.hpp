@@ -311,7 +311,8 @@ public:
     }
     // Socket ID of a listener whose CONCLUSION response a REQUIRED NPD caller
     // rejected locally, or zero. That listener holds an admitted connection.
-    [[nodiscard]] std::uint32_t admitted_peer_after_npd_rejection() const noexcept
+    [[nodiscard]] std::uint32_t
+    admitted_peer_after_npd_rejection() const noexcept
     {
         return admitted_peer_after_npd_rejection_;
     }
