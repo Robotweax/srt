@@ -387,6 +387,27 @@ library.
 See [Optional session authentication](session-authentication.md) for the default-off
 `SRTO_ROBOTWEAX_SESSIONAUTH` option and its private wire contract.
 
+## Optional epoll wake
+
+`robotweax_srt_epoll_wake(eid)` is an additive Robotweax extension, not part of
+the common SRT API. It lets another thread end one `srt_epoll_wait` or
+`srt_epoll_uwait` on that instance, for cancellation or to make a waiter pick up
+application state, without registering a system socket.
+
+- A wait that has events reports them as usual and leaves the wake pending.
+- A wait with nothing to report returns at once as an expired timeout would:
+  `0` from `srt_epoll_uwait`, `SRT_ERROR` with `SRT_ETIMEOUT` from
+  `srt_epoll_wait`. That return consumes the wake.
+- With no wait in progress the wake stays pending for the next one. Repeated
+  calls before it is consumed count once.
+- An unknown or released instance fails with `SRT_EINVPOLLID`.
+
+A wake is not distinguishable from a timeout by return value; callers that need
+the difference keep their own state. A wait on an instance with no registered
+socket still needs `SRT_EPOLL_ENABLE_EMPTY`. Headers that declare the call
+define `ROBOTWEAX_SRT_EPOLL_WAKE_VERSION`; Haivision and earlier Robotweax
+providers do not have it.
+
 ## Optional RTT observation metadata
 
 `robotweax_srt_rtt_data_v1` is an additive Robotweax extension, not part of

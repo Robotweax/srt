@@ -1019,7 +1019,7 @@ cryptographic review:
   connections exchange encrypted application data in both directions before
   closing; REQUIRED connections also verify the published peer identity.
 - Installed shared-library packages with the feature enabled and disabled expose
-  exactly the 85 expected C ABI symbols. The disabled package rejects get/set
+  exactly the C ABI symbols listed in `cmake/public-symbols.txt`. The disabled package rejects get/set
   operations for all five PEERAUTH options. Seven public API compatibility
   scenarios cover legacy and SESSIONAUTH success, REQUIRED rejection against
   disabled peers, and authenticated success.

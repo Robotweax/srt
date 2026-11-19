@@ -6,6 +6,11 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- Add `robotweax_srt_epoll_wake`, an additive extension that ends one wait on
+  an epoll instance from another thread. The wake is sticky and coalescing, a
+  wait with events still reports them first, and no descriptor or system-socket
+  polling is involved. `ROBOTWEAX_SRT_EPOLL_WAKE_VERSION` marks headers that
+  declare it. Existing calls behave as before for programs that never call it.
 - Add default-off experimental pinned-key caller/listener authentication behind
   `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH`. OpenSSL P-256 identities,
   a passphrase and AES-GCM protect setup and traffic-key establishment; public

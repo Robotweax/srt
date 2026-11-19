@@ -1213,6 +1213,25 @@ SRT_API int srt_epoll_uwait(
     int64_t timeout_milliseconds);
 
 /**
+ * @brief Robotweax extension: ends one wait on an epoll instance early.
+ *
+ * May be called from any thread. A wait that has events to report returns them
+ * as usual and leaves the wake pending. A wait with nothing to report returns
+ * at once, exactly as an expired timeout would: 0 from `srt_epoll_uwait`,
+ * `SRT_ERROR` with `SRT_ETIMEOUT` from `srt_epoll_wait`. That return consumes
+ * the wake. If no wait is in progress the wake stays pending for the next one,
+ * and repeated calls before it is consumed count once. Callers that must tell a
+ * wake from a timeout keep their own state. Blocks no longer than the short
+ * internal lock, allocates nothing and adds no descriptor.
+ *
+ * @return 0, or `SRT_ERROR` with `SRT_EINVPOLLID` for an unknown or released
+ * instance.
+ */
+SRT_API int robotweax_srt_epoll_wake(int eid);
+/** Defined when this header declares robotweax_srt_epoll_wake. */
+#define ROBOTWEAX_SRT_EPOLL_WAKE_VERSION 1
+
+/**
  * @brief Queries or updates epoll-instance flags.
  * @param flags `-1` queries without changing flags, 0 clears all flags, and
  * any other value adds the supplied flags.
