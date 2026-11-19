@@ -958,8 +958,8 @@ TEST(socket_options_peer_authentication_is_unavailable_by_default)
     for (auto option : {SRTO_ROBOTWEAX_PEERAUTH_POLICY,
              SRTO_ROBOTWEAX_PEERAUTH_KEY, SRTO_ROBOTWEAX_PEERAUTH_TRUSTED}) {
         int value = 1;
-        REQUIRE_EQ(srt_setsockflag(socket, option, &value, sizeof(value)),
-            SRT_ERROR);
+        REQUIRE_EQ(
+            srt_setsockflag(socket, option, &value, sizeof(value)), SRT_ERROR);
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
     }
     REQUIRE_EQ(srt_close(socket), 0);

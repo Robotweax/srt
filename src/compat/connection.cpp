@@ -326,9 +326,8 @@ struct ListenerGroupAdmission {
                     // group replaced since prepare_mirror reports another
                     // generation; removing by the mirror's would be a no-op
                     // and leave a pending row counted against the capacity.
-                    GroupRegistry::instance().remove_member(
-                        mirror.group, group_generation,
-                        member_handle, member_generation);
+                    GroupRegistry::instance().remove_member(mirror.group,
+                        group_generation, member_handle, member_generation);
                     member_generation = 0U;
                 }
                 return false;
