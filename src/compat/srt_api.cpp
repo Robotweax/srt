@@ -536,6 +536,14 @@ int srt_epoll_uwait(
         eid, events, event_count, timeout_milliseconds);
 }
 
+int robotweax_srt_epoll_wake(int eid)
+{
+    if (!stateful_api_available()) {
+        return SRT_ERROR;
+    }
+    return robotweax::srt::compat::epoll_wake(eid);
+}
+
 int32_t srt_epoll_set(int eid, int32_t flags)
 {
     if (!stateful_api_available()) {
