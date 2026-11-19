@@ -726,7 +726,9 @@ Error Exchange::prepare_confirmation(
         error = schedule_.listener_confirmation(response_.signature, tag);
     if (error != Error::none)
         return fail(error);
-    if (!same(tag, response_.confirmation))
+    const bool response_confirmed = same(tag, response_.confirmation);
+    provider_.secure_erase(tag);
+    if (!response_confirmed)
         return fail(Error::authentication_failure);
     if (!canonical_signature(response_.signature))
         return fail(Error::authentication_failure);
@@ -817,9 +819,13 @@ Error Exchange::accept_confirmation(std::span<const std::byte> input,
         passphrase, offer_.nonce, response_.nonce, hash, response_.key_length);
     if (error == Error::none)
         error = schedule_.caller_confirmation(record.signature, tag);
+    // The expected tag depends on the passphrase; never leave it on the stack.
+    const bool confirmed =
+        error == Error::none && same(tag, record.confirmation);
+    provider_.secure_erase(tag);
     if (error != Error::none)
         return fail(error);
-    if (!same(tag, record.confirmation))
+    if (!confirmed)
         return fail(Error::authentication_failure);
     confirmation_ = record;
     flights_[2].assign(input);

@@ -131,9 +131,12 @@ template <typename Value>
         || option == SRTO_ROBOTWEAX_PATHID_POLICY
         || option == SRTO_ROBOTWEAX_PATHID
         || option == SRTO_ROBOTWEAX_IDENTITY_ADVERTISEMENT
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        // Without the build option these report SRT_EINVOP in every state.
         || option == SRTO_ROBOTWEAX_PEERAUTH_POLICY
         || option == SRTO_ROBOTWEAX_PEERAUTH_KEY
         || option == SRTO_ROBOTWEAX_PEERAUTH_TRUSTED
+#endif
         || option == SRTO_ROBOTWEAX_ACP1_REQUIRED
         || option == SRTO_ROBOTWEAX_MCAST_GROUP
         || option == SRTO_ROBOTWEAX_MCAST_IFACE

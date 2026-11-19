@@ -5,8 +5,8 @@ This is a focused source-delta assessment for release preparation on 19 November
 review or a protocol certification. The [2026-11-04 review](security-review-2026-11-04.md)
 and the [0.3.3 delta disposition](security-delta-0.3.3.md) retain their original
 scopes. Runtime changes inspected here are the delta from `v0.3.3` to
-`f82da2a2ce12ccf86373b152fb0eeb8ee9865d53`. The assessment was made by reading
-source; it executed no code. Final-source execution evidence belongs in the
+`f82da2a2ce12ccf86373b152fb0eeb8ee9865d53`; the corrections listed below follow
+that revision. The assessment was made by reading source; it executed no code. Final-source execution evidence belongs in the
 release's separate package qualification record.
 
 ## Reviewed boundaries
@@ -81,32 +81,38 @@ No reportable runtime security defect in the default build was established by
 this focused assessment. This statement is limited to the inspected boundaries;
 it does not extend the supported security profile of any experimental feature.
 
-## Observations for disposition
+## Observations and their disposition
 
-These were found by reading and are recorded for an owner decision before the
-source freeze. None is fixed in this revision.
+These were found by reading. Four are corrected in the commit that follows the
+inspected revision; the first is documented and remains open.
 
-1. Peer authentication, option on: listener admission is serialised, and the
-   serialisation predates this delta. A caller that passes the cookie exchange,
-   names a pinned key identifier, which is public, and never sends its third
-   message holds the listener's single pending slot until the connection
-   timeout (3 seconds by default) or the retry limit. Other admissions on that
-   listener wait meanwhile. The draft contract does not list this.
-2. Peer authentication options in a default build: setting the policy, key or
-   trusted-key option on a listening or connected socket returns
-   `SRT_ECONNSOCK` because the state check runs first. The draft contract says
-   every such option returns `SRT_EINVOP` in a build without the feature; a
-   fresh socket does return `SRT_EINVOP`.
-3. Peer authentication, option on: two expected-tag stack values are not erased
-   on the mismatch return; one of them depends on the passphrase.
-4. UDP batching, option on: the receive batch does not clamp the kernel's
-   reported length to the slot size before use and does not zero the peer
-   address storage, unlike the single-datagram path. Both rely on the kernel
-   contract and no triggering input was identified.
-5. Group enrolment: if a member is added and the group generation then differs
-   from the listener mirror's generation, the removal uses the mirror's
-   generation and may leave the pending row. Whether this state is reachable
-   was not established.
+1. Open, documented. Peer authentication, option on: listener admission is
+   serialised, and the serialisation predates this delta. A caller that passes
+   the cookie exchange, names a pinned key identifier, which is public, and
+   never sends its third message holds the listener's single pending slot until
+   the connection timeout (3 seconds by default) or the retry limit. Other
+   admissions on that listener wait meanwhile. The
+   [draft contract](peer-authentication.md) now lists this as a known limit. A
+   correction changes the listener's setup pipeline and needs a design decision.
+2. Corrected. In a default build, setting the peer-authentication policy, key
+   or trusted-key option on a listening or connected socket returned
+   `SRT_ECONNSOCK` because the state check ran first. The state check now
+   applies only in builds with the feature, so a default build returns
+   `SRT_EINVOP` in every state, as the draft contract says. A regression test
+   covers a listening socket.
+3. Corrected. Peer authentication, option on: the two expected-tag stack values
+   are erased after comparison on every return, including a mismatch. One of
+   them depends on the passphrase. No test observes the erasure.
+4. Corrected. UDP batching, option on: the receive batch clamps the reported
+   length to the slot size and zeroes each peer address before the call, as the
+   single-datagram path does. No triggering input was identified before the
+   change and no test forces one.
+5. Corrected. Group enrolment: when a member row was added and the group
+   generation differed from the listener mirror's, the removal used the
+   mirror's generation, which did not match and left the pending row counted
+   against the member limit. The removal now uses the generation that accepted
+   the row. The state needs a group to be replaced between two registry calls;
+   no test reproduces that race.
 
 ## Not inspected
 

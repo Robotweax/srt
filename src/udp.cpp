@@ -1219,6 +1219,7 @@ std::size_t UdpSocket::receive_batch(std::span<std::byte> storage,
             .iov_base = storage.data() + index * slot_size,
             .iov_len = slot_size,
         };
+        peers[index] = {};
         peers[index].ss_family = AF_UNSPEC;
         auto& header = messages[index].msg_hdr;
         header.msg_name = &peers[index];
@@ -1249,8 +1250,10 @@ std::size_t UdpSocket::receive_batch(std::span<std::byte> storage,
                   .system_error = EMSGSIZE,
               }
             : UdpIoResult {
-                  .bytes_transferred =
-                      static_cast<std::size_t>(messages[index].msg_len),
+                  // Never report more than the slot holds, whatever the
+                  // kernel returned.
+                  .bytes_transferred = std::min(slot_size,
+                      static_cast<std::size_t>(messages[index].msg_len)),
                   .peer = from_sockaddr(peers[index]),
               };
     }

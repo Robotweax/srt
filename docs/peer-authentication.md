@@ -769,6 +769,16 @@ The response record is 96 bytes larger than the offer record, and M2 is sent
 only to an address that returned a cookie, so the exchange adds no useful
 amplification.
 
+*Open, known limit:* a listener completes one setup at a time, and a pending
+peer-authentication child holds that slot until its third message arrives or
+its deadline (`SRTO_CONNTIMEO`, 3 seconds by default) passes. A caller that
+passes the cookie exchange, names a pinned key identifier, which is public, and
+then stays silent therefore delays every other admission on that listener,
+INDUCTION included, for that time, and can repeat it. Established connections
+are not affected. The serial setup slot predates peer authentication; no
+mitigation is implemented yet and the choice between a shorter proof deadline
+and several concurrent pending children needs a decision.
+
 *Open:* whether public-key admissions should draw from their own budget
 instance or cost more than one token. At 64 admissions per second the work is
 small with an optimized P-256 implementation, but a portable one may need
@@ -810,7 +820,7 @@ several milliseconds per operation. No measurement exists yet; this is an
 ## Socket options and key handling
 
 Proposed private options, all provisional. Each returns `SRT_EINVOP` in a build
-without the [build option](#build-option):
+without the [build option](#build-option), whatever the socket's state:
 
 | Option | Contract |
 | --- | --- |
