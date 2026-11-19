@@ -207,6 +207,11 @@ public:
     {
         return receive_buffer_packets_;
     }
+    [[nodiscard]] Error reserve_npd_prefix(bool enabled) noexcept;
+    [[nodiscard]] bool npd_prefix_reserved() const noexcept
+    {
+        return npd_prefix_reserved_;
+    }
     [[nodiscard]] std::size_t maximum_payload_size() const noexcept
     {
         return maximum_payload_size_;
@@ -242,7 +247,12 @@ public:
         CryptoMode effective_mode) const noexcept
     {
         const auto budget = payload_budget(effective_mode);
-        return budget ? budget.maximum_plaintext_payload_size : 0U;
+        return budget
+                && budget.maximum_plaintext_payload_size
+                    > (npd_prefix_reserved_ ? 1U : 0U)
+            ? budget.maximum_plaintext_payload_size
+                - (npd_prefix_reserved_ ? 1U : 0U)
+            : 0U;
     }
     [[nodiscard]] std::size_t
     maximum_payload_size_limit(
@@ -276,7 +286,12 @@ public:
         IpAddressFamily family, CryptoMode effective_mode) const noexcept
     {
         const auto budget = payload_budget(family, effective_mode);
-        return budget ? budget.maximum_plaintext_payload_size : 0U;
+        return budget
+                && budget.maximum_plaintext_payload_size
+                    > (npd_prefix_reserved_ ? 1U : 0U)
+            ? budget.maximum_plaintext_payload_size
+                - (npd_prefix_reserved_ ? 1U : 0U)
+            : 0U;
     }
     void constrain_to_address_family(
         IpAddressFamily family) noexcept;
@@ -334,6 +349,7 @@ private:
     std::uint32_t key_preannouncement_packets_ = 0;
     PacketFilterConfiguration
         packet_filter_configuration_{};
+    bool npd_prefix_reserved_ = false;
     bool enforced_encryption_ = true;
     bool session_authentication_ = false;
     bool experimental_acp1_ = false;

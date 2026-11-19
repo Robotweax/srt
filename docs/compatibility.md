@@ -290,6 +290,16 @@ application integrations are not newly qualified. See
 reference pins, and performance evidence. Released 0.2.9 artifacts do not contain
 this provider.
 
+## Development null packet deletion
+
+Default-OFF [experimental NPD](null-packet-deletion.md) is implemented on its
+feature branch for individual Live/Message Caller/Listener sockets. It is not
+in a published release. Self-peer validation covers clear/CTR/GCM and FEC;
+stock peers do not implement NPD, and REQUIRED explicitly fails against them.
+An IF_OFFERED listener preserves ordinary SRT for stock callers. The contract
+records the pinned black-box evidence and remaining release qualification;
+there is no RIST or general relay-interoperability claim.
+
 ## Development implementation identity
 
 The provisional `0x7f13` CONFIG identity record is default-off and diagnostic.

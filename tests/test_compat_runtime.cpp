@@ -26,6 +26,7 @@
 #include <mutex>
 #include <new>
 #include <span>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -115,7 +116,9 @@ void exercise_gcm_fec_geometry(std::string_view filter,
     std::uint32_t source_count, std::span<const std::uint32_t> dropped_sources,
     std::size_t expected_filter_packets, std::size_t expected_supplied_packets,
     bool corrupt_parity = false, bool protect_parity = false,
-    bool full_payload = false, bool acp1 = false)
+    bool full_payload = false, bool acp1 = false, bool npd = false,
+    std::size_t key_length = 32, bool reorder = false,
+    CryptoMode mode = CryptoMode::aes_gcm, bool rotate = false)
 {
     const auto sender_channel = std::make_shared<DatagramChannel>();
     const auto receiver_channel = std::make_shared<DatagramChannel>();
@@ -135,11 +138,11 @@ void exercise_gcm_fec_geometry(std::string_view filter,
 
     const CryptoConfiguration crypto_configuration {
         .passphrase = "authenticated fec geometry fixture",
-        .mode = CryptoMode::aes_gcm,
+        .mode = mode,
         .enable_aes_gcm = true,
-        .key_length = 32,
-        .refresh_rate_packets = 64,
-        .preannouncement_packets = 8,
+        .key_length = key_length,
+        .refresh_rate_packets = rotate ? 5U : 64U,
+        .preannouncement_packets = rotate ? 1U : 8U,
     };
     auto sender_crypto = std::make_shared<CryptoSession>(crypto_configuration);
     auto receiver_crypto =
@@ -183,14 +186,18 @@ void exercise_gcm_fec_geometry(std::string_view filter,
                        710, 720),
             Error::none);
     }
+    if (npd)
+        REQUIRE_EQ(options.reserve_npd_prefix(true), Error::none);
     const bool sensor = options.packet_filter_configuration().sensor_profile();
 #ifdef ENABLE_AEAD_API_PREVIEW
-    REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::crypto_mode,
+                   mode == CryptoMode::aes_gcm ? 2 : 1),
+        Error::none);
 #endif
     const auto payload_size = full_payload
-        ? options.maximum_payload_size_limit(CryptoMode::aes_gcm)
-        : 1U;
-    if (full_payload)
+        ? options.maximum_payload_size_limit(mode)
+        : (npd ? 1316U : 1U);
+    if (full_payload || npd)
         REQUIRE_EQ(options.set(SocketOption::maximum_payload_size,
                        static_cast<std::int64_t>(payload_size)),
             Error::none);
@@ -204,6 +211,7 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         .peer_socket_id = 720,
         .initial_sequence = initial,
         .flow_window_packets = 256,
+        .npd_enabled = npd,
         .options = options,
         .negotiated_options =
             {
@@ -221,6 +229,7 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         .peer_socket_id = 710,
         .initial_sequence = initial,
         .flow_window_packets = 256,
+        .npd_enabled = npd,
         .options = options,
         .negotiated_options =
             {
@@ -234,12 +243,63 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         .now_context = &receiver_now,
     }};
 
-    for (std::uint32_t index = 0; index < source_count; ++index) {
-        const std::vector<std::byte> payload(payload_size,
+    const auto make_payload = [&](std::uint32_t index) {
+        std::vector<std::byte> payload(payload_size,
             static_cast<std::byte>(static_cast<unsigned char>('A') + index));
+        if (npd && !full_payload) {
+            for (std::size_t unit = 0; unit < 7; ++unit) {
+                const auto offset = unit * 188;
+                payload[offset] = std::byte {0x47};
+                if (unit == index % 7)
+                    continue;
+                std::fill_n(
+                    payload.begin() + offset + 4, 184, std::byte {0xff});
+                payload[offset + 1] = std::byte {0x1f};
+                payload[offset + 2] = std::byte {0xff};
+                payload[offset + 3] = std::byte {0x10};
+            }
+        }
+        return payload;
+    };
+    for (std::uint32_t index = 0; index < source_count; ++index) {
+        if (rotate && index == 4U) {
+            REQUIRE_EQ(sender_crypto->packets_on_active_key(), 4U);
+            REQUIRE_EQ(sender_crypto->prepare_rotation(), Error::none);
+            REQUIRE(!sender_crypto->pending_key_material().empty());
+            REQUIRE_EQ(receiver_crypto->accept_key_material(
+                           sender_crypto->pending_key_material(), false),
+                Error::none);
+            REQUIRE_EQ(sender_crypto->acknowledge_key_material(
+                           receiver_crypto->key_material_response(), false),
+                Error::none);
+        }
+        const auto payload = make_payload(index);
         REQUIRE_EQ(sender.queue_message(payload, 0, false, false, -1).status,
             MessageIoStatus::success);
+        if (rotate) {
+            // Windows starts each pacing slot at its actual submission time.
+            // Advance until this source was captured before announcing the
+            // successor key; one poll need not drain DATA behind FEC parity.
+            std::size_t captured_sources = 0;
+            for (unsigned attempt = 0;
+                attempt < 100U && captured_sources < index + 1U; ++attempt) {
+                sender_now += 100U;
+                (void)sender.poll();
+                captured_sources = 0;
+                std::lock_guard lock(sender_output.mutex);
+                for (const auto& datagram : sender_output.values) {
+                    const auto decoded = decode_packet(datagram);
+                    REQUIRE(decoded);
+                    if (decoded.packet.kind == PacketKind::data
+                        && decoded.packet.data.message_number != 0U)
+                        ++captured_sources;
+                }
+            }
+            REQUIRE_EQ(captured_sources, index + 1U);
+        }
     }
+    if (rotate)
+        REQUIRE_EQ(sender_crypto->active_sender_key(), EncryptionKey::odd);
     for (std::size_t attempt = 0; attempt < 80U; ++attempt) {
         (void)sender.poll();
         sender_now += 10U;
@@ -248,8 +308,26 @@ void exercise_gcm_fec_geometry(std::string_view filter,
 
     std::vector<std::byte> last_parity;
     std::size_t source_packets = 0;
+    std::size_t even_sources = 0, odd_sources = 0;
     std::size_t filter_packets = 0;
-    for (const auto& datagram : take_datagrams(sender_output)) {
+    auto datagrams = take_datagrams(sender_output);
+    if (reorder) {
+        // Swap adjacent DATA sources without moving parity or key material.
+        for (std::size_t index = 1; index < datagrams.size(); ++index) {
+            const auto previous = decode_packet(datagrams[index - 1]);
+            const auto current = decode_packet(datagrams[index]);
+            REQUIRE(previous);
+            REQUIRE(current);
+            if (previous.packet.kind == PacketKind::data
+                && current.packet.kind == PacketKind::data
+                && previous.packet.data.message_number != 0U
+                && current.packet.data.message_number != 0U) {
+                std::swap(datagrams[index - 1], datagrams[index]);
+                ++index;
+            }
+        }
+    }
+    for (const auto& datagram : datagrams) {
         const auto decoded = decode_packet(datagram);
         REQUIRE(decoded);
         if (decoded.packet.kind != PacketKind::data) {
@@ -274,8 +352,15 @@ void exercise_gcm_fec_geometry(std::string_view filter,
             }
         } else {
             ++source_packets;
+            if (decoded.packet.data.encryption_key == EncryptionKey::even)
+                ++even_sources;
+            if (decoded.packet.data.encryption_key == EncryptionKey::odd)
+                ++odd_sources;
             REQUIRE_EQ(decoded.packet.payload.size(),
-                payload_size + srt_gcm_authentication_tag_size);
+                (npd && !full_payload ? 188U : payload_size) + (npd ? 1U : 0U)
+                    + (mode == CryptoMode::aes_gcm
+                            ? srt_gcm_authentication_tag_size
+                            : 0U));
             const std::uint32_t index =
                 (decoded.packet.data.sequence.value() - initial.value())
                 & SequenceNumber::mask;
@@ -313,6 +398,10 @@ void exercise_gcm_fec_geometry(std::string_view filter,
         ++receiver_now;
     }
     REQUIRE_EQ(source_packets, source_count);
+    if (rotate) {
+        REQUIRE_EQ(even_sources, 5U);
+        REQUIRE_EQ(odd_sources, 4U);
+    }
     REQUIRE_EQ(filter_packets, expected_filter_packets);
 
     std::array<std::byte, maximum_data_payload_size> received_bytes {};
@@ -334,11 +423,18 @@ void exercise_gcm_fec_geometry(std::string_view filter,
             REQUIRE_EQ(static_cast<std::size_t>(offset), index);
         }
         REQUIRE_EQ(received.bytes, payload_size);
-        REQUIRE_EQ(received_bytes[0],
-            static_cast<std::byte>(static_cast<unsigned char>('A') + offset));
+        const auto expected = make_payload(static_cast<std::uint32_t>(offset));
+        REQUIRE(std::equal(
+            expected.begin(), expected.end(), received_bytes.begin()));
     }
     REQUIRE_EQ(receiver.receive_message(received_bytes, false, -1).status,
         MessageIoStatus::would_block);
+    if (npd) {
+        const auto deleted = full_payload ? 0U : 6U * source_count;
+        REQUIRE_EQ(sender.npd_statistics().deleted_units, deleted);
+        REQUIRE_EQ(receiver.npd_statistics().restored_units, deleted);
+        REQUIRE_EQ(receiver.npd_statistics().malformed_payloads, 0U);
+    }
     const auto statistics = receiver.statistics(false, true);
     REQUIRE_EQ(statistics.total.receiver_filter_extra, expected_filter_packets);
     REQUIRE_EQ(
@@ -350,6 +446,9 @@ void exercise_gcm_fec_geometry(std::string_view filter,
                 : 0U)
             + (protect_parity ? 3U * filter_packets : 0U));
     REQUIRE(!last_parity.empty());
+    // Legacy CTR parity has no authentication and can refresh liveness.
+    if (mode == CryptoMode::aes_ctr && !protect_parity)
+        return;
     last_parity.back() ^= std::byte {1};
     const auto replay = decode_packet(last_parity);
     REQUIRE(replay);
@@ -360,6 +459,42 @@ void exercise_gcm_fec_geometry(std::string_view filter,
 }
 
 } // namespace
+
+TEST(npd_encrypted_fec_policy_key_sizes_and_reordering_matrix)
+{
+    constexpr std::array missing {0U};
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == CryptoMode::aes_gcm)
+            continue;
+#endif
+        for (const auto key_length : {16U, 24U, 32U}) {
+            for (const auto policy : {"always", "onreq", "never"}) {
+                for (const bool authenticated : {false, true}) {
+                    for (const bool full_payload : {false, true}) {
+                        const auto run = [&](std::string_view geometry,
+                                             std::uint32_t sources,
+                                             std::size_t parity) {
+                            const auto filter = std::string {geometry} + policy;
+                            exercise_gcm_fec_geometry(filter, sources, missing,
+                                parity, 1U, false, authenticated, full_payload,
+                                false, true, key_length, true, mode);
+                        };
+                        run("fec,cols:2,rows:1,arq:", 2U, 1U);
+                        run("fec,cols:2,rows:-2,layout:even,arq:", 4U, 2U);
+                        run("fec,cols:3,rows:3,layout:even,arq:", 9U, 6U);
+                        const auto rotating_filter =
+                            std::string {"fec,cols:3,rows:3,layout:even,arq:"}
+                            + policy;
+                        exercise_gcm_fec_geometry(rotating_filter, 9U, missing,
+                            6U, 1U, false, authenticated, full_payload, false,
+                            true, key_length, true, mode, true);
+                    }
+                }
+            }
+        }
+    }
+}
 
 TEST(compat_runtime_injected_clock_initializes_keepalive_deadline)
 {
@@ -7056,7 +7191,9 @@ TEST(compat_runtime_retransmits_original_ciphertext_across_key_rotation)
         statistics.total.sent_retransmitted.packets, 3U);
 }
 
-static void exercise_gcm_immutable_rotation(bool control)
+static void exercise_gcm_immutable_rotation(bool control, bool npd = false,
+    CryptoMode mode = CryptoMode::aes_gcm, std::size_t key_length = 32,
+    unsigned payload_kind = 0)
 {
     const auto sender_channel = std::make_shared<DatagramChannel>();
     const auto receiver_channel = std::make_shared<DatagramChannel>();
@@ -7076,9 +7213,9 @@ static void exercise_gcm_immutable_rotation(bool control)
 
     const CryptoConfiguration crypto_configuration {
         .passphrase = "authenticated immutable retransmission",
-        .mode = CryptoMode::aes_gcm,
+        .mode = mode,
         .enable_aes_gcm = true,
-        .key_length = 32,
+        .key_length = key_length,
         .refresh_rate_packets = 3,
         .preannouncement_packets = 1,
     };
@@ -7101,10 +7238,14 @@ static void exercise_gcm_immutable_rotation(bool control)
             Error::none);
     }
 #ifdef ENABLE_AEAD_API_PREVIEW
-    REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::crypto_mode,
+                   mode == CryptoMode::aes_gcm ? 2 : 1),
+        Error::none);
 #endif
-    REQUIRE_EQ(
-        options.set(SocketOption::maximum_payload_size, 32), Error::none);
+    if (npd)
+        REQUIRE_EQ(options.reserve_npd_prefix(true), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::maximum_payload_size, npd ? 1316 : 32),
+        Error::none);
     REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 8), Error::none);
     std::uint64_t sender_now = 1'000'000;
     std::uint64_t receiver_now = 1'000'000;
@@ -7115,6 +7256,7 @@ static void exercise_gcm_immutable_rotation(bool control)
         .peer_socket_id = 620,
         .initial_sequence = SequenceNumber {100},
         .flow_window_packets = 256,
+        .npd_enabled = npd,
         .options = options,
         .origin = origin,
         .crypto = sender_crypto,
@@ -7127,6 +7269,7 @@ static void exercise_gcm_immutable_rotation(bool control)
         .peer_socket_id = 610,
         .initial_sequence = SequenceNumber {100},
         .flow_window_packets = 256,
+        .npd_enabled = npd,
         .options = options,
         .origin = origin,
         .crypto = receiver_crypto,
@@ -7134,12 +7277,32 @@ static void exercise_gcm_immutable_rotation(bool control)
         .now_context = &receiver_now,
     }};
 
-    const std::array<std::byte, 4> lost_clear {
+    std::vector<std::byte> lost_clear {
         std::byte {0x11},
         std::byte {0x22},
         std::byte {0x33},
         std::byte {0x44},
     };
+    if (npd) {
+        lost_clear.assign(1316, std::byte {0xff});
+        for (std::size_t offset = 0; offset < lost_clear.size();
+            offset += 188) {
+            lost_clear[offset] = std::byte {0x47};
+            lost_clear[offset + 1] = std::byte {0x1f};
+            lost_clear[offset + 3] = std::byte {0x10};
+        }
+        if (payload_kind == 1)
+            lost_clear[1] = std::byte {0};
+        if (payload_kind == 2)
+            lost_clear[0] = std::byte {0};
+    }
+    const auto deleted = !npd || payload_kind == 2 ? 0U
+        : payload_kind == 1                        ? 6U
+                                                   : 7U;
+    const auto wire_payload_size = lost_clear.size() + (npd ? 1U : 0U)
+        - deleted * 188U
+        + (mode == CryptoMode::aes_gcm ? srt_gcm_authentication_tag_size : 0U);
+    std::vector<std::vector<std::byte>> delayed;
     REQUIRE_EQ(sender.queue_message(lost_clear, 0, true, false, -1).status,
         MessageIoStatus::success);
     (void)sender.poll();
@@ -7157,8 +7320,7 @@ static void exercise_gcm_immutable_rotation(bool control)
     REQUIRE(original_packet);
     REQUIRE_EQ(original_packet.packet.data.sequence, SequenceNumber {100});
     REQUIRE_EQ(original_packet.packet.data.encryption_key, EncryptionKey::even);
-    REQUIRE_EQ(original_packet.packet.payload.size(),
-        lost_clear.size() + srt_gcm_authentication_tag_size);
+    REQUIRE_EQ(original_packet.packet.payload.size(), wire_payload_size);
 
     const std::array<std::byte, 1> preannouncement_clear {std::byte {0x45}};
     REQUIRE_EQ(
@@ -7171,6 +7333,7 @@ static void exercise_gcm_immutable_rotation(bool control)
         const auto decoded = decode_packet(datagram);
         REQUIRE(decoded);
         if (decoded.packet.kind == PacketKind::data) {
+            delayed.push_back(datagram);
             saw_preannouncement_data = true;
             REQUIRE_EQ(decoded.packet.data.sequence, SequenceNumber {101});
             REQUIRE_EQ(decoded.packet.data.encryption_key, EncryptionKey::even);
@@ -7196,6 +7359,7 @@ static void exercise_gcm_immutable_rotation(bool control)
         const auto decoded = decode_packet(datagram);
         REQUIRE(decoded);
         if (decoded.packet.kind == PacketKind::data) {
+            delayed.push_back(datagram);
             REQUIRE_EQ(decoded.packet.data.sequence, SequenceNumber {102});
             REQUIRE_EQ(decoded.packet.data.encryption_key, EncryptionKey::even);
         }
@@ -7212,12 +7376,21 @@ static void exercise_gcm_immutable_rotation(bool control)
         const auto decoded = decode_packet(datagram);
         REQUIRE(decoded);
         if (decoded.packet.kind == PacketKind::data) {
+            delayed.push_back(datagram);
             saw_rotated_data = true;
             REQUIRE_EQ(decoded.packet.data.sequence, SequenceNumber {103});
             REQUIRE_EQ(decoded.packet.data.encryption_key, EncryptionKey::odd);
         }
     }
     REQUIRE(saw_rotated_data);
+    if (npd) {
+        REQUIRE_EQ(delayed.size(), 3U);
+        for (auto it = delayed.rbegin(); it != delayed.rend(); ++it) {
+            const auto decoded = decode_packet(*it);
+            REQUIRE(decoded);
+            receiver.process_packet(decoded.packet, sender_endpoint);
+        }
+    }
 
     std::array<std::byte, 4> loss_payload {};
     const std::array<SequenceRange, 1> losses {{
@@ -7268,17 +7441,52 @@ static void exercise_gcm_immutable_rotation(bool control)
 
     receiver.process_packet(retransmitted_packet.packet, sender_endpoint);
     receiver_now += 1'000'000;
-    std::array<std::byte, 16> received {};
+    std::array<std::byte, 1500> received {};
     const auto received_message = receiver.receive_message(received, false, -1);
     REQUIRE_EQ(received_message.status, MessageIoStatus::success);
     REQUIRE_EQ(received_message.bytes, lost_clear.size());
     REQUIRE(std::equal(lost_clear.begin(), lost_clear.end(), received.begin()));
     const auto statistics = sender.statistics(false, true);
     REQUIRE_EQ(statistics.total.sent_retransmitted.packets, 1U);
-    REQUIRE_EQ(
-        statistics.total.sent_retransmitted.payload_bytes, lost_clear.size());
+    REQUIRE_EQ(statistics.total.sent_retransmitted.payload_bytes,
+        npd ? wire_payload_size : lost_clear.size());
+    if (npd) {
+        for (const auto expected :
+            {std::byte {0x45}, std::byte {0x55}, std::byte {0x66}}) {
+            const auto next = receiver.receive_message(received, false, -1);
+            REQUIRE_EQ(next.status, MessageIoStatus::success);
+            REQUIRE_EQ(next.bytes, 1U);
+            REQUIRE_EQ(received[0], expected);
+        }
+        // A late original and duplicate repair must neither redeliver nor
+        // inflate restored-unit counters after ordered recovery.
+        receiver.process_packet(original_packet.packet, sender_endpoint);
+        receiver.process_packet(retransmitted_packet.packet, sender_endpoint);
+        REQUIRE_EQ(receiver.receive_message(received, false, -1).status,
+            MessageIoStatus::would_block);
+        REQUIRE_EQ(sender.npd_statistics().deleted_units, deleted);
+        REQUIRE_EQ(receiver.npd_statistics().restored_units, deleted);
+        REQUIRE_EQ(receiver.npd_statistics().malformed_payloads, 0U);
+        REQUIRE_EQ(receiver.statistics(false, true)
+                       .total.receiver_undecryptable.packets,
+            0U);
+    }
     REQUIRE(!sender.broken());
     REQUIRE(!receiver.broken());
+}
+
+TEST(npd_reordered_repair_preserves_ciphertext_across_key_change)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == CryptoMode::aes_gcm)
+            continue;
+#endif
+        for (const auto key_size : {16U, 24U, 32U})
+            for (unsigned payload_kind = 0; payload_kind < 3; ++payload_kind)
+                exercise_gcm_immutable_rotation(
+                    false, true, mode, key_size, payload_kind);
+    }
 }
 
 TEST(compat_runtime_gcm_retransmits_immutable_tag_across_key_rotation)
@@ -11992,10 +12200,13 @@ struct DelayedKeyResponseResult {
     std::uint64_t pause_microseconds = 0;
     std::uint64_t tlpktdrop = 0;
     std::size_t rotations = 0;
+    std::size_t key_changes = 0;
+    std::size_t dropped_responses = 0;
 };
 
-DelayedKeyResponseResult run_with_delayed_key_responses(
-    CryptoMode mode, std::uint64_t response_delay_microseconds)
+DelayedKeyResponseResult run_with_delayed_key_responses(CryptoMode mode,
+    std::uint64_t response_delay_microseconds, bool npd = false,
+    std::size_t key_size = 16, bool drop_first = false)
 {
     const auto sender_channel = std::make_shared<DatagramChannel>();
     const auto receiver_channel = std::make_shared<DatagramChannel>();
@@ -12012,7 +12223,7 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         .passphrase = "delayed key response fixture",
         .mode = mode,
         .enable_aes_gcm = true,
-        .key_length = 16,
+        .key_length = key_size,
         .refresh_rate_packets = 200,
         .preannouncement_packets = 80,
     };
@@ -12045,6 +12256,8 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         REQUIRE_EQ(options.set(SocketOption::crypto_mode, 2), Error::none);
     }
 #endif
+    if (npd)
+        REQUIRE_EQ(options.reserve_npd_prefix(true), Error::none);
     const SequenceNumber initial_sequence {5'000};
     const auto origin = ConnectionRuntime::Clock::now();
     std::uint64_t sender_now = 1'000'000;
@@ -12055,6 +12268,7 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         .peer_socket_id = 920,
         .initial_sequence = initial_sequence,
         .flow_window_packets = 25'600,
+        .npd_enabled = npd,
         .options = options,
         .negotiated_options = {.periodic_nak = true, .retransmit_flag = true},
         .origin = origin,
@@ -12068,6 +12282,7 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         .peer_socket_id = 910,
         .initial_sequence = initial_sequence,
         .flow_window_packets = 25'600,
+        .npd_enabled = npd,
         .options = options,
         .negotiated_options = {.periodic_nak = true, .retransmit_flag = true},
         .origin = origin,
@@ -12082,7 +12297,29 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
     };
     std::vector<DelayedResponse> delayed;
     DelayedKeyResponseResult result;
-    std::array<std::byte, message_size> message {};
+    const auto make_message = [npd](std::uint64_t index) {
+        std::array<std::byte, message_size> message {};
+        if (npd) {
+            message.fill(std::byte {0xff});
+            for (std::size_t offset = 0; offset < message.size();
+                offset += 188) {
+                message[offset] = std::byte {0x47};
+                message[offset + 1] = std::byte {0x1f};
+                message[offset + 3] = std::byte {0x10};
+            }
+            if (index % 3 != 0) {
+                message[1] = std::byte {0};
+                for (unsigned byte = 0; byte < 8; ++byte)
+                    message[4 + byte] =
+                        static_cast<std::byte>(index >> (8 * byte));
+            }
+            if (index % 3 == 2)
+                message[0] = std::byte {0};
+        }
+        return message;
+    };
+    std::optional<EncryptionKey> last_key;
+    const auto offered_milliseconds = npd ? 200U : 2000U;
     std::array<std::byte, 1'500> received {};
     // Windows restarts a late pacing slot at the actual send time, while
     // Linux/macOS can retain schedule credit. A 250 us simulation tick caps
@@ -12093,9 +12330,11 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
     constexpr std::uint64_t steps_per_millisecond = 1000 / tick_microseconds;
     for (std::uint64_t step = 0; step < 2'000U * steps_per_millisecond;
         ++step) {
-        if (step % steps_per_millisecond == 0U) {
+        if (step < offered_milliseconds * steps_per_millisecond
+            && step % steps_per_millisecond == 0U) {
             for (unsigned index = 0; index < messages_per_millisecond;
                 ++index) {
+                const auto message = make_message(result.queued);
                 if (sender.queue_message(message, 0, true, false, 0).status
                     == MessageIoStatus::success) {
                     ++result.queued;
@@ -12106,6 +12345,13 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         for (const auto& datagram : take_datagrams(sender_output)) {
             const auto decoded = decode_packet(datagram);
             REQUIRE(decoded);
+            if (decoded.packet.kind == PacketKind::data
+                && !decoded.packet.data.retransmitted) {
+                const auto key = decoded.packet.data.encryption_key;
+                if (last_key && *last_key != key)
+                    ++result.key_changes;
+                last_key = key;
+            }
             receiver.process_packet(decoded.packet, sender_endpoint);
         }
         (void)receiver.poll();
@@ -12117,6 +12363,10 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
                 && decoded.packet.control.subtype
                     == key_material_response_subtype) {
                 ++result.rotations;
+                if (drop_first && result.dropped_responses == 0U) {
+                    ++result.dropped_responses;
+                    continue;
+                }
                 delayed.push_back({sender_now + response_delay_microseconds,
                     std::move(datagram)});
                 continue;
@@ -12138,6 +12388,11 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
                 break;
             }
             REQUIRE_EQ(got.bytes, static_cast<std::size_t>(message_size));
+            const auto expected = make_message(result.delivered);
+            REQUIRE(
+                std::equal(expected.begin(), expected.end(), received.begin()));
+            REQUIRE_EQ(got.first_sequence.value(),
+                initial_sequence.value() + result.delivered);
             ++result.delivered;
         }
         if (step % steps_per_millisecond == 0U) {
@@ -12151,6 +12406,9 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
         REQUIRE(sender_crypto->packets_on_active_key() < 400U);
         sender_now += tick_microseconds;
         receiver_now += tick_microseconds;
+        if (npd && step >= offered_milliseconds * steps_per_millisecond
+            && result.delivered == result.queued)
+            break;
     }
     const auto totals = sender.statistics(false, true).total;
     result.overrun_positions = totals.sender_key_refresh_overrun_positions;
@@ -12159,10 +12417,43 @@ DelayedKeyResponseResult run_with_delayed_key_responses(
     REQUIRE_EQ(
         receiver.statistics(false, true).total.receiver_undecryptable.packets,
         0U);
+    if (npd) {
+        REQUIRE_EQ(
+            result.queued, messages_per_millisecond * offered_milliseconds);
+        REQUIRE_EQ(result.delivered, result.queued);
+        REQUIRE_EQ(result.dropped_responses, drop_first ? 1U : 0U);
+        REQUIRE(result.key_changes >= 2U);
+        const auto expected_units = result.queued / 3U * 13U;
+        REQUIRE_EQ(sender.npd_statistics().deleted_units, expected_units);
+        REQUIRE_EQ(receiver.npd_statistics().restored_units, expected_units);
+        REQUIRE_EQ(receiver.npd_statistics().malformed_payloads, 0U);
+    }
     return result;
 }
 
 } // namespace
+
+TEST(npd_late_and_missing_key_acknowledgements_preserve_delivery)
+{
+    for (const auto mode : {CryptoMode::aes_ctr, CryptoMode::aes_gcm}) {
+#ifndef ENABLE_AEAD_API_PREVIEW
+        if (mode == CryptoMode::aes_gcm)
+            continue;
+#endif
+        for (const auto key_size : {16U, 24U, 32U}) {
+            for (const auto delay : {30000U, 100000U}) {
+                for (const bool drop_first : {false, true}) {
+                    const auto result = run_with_delayed_key_responses(
+                        mode, delay, true, key_size, drop_first);
+                    REQUIRE_EQ(result.tlpktdrop, 0U);
+                    REQUIRE(result.overrun_positions > 0U);
+                    if (delay == 100000U)
+                        REQUIRE(result.pause_microseconds > 0U);
+                }
+            }
+        }
+    }
+}
 
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING
 namespace {
@@ -14844,4 +15135,70 @@ TEST(multicast_dispatch_repair_scan_spans_batches_then_sleeps)
     }
     REQUIRE_EQ(state->unicast_repeat_waits(), count);
     REQUIRE_EQ(state->unicast_repeat_bytes(), 0U);
+}
+
+TEST(npd_malformed_data_does_not_refresh_fec_liveness)
+{
+    for (const char* filter :
+        {"", "fec,cols:2,rows:1", "fec,cols:2,rows:-2", "fec,cols:2,rows:2"}) {
+        for (const bool valid_retry : {false, true}) {
+            const auto channel = std::make_shared<DatagramChannel>();
+            CapturedDatagrams output;
+            channel->set_send_hook_for_testing(capture_datagram, &output);
+            const Ipv4Endpoint peer {
+                .address = {198, 51, 100, 42}, .port = 12002};
+            SocketOptions options;
+            REQUIRE_EQ(options.reserve_npd_prefix(true), Error::none);
+            if (*filter)
+                REQUIRE_EQ(options.set_packet_filter(filter), Error::none);
+            std::uint64_t now = 0;
+            ConnectionRuntime runtime {{
+                .channel = channel,
+                .peer = peer,
+                .peer_socket_id = 902,
+                .initial_sequence = SequenceNumber {3200},
+                .npd_enabled = true,
+                .options = options,
+                .origin = ConnectionRuntime::Clock::now(),
+                .peer_idle_timeout_milliseconds = 5,
+                .now_function = injected_now,
+                .now_context = &now,
+            }};
+            // A reserved NPD prefix bit is invalid even on a valid FEC source.
+            const std::array<std::byte, 1> malformed {std::byte {0x80}};
+            PacketView packet;
+            packet.kind = PacketKind::data;
+            packet.data.sequence = SequenceNumber {3200};
+            packet.data.message_number = 1;
+            packet.data.boundary = MessageBoundary::solo;
+            packet.payload = malformed;
+            now = 4000;
+            runtime.process_packet(packet, peer);
+            REQUIRE_EQ(runtime.npd_statistics().malformed_payloads, 1U);
+            REQUIRE_EQ(
+                runtime.response_health().last_response_microseconds, 0U);
+            std::array<std::byte, 1500> received {};
+            REQUIRE_EQ(runtime.receive_message(received, false, -1).status,
+                MessageIoStatus::would_block);
+            if (valid_retry) {
+                // A corrected retransmission must still refresh liveness.
+                const std::array<std::byte, 2> valid {
+                    std::byte {0}, std::byte {42}};
+                packet.payload = valid;
+                packet.data.retransmitted = true;
+                now = 4500;
+                runtime.process_packet(packet, peer);
+                REQUIRE_EQ(runtime.response_health().last_response_microseconds,
+                    4500U);
+            }
+            now = 5001;
+            (void)runtime.poll();
+            REQUIRE_EQ(runtime.broken(), !valid_retry);
+            if (valid_retry) {
+                now = 9501;
+                (void)runtime.poll();
+                REQUIRE(runtime.broken());
+            }
+        }
+    }
 }

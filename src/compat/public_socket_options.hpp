@@ -63,6 +63,7 @@ struct PublicSocketOptions {
     // so accepted sockets only ever carry the strict setting.
     bool standby_rtt_required = false;
     bool standby_rtt_if_offered = false;
+    std::int32_t npd_policy = ROBOTWEAX_SRT_EXTENSION_OFF;
     bool path_identifier_required = false;
     bool path_identifier_if_offered = false;
     PathIdentifier path_identifier {};

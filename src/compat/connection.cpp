@@ -443,6 +443,10 @@ struct ListenerGroupAdmission {
 void resolve_offered_extensions(
     PublicSocketOptions& options, const HandshakeMessage& conclusion) noexcept
 {
+    if (options.npd_policy == ROBOTWEAX_SRT_EXTENSION_IF_OFFERED)
+        options.npd_policy = conclusion.has_npd
+            ? ROBOTWEAX_SRT_EXTENSION_REQUIRED
+            : ROBOTWEAX_SRT_EXTENSION_OFF;
     if (options.path_identifier_if_offered) {
         options.path_identifier_required = conclusion.has_path_identifier;
         options.path_identifier_if_offered = false;
@@ -659,6 +663,22 @@ handshake_peer_address(IpEndpoint endpoint) noexcept
     }
 #endif
     return {};
+}
+
+// A listener that answered CONCLUSION has already admitted this caller. When
+// the caller then abandons setup, one SHUTDOWN lets that listener retire the
+// connection at once instead of holding it until its peer-idle timeout. Best
+// effort: a lost packet leaves the listener on that timeout, as before.
+void send_setup_shutdown(DatagramChannel& channel, IpEndpoint peer,
+    std::uint32_t destination_socket_id, Clock::time_point origin) noexcept
+{
+    std::array<std::byte, packet_header_size + 4U> datagram {};
+    const auto encoded =
+        encode_reliability_action({.kind = ReliabilityActionKind::shutdown},
+            timestamp_since(origin), destination_socket_id, datagram);
+    if (encoded)
+        (void)channel.send_datagram(
+            std::span {datagram}.first(encoded.bytes_written), peer);
 }
 
 struct CallerHandshakeSendContext {
@@ -1259,6 +1279,8 @@ void set_key_material_state_response(
             .peer_flow_window_packets = socket.peer_flow_window_packets,
             .standby_rtt_identity = standby_rtt_identity,
             .standby_rtt_caller = standby_rtt_caller,
+            .npd_enabled = socket.public_options.npd_policy
+                == ROBOTWEAX_SRT_EXTENSION_REQUIRED,
             .options = runtime_options,
             .negotiated_options = socket.negotiated_live_options,
             .efficient_retransmission =
@@ -1868,7 +1890,8 @@ create_setup_inbox() noexcept
             std::span {envelope.raw_datagram}.first(envelope.raw_size),
             envelope.peer);
 #endif
-    if (envelope.message.has_unknown_extension) {
+    if (envelope.message.has_unknown_extension
+        || (envelope.message.has_npd && !envelope.message.npd_valid)) {
         return false;
     }
     const HandshakeAction action {
@@ -1904,6 +1927,8 @@ create_setup_inbox() noexcept
         .has_standby_rtt = envelope.message.has_standby_rtt,
         .standby_rtt = envelope.message.standby_rtt,
         .implementation_identity = envelope.message.implementation_identity,
+        .has_npd = envelope.message.has_npd,
+        .npd_valid = envelope.message.npd_valid,
     };
     std::array<std::byte, DatagramEnvelope::maximum_size> bytes {};
     const HandshakeDatagramEncodeResult encoded =
@@ -2282,11 +2307,24 @@ public:
             0);
     }
 
+    // Limited to an unechoed NPD offer; every other rejection keeps its
+    // released wire behavior.
+    void release_admitted_peer() noexcept
+    {
+        const auto admitted =
+            driver_.protocol().admitted_peer_after_npd_rejection();
+        if (admitted == 0U || !setup_.channel || admitted_peer_released_)
+            return;
+        admitted_peer_released_ = true;
+        send_setup_shutdown(*setup_.channel, peer_, admitted, origin_);
+    }
+
     [[nodiscard]] int fail_event(
         const CallerHandshakeEventResult& result) noexcept
     {
         switch (result.outcome) {
         case CallerHandshakeEventOutcome::rejected:
+            release_admitted_peer();
             return fail_connect(
                 socket_, SRT_ECONNREJ, 0, result.rejection_reason);
         case CallerHandshakeEventOutcome::failed:
@@ -2371,6 +2409,7 @@ private:
     CallerSetup& setup_;
     std::shared_ptr<DatagramInbox> inbox_;
     Clock::time_point origin_ {};
+    bool admitted_peer_released_ = false;
     CallerHandshakeEventDriver driver_;
     bool defer_peer_rejection_ = false;
     std::optional<CallerPeerRejection> peer_rejection_;
@@ -2841,6 +2880,7 @@ private:
     void finish_event(const CallerHandshakeEventResult& result) noexcept
     {
         if (result.outcome == CallerHandshakeEventOutcome::rejected) {
+            establishment_->release_admitted_peer();
             defer_peer_rejection({SRT_ECONNREJ, 0, result.rejection_reason});
             return;
         }
@@ -4373,7 +4413,8 @@ int connect_socket(
         // A Caller states what it requires; only a Listener may accept
         // either form of a peer.
         if (path_options.standby_rtt_if_offered
-            || path_options.path_identifier_if_offered)
+            || path_options.path_identifier_if_offered
+            || path_options.npd_policy == ROBOTWEAX_SRT_EXTENSION_IF_OFFERED)
             return fail(SRT_EINVPARAM);
         if (path_options.standby_rtt_required
             && (socket->group_id == SRT_INVALID_SOCK
@@ -4665,6 +4706,8 @@ int connect_socket(
                 return fail(SRT_ESYSOBJ);
             setup.configuration.standby_rtt_nonce = *nonce;
         }
+        setup.configuration.require_npd = socket->public_options.npd_policy
+            == ROBOTWEAX_SRT_EXTENSION_REQUIRED;
         setup.configuration.require_path_identifier =
             socket->public_options.path_identifier_required;
         setup.configuration.path_identifier =
@@ -5162,6 +5205,25 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         policy_error = SRT_ESECFAIL;
     }
     if (!policy_rejected
+        && public_options.npd_policy != ROBOTWEAX_SRT_EXTENSION_OFF
+        && (!conclusion.has_npd || !conclusion.npd_valid
+            || conclusion.has_group_membership
+            || selected_protocol != ListenerHandshakeProtocol::hsv5)) {
+        policy_rejected = true;
+        policy_rejection = SRT_REJ_ROGUE;
+        policy_error = SRT_ECONNREJ;
+    }
+    // A valid offer means the caller abandons setup unless it is echoed.
+    // Admitting it here would hand the application a connection that the
+    // caller has already closed, so an OFF listener rejects it explicitly.
+    if (!policy_rejected
+        && public_options.npd_policy == ROBOTWEAX_SRT_EXTENSION_OFF
+        && conclusion.has_npd && conclusion.npd_valid) {
+        policy_rejected = true;
+        policy_rejection = SRT_REJ_ROGUE;
+        policy_error = SRT_ECONNREJ;
+    }
+    if (!policy_rejected
         && (public_options.path_identifier_required
                 != conclusion.has_path_identifier
             || (public_options.path_identifier_required
@@ -5404,6 +5466,8 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
     if (public_options.standby_rtt_required) {
         configuration.hsv5.standby_rtt_nonce = authenticated_standby_nonce;
     }
+    configuration.hsv5.require_npd =
+        public_options.npd_policy == ROBOTWEAX_SRT_EXTENSION_REQUIRED;
     configuration.hsv5.require_path_identifier =
         public_options.path_identifier_required;
     configuration.hsv5.require_session_authentication =

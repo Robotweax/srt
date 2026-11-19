@@ -203,7 +203,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_multicast_dispatch_tests", "robotweax_srt_idle_readiness_tests",
             "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests", "robotweax_srt_hybrid_soak_tests", "robotweax_srt_hybrid_harness_tests",
             "robotweax_srt_hybrid_return_lag_tests",
-            "robotweax_srt_arq_transport_tests",
+            "robotweax_srt_arq_transport_tests", "robotweax_srt_npd_tests",
             "robotweax_srt_transport_runtime_tests",
             "robotweax_srt_session_auth_admission_tests",
             "robotweax_srt_acp1_tests",
@@ -257,7 +257,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "srt_compat_group_pathid_",
             "compat_runtime_keeps_live_data_flowing_while_a_key_response_is_late",
             "stale_drop_coverage", "stale_nak", "standby_rtt_native_runtime_", "compat_group_connect_joins_with_unread_messages_across_rollover",
-            "tsbpd_rtt", "multicast_dispatch", "hybrid_", "hybrid_network_", "hybrid_key_network_", "hybrid_load_network_", "hybrid_soak_network_", "hybrid_harness_network_", "compat_idle_readiness_", "arq_transport_",
+            "tsbpd_rtt", "multicast_dispatch", "hybrid_", "hybrid_network_", "hybrid_key_network_", "hybrid_load_network_", "hybrid_soak_network_", "hybrid_harness_network_", "compat_idle_readiness_", "arq_transport_", "npd_",
             "compat_group_", "platform_timing_report",
         ])
         self.assertEqual(commands["robotweax_srt_platform_timing_report"], [
@@ -368,6 +368,7 @@ class CiTestRegistrationTests(unittest.TestCase):
         self.assertIn("RUN_SERIAL TRUE", soak_properties.group(1))
         self.assertIn("TIMEOUT 30", soak_properties.group(1))
         self.assertIn("ROBOTWEAX_TEST_HYBRID_SOAK_SECONDS=4", soak_properties.group(1))
+        self.assertEqual(commands["robotweax_srt_npd_tests"], ["--include", "npd_"])
         self.assertEqual(commands["robotweax_srt_tsbpd_rtt_tests"], [
             "--include", "tsbpd_rtt",
         ])
@@ -421,7 +422,7 @@ class CiTestRegistrationTests(unittest.TestCase):
             "robotweax_srt_multicast_dispatch_tests",
             "robotweax_srt_hybrid_network_tests", "robotweax_srt_hybrid_key_timing_tests", "robotweax_srt_hybrid_load_tests", "robotweax_srt_hybrid_soak_tests", "robotweax_srt_hybrid_harness_tests",
             "robotweax_srt_hybrid_return_lag_tests",
-            "robotweax_srt_arq_transport_tests",
+            "robotweax_srt_arq_transport_tests", "robotweax_srt_npd_tests",
             "robotweax_srt_native_reuseport_tests", "robotweax_srt_local_address_tests",
             "robotweax_srt_group_pathid_tests",
             "robotweax_srt_group_acquire_tests",
@@ -477,7 +478,7 @@ class CiTestRegistrationTests(unittest.TestCase):
                 cmake,
             )
             self.assertIsNotNone(profile_properties)
-            self.assertIn("TIMEOUT 30", profile_properties.group(1))
+            self.assertIn("TIMEOUT 120" if name == "robotweax_srt_npd_tests" else "TIMEOUT 30", profile_properties.group(1))
             self.assertIn("integration", profile_properties.group(1))
             self.assertIn("network" if name in network_partitions else "encryption",
                           profile_properties.group(1))

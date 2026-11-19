@@ -4,6 +4,19 @@
 #include <limits>
 
 namespace robotweax::srt {
+Error SocketOptions::reserve_npd_prefix(bool enabled) noexcept
+{
+    SocketOptions candidate = *this;
+    candidate.npd_prefix_reserved_ = enabled;
+    if (candidate.maximum_payload_size_limit() == 0U)
+        return Error::invalid_payload_size;
+    candidate.maximum_payload_size_ =
+        std::min(candidate.requested_maximum_payload_size_,
+            candidate.maximum_payload_size_limit());
+    *this = candidate;
+    return Error::none;
+}
+
 namespace {
 
 [[nodiscard]] constexpr bool is_boolean(std::int64_t value) noexcept
@@ -191,10 +204,17 @@ Error SocketOptions::set(SocketOption option, std::int64_t value) noexcept
             && static_cast<std::size_t>(value) <= packet_header_size_
                     + packet_filter_configuration_.extra_header_size()
                     + authenticated_fec_overhead
+                    + (npd_prefix_reserved_ ? 1U : 0U)
                     + (requires_authenticated_data()
                             ? srt_gcm_authentication_tag_size
                             : 0U))
             return Error::invalid_state;
+        if (npd_prefix_reserved_) {
+            auto candidate = *this;
+            candidate.maximum_segment_size_ = static_cast<std::size_t>(value);
+            if (candidate.maximum_payload_size_limit() == 0U)
+                return Error::invalid_state;
+        }
         maximum_segment_size_ = static_cast<std::size_t>(value);
         maximum_payload_size_ = std::min(
             requested_maximum_payload_size_,

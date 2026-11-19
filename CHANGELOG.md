@@ -11,6 +11,10 @@ version returned by `srt_getversion()`.
   wait with events still reports them first, and no descriptor or system-socket
   polling is involved. `ROBOTWEAX_SRT_EPOLL_WAKE_VERSION` marks headers that
   declare it. Existing calls behave as before for programs that never call it.
+- Add default-OFF experimental MPEG-TS null packet deletion for individual Live
+  Caller/Listener sockets, with strict negotiation, encrypted DATA/FEC support
+  and private cumulative counters. See the [NPD contract](docs/null-packet-deletion.md)
+  for provisional identifiers, validation evidence and remaining release scope.
 
 ## 0.3.3 — Hybrid Multicast and Transport Hardening
 
