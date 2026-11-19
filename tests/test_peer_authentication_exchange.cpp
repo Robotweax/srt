@@ -3064,8 +3064,7 @@ TEST(
     REQUIRE(!io_failed.load());
 }
 
-TEST(
-    peer_auth_public_caller_gates_callback_data_and_identity_until_final_key_ack)
+TEST(peer_auth_public_caller_gates_publication_without_shifting_receive_clock)
 {
     for (const bool cancel : {false, true}) {
         PublicPeerCallback callback;
@@ -3179,8 +3178,12 @@ TEST(
             SRT_ERROR);
         if (cancel)
             REQUIRE_EQ(srt_close(sockets.caller), 0);
-        else
+        else {
+            // Keep M2 and final key confirmation far enough apart to expose
+            // pairing M2's timestamp with the later publication time.
+            std::this_thread::sleep_for(std::chrono::milliseconds {700});
             release = true;
+        }
         REQUIRE(future.wait_for(std::chrono::seconds {3})
             == std::future_status::ready);
         const auto result = future.get();
@@ -3197,6 +3200,19 @@ TEST(
                 11);
             REQUIRE_EQ(std::string_view(received.data(), 11),
                 std::string_view("early reply"));
+            // Fresh DATA should retain the default 120 ms delivery delay.
+            // A clock initialized at publication adds the 700 ms hold above;
+            // use a bounded receive with ample scheduling margin to catch it.
+            const int receive_timeout = 400;
+            REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVTIMEO,
+                           &receive_timeout, sizeof(receive_timeout)),
+                0);
+            REQUIRE_EQ(srt_sendmsg(sockets.child, "fresh", 5, -1, 0), 5);
+            REQUIRE_EQ(
+                srt_recvmsg(sockets.caller, received.data(), received.size()),
+                5);
+            REQUIRE_EQ(std::string_view(received.data(), 5),
+                std::string_view("fresh"));
         }
         if (cancel) {
             std::lock_guard lock(retained->mutex);

@@ -2866,6 +2866,7 @@ private:
                     peer_early_data_.push_back(envelope);
                 return true;
             }
+            const auto arrival_microseconds = microseconds_since(origin_);
             const auto result = peer_handshake_->receive(bytes, Clock::now());
             // Capture transport metadata only from the authenticated response
             // that caused us to emit our confirmation.
@@ -2879,6 +2880,7 @@ private:
                     if (response) {
                         peer_response_ = response.message;
                         peer_timestamp_ = response.control.timestamp;
+                        peer_arrival_microseconds_ = arrival_microseconds;
                     }
                 }
             }
@@ -3014,7 +3016,7 @@ private:
                 peer_response_.packet.maximum_transmission_unit, *protocol))
             return fail_connect(*socket_, SRT_ECONNSETUP);
         if (attach_runtime(*socket_, setup_.channel, origin_,
-                microseconds_since(origin_), peer_timestamp_, nullptr, 0U,
+                peer_arrival_microseconds_, peer_timestamp_, nullptr, 0U,
                 inbox_, {}, {}, true)
             == SRT_ERROR)
             return fail_connect(*socket_,
@@ -3200,6 +3202,8 @@ private:
     std::vector<DatagramEnvelope> peer_early_data_;
     HandshakeMessage peer_response_ {};
     PacketTimestamp peer_timestamp_ {};
+    // Pair M2's timestamp with its arrival, not final key confirmation.
+    std::uint64_t peer_arrival_microseconds_ = 0;
 #endif
     std::shared_ptr<RuntimeScheduler> scheduler_;
     std::shared_ptr<SocketRecord> socket_;
