@@ -2953,11 +2953,10 @@ private:
                 && result.rejection_reason != SRT_REJ_UNSECURE;
             finish(Clock::now() >= overall_deadline_
                     ? fail_connect(*socket_, SRT_ENOSERVER)
-                    : peer_reason
-                    ? fail_connect(
-                          *socket_, SRT_ECONNREJ, 0, result.rejection_reason)
-                    : fail_connect(
-                          *socket_, SRT_ESECFAIL, 0, SRT_REJ_UNSECURE));
+                    : peer_reason ? fail_connect(*socket_, SRT_ECONNREJ, 0,
+                                        result.rejection_reason)
+                                  : fail_connect(*socket_, SRT_ESECFAIL, 0,
+                                        SRT_REJ_UNSECURE));
             return false;
         }
         for (std::size_t i = 0; i < result.size; ++i) {

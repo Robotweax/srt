@@ -664,8 +664,8 @@ HandshakeDatagramEncodeResult encode_handshake_datagram(
             == 0U)
             return {.error = Error::invalid_extension};
         const auto extension = encode_multicast_source(action.multicast_source,
-            destination.subspan(
-                ordinary_required - source_extension_size, source_extension_size));
+            destination.subspan(ordinary_required - source_extension_size,
+                source_extension_size));
         if (!extension)
             return {.error = extension.error};
     }

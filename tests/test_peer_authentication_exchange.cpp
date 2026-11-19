@@ -677,8 +677,7 @@ void negate_s(std::span<std::byte, 64> signature)
 {
     unsigned borrow = 0;
     for (std::size_t i = 64; i-- > 32;) {
-        const unsigned value =
-            std::to_integer<unsigned>(signature[i]) + borrow;
+        const unsigned value = std::to_integer<unsigned>(signature[i]) + borrow;
         borrow = p256_order[i - 32] < value ? 1U : 0U;
         signature[i] = std::byte(
             static_cast<unsigned char>(p256_order[i - 32] + 256U - value));
@@ -2151,8 +2150,8 @@ TEST(peer_auth_transport_adapter_reports_explicit_listener_rejection)
         const auto decoded =
             decode_handshake_datagram(p.offer.outgoing[0].view());
         REQUIRE(decoded);
-        HandshakeAction action {
-            .kind = HandshakeActionKind::send, .packet = decoded.message.packet};
+        HandshakeAction action {.kind = HandshakeActionKind::send,
+            .packet = decoded.message.packet};
         action.packet.extension_field = 0;
         action.packet.request = static_cast<HandshakeRequest>(1'000 + 1403);
         std::array<std::byte, 1500> bytes {};
@@ -2210,12 +2209,10 @@ TEST(peer_auth_exchange_prevalidated_pins_skip_per_attempt_validation)
     REQUIRE_EQ(credentials.set_identity(scalar(1)), Error::none);
     REQUIRE_EQ(credentials.set_trusted(pins), Error::none);
     pa::Digest identifier {};
-    REQUIRE_EQ(
-        default_crypto_provider().sha256(public_key(17), identifier),
+    REQUIRE_EQ(default_crypto_provider().sha256(public_key(17), identifier),
         Error::none);
     REQUIRE(credentials.trusts(identifier));
-    REQUIRE_EQ(
-        default_crypto_provider().sha256(public_key(18), identifier),
+    REQUIRE_EQ(default_crypto_provider().sha256(public_key(18), identifier),
         Error::none);
     REQUIRE(!credentials.trusts(identifier));
     TrackingProvider validating, prevalidated;
@@ -2253,8 +2250,8 @@ TEST(peer_auth_exchange_unverified_confirmations_share_one_allowance)
     auto forged = p.m3;
     forged[60] ^= std::byte {1};
     for (const auto* bad : {&resized, &forged, &resized}) {
-        REQUIRE(p.listener.accept_confirmation(*bad, passphrase())
-            != Error::none);
+        REQUIRE(
+            p.listener.accept_confirmation(*bad, passphrase()) != Error::none);
         REQUIRE(!p.listener.failed());
         REQUIRE_EQ(p.lp.derivations, 0U);
     }
@@ -2897,14 +2894,14 @@ TEST(peer_auth_public_caller_reports_listener_application_rejection)
         REQUIRE_EQ(srt_connect_callback(
                        sockets.caller, PublicPeerCallback::observe, &callback),
             0);
-        REQUIRE_EQ(srt_listen_callback(
-                       sockets.listener,
-                       +[](void*, SRTSOCKET child, int, const sockaddr*,
-                            const char*) {
-                           (void)srt_setrejectreason(child, SRT_REJC_PREDEFINED + 403);
-                           return -1;
-                       },
-                       nullptr),
+        REQUIRE_EQ(
+            srt_listen_callback(
+                sockets.listener,
+                +[](void*, SRTSOCKET child, int, const sockaddr*, const char*) {
+                    (void)srt_setrejectreason(child, SRT_REJC_PREDEFINED + 403);
+                    return -1;
+                },
+                nullptr),
             0);
         const bool synchronous = !nonblocking;
         REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVSYN, &synchronous,
@@ -2919,7 +2916,8 @@ TEST(peer_auth_public_caller_reports_listener_application_rejection)
         const auto result = future.get();
         REQUIRE_EQ(result.error, SRT_ECONNREJ);
         REQUIRE(!result.authenticated);
-        REQUIRE_EQ(srt_getrejectreason(sockets.caller), SRT_REJC_PREDEFINED + 403);
+        REQUIRE_EQ(
+            srt_getrejectreason(sockets.caller), SRT_REJC_PREDEFINED + 403);
     }
 }
 
