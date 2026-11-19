@@ -5283,10 +5283,6 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
             }
             return;
         }
-        // Bare FEC parity has no authentication tag and is not proof of liveness.
-        if (crypto_ == nullptr || !crypto_->authenticated_data_enabled()
-            || packet.data.message_number != 0U)
-            last_peer_activity_microseconds_ = now;
         const auto process_reconstructed =
             [&](std::span<const PacketView> packets)
                 noexcept {
@@ -5308,6 +5304,10 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
                 return true;
             };
         if (filtered.consume_control_packet) {
+            // Preserve the parity liveness policy. Source DATA, including NPD,
+            // must pass payload validation before it can refresh activity.
+            if (crypto_ == nullptr || !crypto_->authenticated_data_enabled())
+                last_peer_activity_microseconds_ = now;
             statistics_.note_data_received(
                 packet.payload.size(), false,
                 packet.data.retransmitted);
@@ -5333,6 +5333,7 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
                     {.defer_feedback = true}, true, authenticated_plaintext)) {
                 return;
             }
+            last_peer_activity_microseconds_ = now;
             if (!process_reconstructed(
                     filtered.reconstructed_packets)) {
                 return;
@@ -5345,6 +5346,7 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
                 packet, now, {}, true, authenticated_plaintext)) {
             return;
         }
+        last_peer_activity_microseconds_ = now;
         (void)report_filter_losses_locked(
             filtered.irrecoverable_losses, now);
         return;

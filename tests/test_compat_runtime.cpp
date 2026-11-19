@@ -15136,3 +15136,69 @@ TEST(multicast_dispatch_repair_scan_spans_batches_then_sleeps)
     REQUIRE_EQ(state->unicast_repeat_waits(), count);
     REQUIRE_EQ(state->unicast_repeat_bytes(), 0U);
 }
+
+TEST(npd_malformed_data_does_not_refresh_fec_liveness)
+{
+    for (const char* filter :
+        {"", "fec,cols:2,rows:1", "fec,cols:2,rows:-2", "fec,cols:2,rows:2"}) {
+        for (const bool valid_retry : {false, true}) {
+            const auto channel = std::make_shared<DatagramChannel>();
+            CapturedDatagrams output;
+            channel->set_send_hook_for_testing(capture_datagram, &output);
+            const Ipv4Endpoint peer {
+                .address = {198, 51, 100, 42}, .port = 12002};
+            SocketOptions options;
+            REQUIRE_EQ(options.reserve_npd_prefix(true), Error::none);
+            if (*filter)
+                REQUIRE_EQ(options.set_packet_filter(filter), Error::none);
+            std::uint64_t now = 0;
+            ConnectionRuntime runtime {{
+                .channel = channel,
+                .peer = peer,
+                .peer_socket_id = 902,
+                .initial_sequence = SequenceNumber {3200},
+                .npd_enabled = true,
+                .options = options,
+                .origin = ConnectionRuntime::Clock::now(),
+                .peer_idle_timeout_milliseconds = 5,
+                .now_function = injected_now,
+                .now_context = &now,
+            }};
+            // A reserved NPD prefix bit is invalid even on a valid FEC source.
+            const std::array<std::byte, 1> malformed {std::byte {0x80}};
+            PacketView packet;
+            packet.kind = PacketKind::data;
+            packet.data.sequence = SequenceNumber {3200};
+            packet.data.message_number = 1;
+            packet.data.boundary = MessageBoundary::solo;
+            packet.payload = malformed;
+            now = 4000;
+            runtime.process_packet(packet, peer);
+            REQUIRE_EQ(runtime.npd_statistics().malformed_payloads, 1U);
+            REQUIRE_EQ(
+                runtime.response_health().last_response_microseconds, 0U);
+            std::array<std::byte, 1500> received {};
+            REQUIRE_EQ(runtime.receive_message(received, false, -1).status,
+                MessageIoStatus::would_block);
+            if (valid_retry) {
+                // A corrected retransmission must still refresh liveness.
+                const std::array<std::byte, 2> valid {
+                    std::byte {0}, std::byte {42}};
+                packet.payload = valid;
+                packet.data.retransmitted = true;
+                now = 4500;
+                runtime.process_packet(packet, peer);
+                REQUIRE_EQ(runtime.response_health().last_response_microseconds,
+                    4500U);
+            }
+            now = 5001;
+            (void)runtime.poll();
+            REQUIRE_EQ(runtime.broken(), !valid_retry);
+            if (valid_retry) {
+                now = 9501;
+                (void)runtime.poll();
+                REQUIRE(runtime.broken());
+            }
+        }
+    }
+}
