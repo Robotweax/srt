@@ -11,6 +11,10 @@
 #include <memory>
 #include <new>
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+#include "crypto_openssl_p256.hpp"
+#endif
+
 namespace robotweax::srt {
 namespace {
 
@@ -408,6 +412,48 @@ public:
         secure_erase(output);
         return Error::cryptographic_failure;
     }
+
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    Error generate_p256_key(std::unique_ptr<P256Key>& key) noexcept override
+    {
+        return openssl_peer_auth::generate(key);
+    }
+    Error import_p256_key(std::span<const std::byte, 32> scalar,
+        std::unique_ptr<P256Key>& output) noexcept override
+    {
+        output.reset();
+        openssl_peer_auth::Key key;
+        const auto error = openssl_peer_auth::import_private(scalar, key);
+        return error == Error::none
+            ? openssl_peer_auth::own(std::move(key), output)
+            : error;
+    }
+    Error validate_p256_public_key(
+        std::span<const std::byte, 64> point) noexcept override
+    {
+        openssl_peer_auth::Key key;
+        return openssl_peer_auth::import_public(point, key);
+    }
+    Error verify_p256_sha256(std::span<const std::byte, 64> public_key,
+        std::span<const std::byte> message,
+        std::span<const std::byte, 64> signature) noexcept override
+    {
+        return openssl_peer_auth::verify(public_key, message, signature);
+    }
+    Error sha256(std::span<const std::byte> input,
+        std::span<std::byte, 32> output) noexcept override
+    {
+        unsigned int size = 0;
+        if (EVP_Digest(input.data(), input.size(),
+                reinterpret_cast<unsigned char*>(output.data()), &size,
+                EVP_sha256(), nullptr)
+                == 1
+            && size == output.size())
+            return Error::none;
+        secure_erase(output);
+        return Error::cryptographic_failure;
+    }
+#endif
 
     Error wrap_key(
         std::span<const std::byte> key_encrypting_key,

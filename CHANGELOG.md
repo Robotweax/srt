@@ -11,6 +11,25 @@ version returned by `srt_getversion()`.
   wait with events still reports them first, and no descriptor or system-socket
   polling is involved. `ROBOTWEAX_SRT_EPOLL_WAKE_VERSION` marks headers that
   declare it. Existing calls behave as before for programs that never call it.
+- Add default-off experimental pinned-key caller/listener authentication behind
+  `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH`. OpenSSL P-256 identities,
+  a passphrase and AES-GCM protect setup and traffic-key establishment; public
+  connections remain unpublished until both traffic-key directions confirm.
+  See the [draft contract and qualification evidence](docs/peer-authentication.md).
+  Independent cryptographic review is pending; groups, rendezvous and additional
+  P-256 backends are outside this first version.
+- Peer authentication: check the claimed key identifier before any public-key
+  work and stop revalidating pinned keys per attempt; drop unauthenticated
+  flights on a pending listener child instead of ending it; erase the identity
+  scalar from accepted and connected sockets.
+- Peer authentication wire change: signatures are canonical low-S. Signers
+  normalize `s` and verifiers reject the other encoding as an invalid
+  signature, so both peers need this revision.
+- Peer authentication: a caller reports an explicit listener rejection as
+  `SRT_ECONNREJ` with the listener's reason instead of `SRT_ESECFAIL`, except
+  for UNSECURE; P-256 operations no longer leave entries in the calling
+  thread's OpenSSL error queue; the socket options moved to
+  `0x0100001d`-`0x01000021`.
 - Add default-OFF experimental MPEG-TS null packet deletion for individual Live
   Caller/Listener sockets, with strict negotiation, encrypted DATA/FEC support
   and private cumulative counters. See the [NPD contract](docs/null-packet-deletion.md)

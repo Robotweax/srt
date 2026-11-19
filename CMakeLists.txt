@@ -57,6 +57,8 @@ option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_UDP_SEGMENTATION
     "Linux only: send equal-length DATA runs with UDP_SEGMENT (experimental)" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1
     "Enable experimental authenticated runtime controls" OFF)
+option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH
+    "Enable experimental pinned-key caller/listener authentication (unreviewed)" OFF)
 option(ROBOTWEAX_SRT_WINDOWS_TIMER_PERIOD
     "On Windows, hold a one millisecond timer period while the runtime scheduler exists" ON)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL
@@ -82,6 +84,10 @@ option(ENABLE_MAXREXMITBW "Enable optional retransmission bandwidth limit" OFF)
 option(ENABLE_AEAD_API_PREVIEW
     "Enable the version-pinned AES-GCM extension API" OFF)
 
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH AND NOT ENABLE_AEAD_API_PREVIEW)
+    message(FATAL_ERROR "Experimental peer authentication requires ENABLE_AEAD_API_PREVIEW=ON")
+endif()
+
 if(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT AND NOT BUILD_SHARED_LIBS)
     message(FATAL_ERROR
         "ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT currently requires "
@@ -100,12 +106,41 @@ endif()
 
 set(ROBOTWEAX_SRT_CRYPTO_BACKEND "openssl" CACHE STRING "Crypto backend: openssl, mbedtls (3.6.x), or bcrypt (experimental Windows only)")
 set_property(CACHE ROBOTWEAX_SRT_CRYPTO_BACKEND PROPERTY STRINGS openssl bcrypt mbedtls)
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH
+        AND NOT ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl")
+    message(WARNING
+        "Experimental peer authentication has P-256 support only with the "
+        "OpenSSL backend. With ${ROBOTWEAX_SRT_CRYPTO_BACKEND} the key options "
+        "return SRT_EINVOP and no connection can use it.")
+endif()
 if(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "openssl")
     set(ROBOTWEAX_SRT_CRYPTO_BACKEND_ID 1)
     find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
     set(ROBOTWEAX_SRT_CRYPTO_SOURCE src/crypto_openssl.cpp)
     set(ROBOTWEAX_SRT_CRYPTO_LIBRARY OpenSSL::Crypto)
     set(ROBOTWEAX_SRT_PC_CRYPTO_REQUIRES "libcrypto >= 3.0")
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
+        include(CheckCXXSourceCompiles)
+        include(CMakePushCheckState)
+        cmake_push_check_state(RESET)
+        set(CMAKE_REQUIRED_LIBRARIES OpenSSL::Crypto)
+        check_cxx_source_compiles("#include <openssl/ec.h>
+            #include <openssl/evp.h>
+            #ifdef OPENSSL_NO_EC
+            #error OpenSSL elliptic curve support is required
+            #endif
+            int main() {
+                auto* group = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1);
+                EC_GROUP_free(group);
+                auto* ctx = EVP_PKEY_CTX_new_from_name(nullptr, \"EC\", nullptr);
+                EVP_PKEY_CTX_free(ctx);
+                return 0;
+            }" ROBOTWEAX_SRT_OPENSSL_PEERAUTH_SUPPORTED)
+        cmake_pop_check_state()
+        if(NOT ROBOTWEAX_SRT_OPENSSL_PEERAUTH_SUPPORTED)
+            message(FATAL_ERROR "Experimental peer authentication requires OpenSSL P-256 support")
+        endif()
+    endif()
 elseif(ROBOTWEAX_SRT_CRYPTO_BACKEND STREQUAL "mbedtls")
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
     find_package(MbedTLS 3.6.7 REQUIRED MODULE)
@@ -275,6 +310,12 @@ if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_FILTERS)
     target_include_directories(robotweax_srt PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/experimental/packet_filters")
     target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_FILTERS)
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
+    target_sources(robotweax_srt PRIVATE src/peer_authentication.cpp
+        src/peer_authentication_admission.cpp
+        src/compat/peer_authentication_handshake.cpp)
+    target_compile_definitions(robotweax_srt PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH)
 endif()
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
 target_compile_definitions(robotweax_srt PRIVATE
@@ -635,6 +676,10 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
         tests/test_compat_runtime.cpp
         tests/test_standby_rtt_runtime.cpp
         tests/test_compat_message_attempts.cpp)
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
+        target_sources(robotweax_srt_tests PRIVATE tests/test_peer_authentication.cpp
+            tests/test_peer_authentication_p256.cpp tests/test_peer_authentication_exchange.cpp)
+    endif()
     target_compile_definitions(robotweax_srt_tests PRIVATE
         ROBOTWEAX_SRT_MAX_GROUP_MEMBERS=${ROBOTWEAX_SRT_MAX_GROUP_MEMBERS}
         ROBOTWEAX_SRT_EXPECT_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})
@@ -2484,6 +2529,13 @@ if(ROBOTWEAX_SRT_BUILD_FUZZERS)
         target_compile_options(fuzz_acp1_control_open PRIVATE -fsanitize=fuzzer,address,undefined)
         target_link_options(fuzz_acp1_control_open PRIVATE -fsanitize=fuzzer,address,undefined)
     endif()
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
+        add_executable(fuzz_peer_authentication fuzz/fuzz_peer_authentication.cpp)
+        target_include_directories(fuzz_peer_authentication PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_link_libraries(fuzz_peer_authentication PRIVATE RobotweaxSRT::srt)
+        target_compile_options(fuzz_peer_authentication PRIVATE -fsanitize=fuzzer,address,undefined)
+        target_link_options(fuzz_peer_authentication PRIVATE -fsanitize=fuzzer,address,undefined)
+    endif()
     add_executable(fuzz_aead_packet_open
         fuzz/fuzz_aead_packet_open.cpp)
     target_link_libraries(fuzz_aead_packet_open
@@ -2541,6 +2593,9 @@ endif()
 set(ROBOTWEAX_SRT_PC_CFLAGS "")
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_ACP1)
     string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DROBOTWEAX_SRT_EXPERIMENTAL_ACP1")
+endif()
+if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH)
+    string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH")
 endif()
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_HYBRID_CONTROL)
     string(APPEND ROBOTWEAX_SRT_PC_CFLAGS " -DROBOTWEAX_SRT_EXPERIMENTAL_HYBRID_CONTROL")

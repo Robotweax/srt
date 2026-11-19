@@ -541,6 +541,13 @@ void shutdown_record(
         // terminal callback). Established runtimes own their crypto state;
         // asynchronous linger does not need the configured passphrase.
         std::lock_guard lock(record->mutex);
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+        record->native_options.clear_peer_authentication();
+        record->has_authenticated_peer = false;
+        record->authenticated_peer = {};
+        record->has_incoming_peer_authentication = false;
+        record->incoming_peer_authentication = {};
+#endif
         (void)record->native_options.set_passphrase({});
     }
     if (honor_linger

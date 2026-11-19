@@ -281,6 +281,20 @@ typedef enum SRT_SOCKOPT {
      * from group sending; inspect group data. No automatic fallback. The
      * fixed-source wire format and receiver configuration are unchanged. */
     SRTO_ROBOTWEAX_MCAST_COORDINATED = 0x0100001a,
+    /** Experimental peer authentication, compiled only with
+     * ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_PEERAUTH; every option returns
+     * SRT_EINVOP otherwise. PRE options. POLICY is OFF or REQUIRED, KEY is a
+     * write-only 32-byte P-256 scalar, TRUSTED is one to sixteen 64-byte
+     * public keys. See docs/peer-authentication.md. */
+    SRTO_ROBOTWEAX_PEERAUTH_POLICY = 0x0100001d,
+    SRTO_ROBOTWEAX_PEERAUTH_KEY = 0x0100001e,
+    SRTO_ROBOTWEAX_PEERAUTH_TRUSTED = 0x0100001f,
+    /** Claimed 32-byte key identifier, read-only during the listen callback;
+     * this is not an authenticated identity. */
+    SRTO_ROBOTWEAX_PEERAUTH_OFFERED = 0x01000020,
+    /** Read-only on a connected socket: the 64-byte public key the peer
+     * authenticated with. */
+    SRTO_ROBOTWEAX_PEERAUTH_PEER = 0x01000021,
     /* PRE int32_t optional MPEG-TS null deletion; OFF/REQUIRED/IF_OFFERED.
      * IF_OFFERED is listener-only; groups and Rendezvous are unsupported.
      * A non-OFF policy lowers the SRTO_PAYLOADSIZE ceiling by one byte and

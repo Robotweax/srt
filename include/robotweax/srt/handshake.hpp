@@ -107,6 +107,25 @@ enum class HandshakeActionKind : std::uint8_t {
     failed,
 };
 
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+struct PeerAuthenticationContent {
+    std::array<std::byte, 232> bytes {};
+    std::size_t size = 0;
+    [[nodiscard]] std::span<const std::byte> view() const noexcept
+    {
+        return std::span {bytes}.first(size <= bytes.size() ? size : 0);
+    }
+};
+struct PeerAuthenticationPayload {
+    std::array<std::byte, 1456> bytes {};
+    std::size_t size = 0;
+    [[nodiscard]] std::span<const std::byte> view() const noexcept
+    {
+        return std::span {bytes}.first(size <= bytes.size() ? size : 0);
+    }
+};
+#endif
+
 struct HandshakeAction {
     HandshakeActionKind kind = HandshakeActionKind::none;
     Handshake packet{};
@@ -141,6 +160,10 @@ struct HandshakeAction {
     bool has_standby_rtt = false;
     StandbyRttIdentity standby_rtt {};
     ImplementationIdentity implementation_identity {};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    bool has_peer_authentication = false;
+    PeerAuthenticationContent peer_authentication {};
+#endif
     bool has_npd = false;
     bool npd_valid = true;
 };
@@ -194,6 +217,13 @@ struct HandshakeMessage {
     bool has_standby_rtt = false;
     StandbyRttIdentity standby_rtt {};
     ImplementationIdentity implementation_identity {};
+#ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
+    bool has_peer_authentication = false;
+    PeerAuthenticationContent peer_authentication {};
+    // Exact received payload, including opaque extensions. Never reconstruct
+    // a proof transcript from decoded fields or omit unknown extensions.
+    PeerAuthenticationPayload peer_authentication_payload {};
+#endif
     bool has_npd = false;
     bool npd_valid = true;
 };

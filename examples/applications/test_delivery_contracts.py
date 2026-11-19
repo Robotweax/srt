@@ -3,6 +3,7 @@
 import unittest
 
 from test_applications import validate_summaries
+from test_hybrid_multicast import validate_path_recovery
 
 
 class DeliveryContractTests(unittest.TestCase):
@@ -60,6 +61,25 @@ class DeliveryContractTests(unittest.TestCase):
     def test_recovery_remains_loss_free(self):
         with self.assertRaises(AssertionError):
             self.check("recovery", channel="recovery")
+
+
+class HybridPathContractTests(unittest.TestCase):
+    def test_direct_fallback_and_return(self):
+        validate_path_recovery(['unicast', 'overlap', 'multicast',
+                                'unicast', 'overlap', 'multicast'])
+
+    def test_aborted_overlap_can_retry_before_recovery(self):
+        # Exact path sequence observed in the Windows CTR sample CI failure.
+        validate_path_recovery(['unicast', 'overlap', 'multicast', 'unicast',
+                                'overlap', 'unicast', 'overlap', 'multicast'])
+
+    def test_missing_startup_fallback_or_recovery_is_rejected(self):
+        for modes in ([], ['multicast', 'unicast', 'multicast'],
+                      ['unicast', 'overlap', 'multicast'],
+                      ['unicast', 'multicast', 'unicast', 'overlap', 'unicast'],
+                      ['unicast', 'multicast', 'unicast', 'overlap']):
+            with self.subTest(modes=modes), self.assertRaises(AssertionError):
+                validate_path_recovery(modes)
 
 
 if __name__ == "__main__":

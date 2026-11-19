@@ -22,6 +22,10 @@ developers and transport integrators using the installed public API.
 - [Experimental ACP1](experimental-acp1.md) — experimental runtime-control
   authentication, strict bilateral opt-in and provisional wire/API contract.
 
+- [Peer authentication draft](peer-authentication.md) — unreviewed, default-off
+  pinned-key protocol with experimental caller/listener support; independent
+  cryptographic review remains outstanding.
+
 - [Experimental hybrid control](experimental-hybrid-control.md) — staged,
   default-off capability codecs and session-bound control admission, without
   socket activation.
