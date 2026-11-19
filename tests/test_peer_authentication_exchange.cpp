@@ -3641,3 +3641,64 @@ TEST(peer_auth_public_queued_setup_obeys_deadline_and_close)
         }
     }
 }
+
+TEST(peer_auth_public_slow_listener_callback_preserves_receive_clock)
+{
+    PublicPeerSockets sockets;
+    REQUIRE_EQ(srt_listen_callback(
+                   sockets.listener,
+                   +[](void*, SRTSOCKET, int, const sockaddr*, const char*) {
+                       // The runtime origin precedes this callback. Handshake timestamps
+                       // must retain that origin even when admission takes time.
+                       std::this_thread::sleep_for(
+                           std::chrono::milliseconds {700});
+                       return 0;
+                   },
+                   nullptr),
+        0);
+    sockets.listen();
+    REQUIRE_EQ(sockets.connect(), 0);
+    sockets.child = srt_accept(sockets.listener, nullptr, nullptr);
+    REQUIRE(sockets.child != SRT_INVALID_SOCK);
+    // Default delivery latency is 120 ms. Allow scheduling margin, but not
+    // the extra 700 ms caused by restarting the handshake clock.
+    const int receive_timeout = 400;
+    REQUIRE_EQ(srt_setsockflag(sockets.caller, SRTO_RCVTIMEO, &receive_timeout,
+                   sizeof(receive_timeout)),
+        0);
+    REQUIRE_EQ(srt_sendmsg(sockets.child, "fresh", 5, -1, 0), 5);
+    std::array<char, 1500> received {};
+    REQUIRE_EQ(
+        srt_recvmsg(sockets.caller, received.data(), received.size()), 5);
+    REQUIRE_EQ(std::string_view(received.data(), 5), std::string_view("fresh"));
+}
+
+TEST(peer_auth_transport_adapter_uses_connection_timestamp_origin)
+{
+    const PeerHandshake::Time origin {};
+    const auto caller_start = origin + std::chrono::milliseconds {700};
+    const auto listener_start = caller_start + std::chrono::milliseconds {400};
+    const auto deadline = origin + std::chrono::seconds {5};
+    auto co = peer_handshake_options(true), lo = peer_handshake_options(false);
+    PeerHandshake caller(peer_handshake_configuration(true, co), co,
+        default_crypto_provider(), origin);
+    PeerHandshake listener(peer_handshake_configuration(false, lo), lo,
+        default_crypto_provider(), origin);
+    REQUIRE(!listener.start(listener_start, deadline).failed);
+    const auto induction = caller.start(caller_start, deadline);
+    REQUIRE_EQ(induction.size, 1U);
+    const auto sent = decode_handshake_datagram(induction.outgoing[0].view());
+    REQUIRE(sent);
+    REQUIRE_EQ(sent.control.timestamp.value(), 700000U);
+    const auto cookie =
+        listener.receive(induction.outgoing[0].view(), listener_start);
+    REQUIRE_EQ(cookie.size, 1U);
+    const auto response = decode_handshake_datagram(cookie.outgoing[0].view());
+    REQUIRE(response);
+    REQUIRE_EQ(response.control.timestamp.value(), 1100000U);
+    const auto retry = caller.retry(listener_start);
+    REQUIRE_EQ(retry.size, 1U);
+    const auto repeated = decode_handshake_datagram(retry.outgoing[0].view());
+    REQUIRE(repeated);
+    REQUIRE_EQ(repeated.control.timestamp.value(), 1100000U);
+}

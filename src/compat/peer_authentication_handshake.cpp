@@ -20,12 +20,13 @@ PeerAuthenticationHandshake::transport_configuration(
 }
 PeerAuthenticationHandshake::PeerAuthenticationHandshake(
     HandshakeMachine::Configuration configuration, const SocketOptions& options,
-    CryptoProvider& provider) noexcept
+    CryptoProvider& provider, std::optional<Time> timestamp_origin) noexcept
     : configuration_(configuration)
     , options_(options)
     , transport_(transport_configuration(configuration, options))
     , admission_(provider, configuration.role == ConnectionRole::caller)
     , caller_(configuration.role == ConnectionRole::caller)
+    , timestamp_origin_(timestamp_origin)
     , key_length_(
           static_cast<std::uint8_t>(options.configured_encryption_key_length()))
 {
@@ -221,7 +222,7 @@ PeerAuthenticationHandshake::Result PeerAuthenticationHandshake::start(
         fail(result, Error::invalid_state);
         return finish(result);
     }
-    origin_ = now;
+    origin_ = timestamp_origin_.value_or(now);
     deadline_ = deadline;
     state_ = State::discovery;
     if (caller_) {

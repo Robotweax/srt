@@ -3,6 +3,7 @@
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
 #include "peer_authentication_admission.hpp"
 #include "robotweax/srt/handshake_datagram.hpp"
+#include <optional>
 
 namespace robotweax::srt::compat {
 struct ListenerHandshakeAdmission;
@@ -39,7 +40,8 @@ public:
     };
     PeerAuthenticationHandshake(HandshakeMachine::Configuration configuration,
         const SocketOptions& options,
-        CryptoProvider& provider = default_crypto_provider()) noexcept;
+        CryptoProvider& provider = default_crypto_provider(),
+        std::optional<Time> timestamp_origin = std::nullopt) noexcept;
     ~PeerAuthenticationHandshake();
     PeerAuthenticationHandshake(const PeerAuthenticationHandshake&) = delete;
     PeerAuthenticationHandshake& operator=(
@@ -102,6 +104,9 @@ private:
     peer_authentication::Admission admission_;
     bool caller_;
     State state_ = State::fresh;
+    // Socket owners share this origin with DATA; standalone adapters may
+    // default to their start time. Deadline checks remain independent.
+    std::optional<Time> timestamp_origin_;
     Time origin_ {}, deadline_ {};
     std::uint32_t peer_socket_id_ = 0;
     unsigned retries_ = 0;

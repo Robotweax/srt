@@ -2682,7 +2682,8 @@ private:
         if (peer_mode_) {
             try {
                 peer_handshake_ = std::make_unique<PeerAuthenticationHandshake>(
-                    setup_.configuration, setup_.options);
+                    setup_.configuration, setup_.options,
+                    default_crypto_provider(), origin_);
                 peer_early_data_.reserve(64);
             } catch (...) {
                 finish(fail_connect(*socket_, SRT_ENOBUF));
@@ -5733,7 +5734,8 @@ SRTSOCKET ListenerRuntime::start_admitted_socket(
         try {
             setup_context->peer_authentication =
                 std::make_shared<PeerAuthenticationHandshake>(
-                    configuration.hsv5, native_options);
+                    configuration.hsv5, native_options,
+                    default_crypto_provider(), origin);
             configuration.peer_authentication =
                 setup_context->peer_authentication;
         } catch (...) {
