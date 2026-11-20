@@ -15,6 +15,17 @@
       "tracking_issue": "https://github.com/Robotweax/srt/issues/406"
     }
   ],
-  "not_decided_for_this_release": "The residual risks accepted for 0.3.3 in acceptance-0.3.3.json (macOS identity-rendezvous timeout, intermittent OBS desktop reconnect) have not been re-decided for 0.3.4. No correction for either is part of this product.",
-  "scope": "Only the risk listed above. All other required release gates must pass."
+  "scope": "Only the risks listed above. All other required release gates must pass.",
+  "carried_over_from_0.3.3": {
+    "decision_date": "2026-11-20",
+    "decision": "Owner confirmed that the residual risks accepted for 0.3.3 carry over to 0.3.4 unchanged.",
+    "record": "acceptance-0.3.3.json",
+    "risks": [
+      "Unresolved macOS identity-rendezvous timeout",
+      "Intermittent OBS desktop automatic SRT reconnect failure (Windows timeout, macOS zero-byte listener)"
+    ],
+    "root_cause_established": false,
+    "marked_fixed": false,
+    "correction_in_this_product": false
+  }
 }

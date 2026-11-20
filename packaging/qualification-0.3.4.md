@@ -55,8 +55,9 @@ changelog entry, and in `packaging/debian/changelog`.
   documented limit on 19 November 2026 and tracked in
   [issue 406](https://github.com/Robotweax/srt/issues/406).
 - The residual risks accepted for 0.3.3 (macOS identity-rendezvous timeout,
-  intermittent OBS desktop reconnect) have not been re-decided for 0.3.4. No
-  correction for either is part of this product.
+  intermittent OBS desktop reconnect) carry over unchanged by the owner's
+  decision of 20 November 2026. No correction for either is part of this
+  product; neither is marked fixed.
 - Three corrections from the [0.3.4 delta disposition](../docs/security-delta-0.3.4.md)
   have no test that observes them: expected-tag erasure, batch receive
   hardening and the group enrolment rollback.
