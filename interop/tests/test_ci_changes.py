@@ -1127,7 +1127,7 @@ class CiChangeClassifierTests(unittest.TestCase):
         packages = (root / ".github/workflows/linux-packages.yml").read_text()
         self.assertIn("image: 'ubuntu:26.04'", packages)
         self.assertTrue((root / "packaging/debian/changelog").read_text().startswith(
-            "robotweax-srt (0.3.3-1) resolute;"))
+            "robotweax-srt (0.3.4-1) resolute;"))
 
     def test_vlc_artifact_is_diagnostics_only(self) -> None:
         workflow = (INTEROP_DIRECTORY.parent / ".github/workflows/ci.yml").read_text()
