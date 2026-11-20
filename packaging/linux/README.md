@@ -1,9 +1,9 @@
 # Ubuntu and Fedora package prototypes
 
-These distribution recipes build the immutable Robotweax SRT 0.3.3 source
-revision `f5948a4b059aa1c8e7aa5e932053f92ff37eb6ff`, not the repository
+These distribution recipes build the immutable Robotweax SRT 0.3.4 source
+revision `6009c6430b46e8691181bbd8690bf36c3ef0d661`, not the repository
 checkout. The source archive SHA-256 is
-`ccc2c409790f0d72bedbc7f87ebeb429fe723716af3b30bdd87f52fbc3d79ec7`.
+`66ab41f65523fce7cea66c5ac54b44f3f8d7b5a87586755b00ee91a70d870116`.
 The CI workflow verifies this hash before starting a container.
 
 Ubuntu 26.04 produces `librobotweax-srt0.3` and
@@ -15,7 +15,7 @@ Robotweax consumers before and after installing Haivision, then remove
 Robotweax and rerun the Haivision consumer.
 
 The Ubuntu recipe targets the `resolute` series. Its test also creates an
-unsigned `robotweax-srt_0.3.3-1_source.changes`, `.dsc`, packaging diff
+unsigned `robotweax-srt_0.3.4-1_source.changes`, `.dsc`, packaging diff
 and the original tarball. Lintian checks the source package, and extraction
 checks that the original tarball is byte-for-byte the pinned upstream archive.
 The Fedora test creates an SRPM, checks its MIT license metadata and extracts

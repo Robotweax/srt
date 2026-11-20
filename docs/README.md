@@ -1,7 +1,7 @@
 # Robotweax SRT documentation
 
 This directory contains the public documentation for building, integrating,
-operating, and evaluating Robotweax SRT 0.3.3.
+operating, and evaluating Robotweax SRT 0.3.4.
 It is written for application
 developers and transport integrators using the installed public API.
 
@@ -145,6 +145,10 @@ named as public contracts may change between pre-1.0 releases.
 
 ## Releases and migration
 
+- [0.3.4 security-sensitive delta disposition](security-delta-0.3.4.md) — focused review of the changes since 0.3.3 and retained limits.
+- [Robotweax SRT 0.3.4 release notes](release-notes-0.3.4.md) — epoll wake, setup hardening, idle polling and experimental profiles.
+- [Release contract for 0.3.4](release-process-0.3.4.md) — frozen-source qualification, single protected rebuild and publication gates.
+
 - [0.3.3 security-sensitive delta disposition](security-delta-0.3.3.md) — focused review, provenance fix and retained limits.
 - [Robotweax SRT 0.3.3 release notes](release-notes-0.3.3.md) — hybrid multicast, repair budgets and receive-key hardening.
 - [Release contract for 0.3.3](release-process-0.3.3.md) — frozen-source qualification and publication gates.
@@ -176,7 +180,7 @@ named as public contracts may change between pre-1.0 releases.
 - [Project changelog](../CHANGELOG.md)
 
 Robotweax release numbers, the shared-library ABI, the compatible SRT API
-value, and the wire handshake generation are independent. For 0.3.3, the ABI
+value, and the wire handshake generation are independent. For 0.3.4, the ABI
 line is 0.3, the default public API and `srt_getversion()` value are 1.5.7,
 and supported connection establishment uses HSv5.
 

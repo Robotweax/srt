@@ -1,9 +1,9 @@
 class RobotweaxSrt < Formula
   desc "Robotweax Secure Reliable Transport"
   homepage "https://github.com/Robotweax/srt"
-  url "https://github.com/Robotweax/srt/archive/f5948a4b059aa1c8e7aa5e932053f92ff37eb6ff.tar.gz"
-  version "0.3.3"
-  sha256 "ccc2c409790f0d72bedbc7f87ebeb429fe723716af3b30bdd87f52fbc3d79ec7"
+  url "https://github.com/Robotweax/srt/archive/6009c6430b46e8691181bbd8690bf36c3ef0d661.tar.gz"
+  version "0.3.4"
+  sha256 "66ab41f65523fce7cea66c5ac54b44f3f8d7b5a87586755b00ee91a70d870116"
   license "MIT"
 
   depends_on "cmake" => :build

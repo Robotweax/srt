@@ -322,9 +322,12 @@ struct ListenerGroupAdmission {
                     path_identifier, false)
                 || group_generation != mirror.generation) {
                 if (member_generation != 0U) {
-                    GroupRegistry::instance().remove_member(
-                        mirror.group, mirror.generation,
-                        member_handle, member_generation);
+                    // The row lives in the incarnation that accepted it. A
+                    // group replaced since prepare_mirror reports another
+                    // generation; removing by the mirror's would be a no-op
+                    // and leave a pending row counted against the capacity.
+                    GroupRegistry::instance().remove_member(mirror.group,
+                        group_generation, member_handle, member_generation);
                     member_generation = 0U;
                 }
                 return false;

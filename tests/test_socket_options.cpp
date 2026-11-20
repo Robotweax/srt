@@ -4,6 +4,10 @@
 #include "srt/srt.h"
 
 #include <cstdint>
+#ifndef _WIN32
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#endif
 #include <string_view>
 #include <vector>
 
@@ -940,6 +944,22 @@ TEST(socket_options_peer_authentication_is_unavailable_by_default)
         REQUIRE_EQ(srt_setsockflag(socket, option, &value, size), SRT_ERROR);
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
         REQUIRE_EQ(srt_getsockflag(socket, option, &value, &size), SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
+    }
+    // The answer does not depend on socket state: a listening socket must
+    // not report SRT_ECONNSOCK for an option this build does not have.
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE_EQ(srt_bind(socket, reinterpret_cast<const sockaddr*>(&address),
+                   sizeof(address)),
+        0);
+    REQUIRE_EQ(srt_listen(socket, 1), 0);
+    for (auto option : {SRTO_ROBOTWEAX_PEERAUTH_POLICY,
+             SRTO_ROBOTWEAX_PEERAUTH_KEY, SRTO_ROBOTWEAX_PEERAUTH_TRUSTED}) {
+        int value = 1;
+        REQUIRE_EQ(
+            srt_setsockflag(socket, option, &value, sizeof(value)), SRT_ERROR);
         REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVOP);
     }
     REQUIRE_EQ(srt_close(socket), 0);
