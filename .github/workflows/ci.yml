@@ -481,7 +481,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.portable == 'true'
     strategy:
-      fail-fast: ${{ github.event_name == 'pull_request' }}
+      # In two pull-request runs a sibling cancelled by fail-fast was not
+      # started by "Re-run failed jobs", so the required gate could not pass
+      # (issue 407).
+      fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
