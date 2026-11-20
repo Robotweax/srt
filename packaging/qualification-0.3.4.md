@@ -92,11 +92,33 @@ the Required CI gate of that run failed with it. The run was not re-run.
 - Local macOS arm64, Release build of the product commit: 80 consecutive
   repetitions of the test passed.
 - No other isolated failure of this test is among the last 100 CI runs.
-- Cause not established. The delivery gap is consistent with a stall of the
-  hosted runner longer than the latency window, but nothing measured here
-  distinguishes that from a delay inside the library. 0.3.4 changes wake-up
-  timing for sparse traffic; a contribution of that change is neither shown
-  nor excluded.
+- [Full CI, 44704113041](https://github.com/Robotweax/srt/actions/runs/44704113041) on the following record commit
+  `be05e63` passed on the first attempt, this job included: 64 jobs passed,
+  1 skipped.
+
+Hosted comparison,
+[run 44704672021](https://github.com/Robotweax/srt/actions/runs/44704672021): the test alone, repeated on
+`macos-latest` with the configuration of the failing job, 6 jobs of 200
+iterations for each source. The workflow is the only change of commit
+`fa561d673e8f68a2cdec104f3e556db314b46452` on the temporary branch
+`diag/arqfirst-macos-0.3.4`; the logs of the failing iterations are in the
+run's artifacts, which expire after 14 days.
+
+| Source | Iterations | Failures | Largest delivery gap of each failure |
+|---|---|---|---|
+| Product commit `6009c64` | 1,200 | 1 | 133.9 ms |
+| `v0.3.3` (`69bd532`) | 1,200 | 3 | 196.6, 202.9 and 220.8 ms |
+
+- All four failures have the signature of the first one: 159 of 160 messages,
+  one receive drop, a delivery gap above the 120 ms latency.
+- The failure therefore exists on `v0.3.3` under the same conditions and is
+  not introduced by 0.3.4. The counts are too small to compare the two rates;
+  they show no increase on 0.3.4 and do not prove the rates equal.
+- Still not established: whether the late delivery originates in the hosted
+  runner or in the library. Nothing measured here separates the two, and the
+  failure has not been reproduced locally. The test leaves no margin for a
+  delay of this size on hosted macOS and can fail again, in this job or on
+  the tag.
 
 ## Not yet run on the frozen product
 
