@@ -120,6 +120,28 @@ run's artifacts, which expire after 14 days.
   delay of this size on hosted macOS and can fail again, in this job or on
   the tag.
 
+## Second first failure: Windows helper-test timeout
+
+Record commit `c408520` changes only this file.
+[Full CI, 44715753633](https://github.com/Robotweax/srt/actions/runs/44715753633) on it passed on the first attempt:
+64 jobs passed, 1 skipped, with the Linux, macOS and Windows Release jobs.
+
+[Pull-request CI 44715761217](https://github.com/Robotweax/srt/actions/runs/44715761217/job/136218713106) on the same
+commit failed in "windows-latest Release" on image 20261103.629:
+`robotweax_srt_application_process_support` reached its 20-second timeout.
+The other 110 tests of the job passed.
+
+- The test is Python only. It exercises the example process helper (log
+  capture and port planning) and does not load the library. Neither the test
+  nor the helper differs from `v0.3.3`.
+- Attempt 2 re-ran the job and it passed. That does not establish the cause.
+- "macos-latest Release" was cancelled by the Windows failure before it was
+  assigned a runner and did not execute in any of the three attempts, so the
+  Required CI gate of that run failed in each. The job passed on the same
+  commit in the full CI run above.
+- Cause not established. The timeout left no test output. Earlier runs were
+  not searched for the same timeout.
+
 ## Not yet run on the frozen product
 
 - The protected rebuild, signing and release draft, which belong to the tag.
