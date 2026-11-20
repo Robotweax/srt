@@ -1094,15 +1094,18 @@ TEST(udp_socket_receive_batch_clears_peers_and_clamps_reported_lengths)
     for (std::size_t index = 0; index < count; ++index) {
         const auto* bytes =
             reinterpret_cast<const unsigned char*>(&peers[index]);
-        REQUIRE(std::all_of(bytes, bytes + sizeof(peers[index]),
-            [](unsigned char value) { return value == 0U; }));
+        REQUIRE(std::all_of(
+            bytes, bytes + sizeof(peers[index]), [](unsigned char value) {
+                return value == 0U;
+            }));
         REQUIRE_EQ(messages[index].msg_hdr.msg_name,
             static_cast<void*>(&peers[index]));
-        REQUIRE_EQ(static_cast<std::size_t>(messages[index].msg_hdr.msg_namelen),
+        REQUIRE_EQ(
+            static_cast<std::size_t>(messages[index].msg_hdr.msg_namelen),
             sizeof(peers[index]));
         REQUIRE_EQ(messages[index].msg_hdr.msg_iov, &buffers[index]);
-        REQUIRE_EQ(static_cast<std::size_t>(messages[index].msg_hdr.msg_iovlen),
-            1U);
+        REQUIRE_EQ(
+            static_cast<std::size_t>(messages[index].msg_hdr.msg_iovlen), 1U);
         REQUIRE_EQ(buffers[index].iov_base,
             static_cast<void*>(storage.data() + index * slot_size));
         REQUIRE_EQ(buffers[index].iov_len, slot_size);
@@ -1116,8 +1119,7 @@ TEST(udp_socket_receive_batch_clears_peers_and_clamps_reported_lengths)
     messages[2].msg_len = static_cast<unsigned int>(slot_size + 9U);
     messages[2].msg_hdr.msg_flags = MSG_TRUNC;
     std::array<UdpIoResult, count> results {};
-    detail::complete_receive_batch(
-        messages, peers, slot_size, count, results);
+    detail::complete_receive_batch(messages, peers, slot_size, count, results);
     REQUIRE(results[0]);
     REQUIRE_EQ(results[0].bytes_transferred, 8U);
     REQUIRE(results[1]);
@@ -1128,8 +1130,7 @@ TEST(udp_socket_receive_batch_clears_peers_and_clamps_reported_lengths)
     // Only the consumed prefix is written.
     std::array<UdpIoResult, count> partial {};
     partial[1].bytes_transferred = 77U;
-    detail::complete_receive_batch(
-        messages, peers, slot_size, 1U, partial);
+    detail::complete_receive_batch(messages, peers, slot_size, 1U, partial);
     REQUIRE_EQ(partial[0].bytes_transferred, 8U);
     REQUIRE_EQ(partial[1].bytes_transferred, 77U);
 }
