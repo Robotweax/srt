@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Port planning avoids dynamic allocation and rejects occupied blocks."""
+import faulthandler
 import unittest
 import sys
 import tempfile
@@ -81,4 +82,10 @@ class PortTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    # On hosted Windows this test has stopped until its 20-second CTest
+    # timeout, which leaves no output (issue 407). Print every thread's stack
+    # and fail before that timeout, so the next occurrence shows where it
+    # waits. If the timeout still fires with no stack, the process did not
+    # reach this line.
+    faulthandler.dump_traceback_later(15, exit=True)
     unittest.main()
