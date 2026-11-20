@@ -145,7 +145,9 @@ The other 110 tests of the job passed.
 ## Merge, tag and publication
 
 This section was added after publication. It records what followed record
-commit `ff3c7fc` and changes no earlier statement.
+commit `ff3c7fc` and replaces the former "Not yet run on the frozen product"
+section, whose only entry was the protected rebuild, signing and release
+draft. No other earlier statement is changed.
 
 On `ff3c7fc`, [full CI 44726538408](https://github.com/Robotweax/srt/actions/runs/44726538408) passed on the first attempt.
 [Pull-request CI 44726544653](https://github.com/Robotweax/srt/actions/runs/44726544653) failed in its first attempt in
