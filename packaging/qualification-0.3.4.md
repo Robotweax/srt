@@ -65,9 +65,41 @@ the product commit, Release/OpenSSL, CTR and GCM at 30 seconds each.
 
 Local macOS arm64 Debug `ctest` on the frozen tree: 97 of 97 passed.
 
+Downstream Lab requests on the product commit all returned PASS with archive
+validation and cleanup verified, using Haivision
+`899348d8318eb9a3c5a5b6ec43c4a1114288773a`, Telemetry
+`d03ca4527b005be0cfbe542ddaac6c0ede5e7955`, Doctor
+`88f8e33851f4fa975ab1b708e9f707d27505a399` and the telemetry endpoint profile:
+[smoke](https://github.com/Robotweax/srt_network_lab/actions/runs/44698180743), [interop](https://github.com/Robotweax/srt_network_lab/actions/runs/44698184590), [telemetry](https://github.com/Robotweax/srt_network_lab/actions/runs/44698188691).
+
+Record commit `cb39772` changes only files under `packaging`.
+[Full CI, 44697891134](https://github.com/Robotweax/srt/actions/runs/44697891134) on it passed on the first attempt:
+64 jobs passed, 1 skipped.
+
+## First failure on the frozen product
+
+[Pull-request CI 44697896434](https://github.com/Robotweax/srt/actions/runs/44697896434/job/136159029880) on `cb39772`
+failed in "AES-GCM platform/ABI (macos-latest)":
+`robotweax_srt_application_recovery-arqfirst_ctr` delivered 159 of 160
+messages. The receiver reported one belated packet, one receive drop and a
+largest delivery gap of 288.6 ms against the sample's 120 ms latency. The
+remaining 49 example tests of the job passed, including the GCM variant of the
+same scenario. The Windows leg of the matrix was cancelled by the failure and
+the Required CI gate of that run failed with it. The run was not re-run.
+
+- The same job passed on the same commit in full CI 44697891134, and in both
+  CI runs on `fe91e0a`, whose frozen paths are identical.
+- Local macOS arm64, Release build of the product commit: 80 consecutive
+  repetitions of the test passed.
+- No other isolated failure of this test is among the last 100 CI runs.
+- Cause not established. The delivery gap is consistent with a stall of the
+  hosted runner longer than the latency window, but nothing measured here
+  distinguishes that from a delay inside the library. 0.3.4 changes wake-up
+  timing for sparse traffic; a contribution of that change is neither shown
+  nor excluded.
+
 ## Not yet run on the frozen product
 
-- Downstream Lab smoke, interoperability and telemetry requests.
 - The protected rebuild, signing and release draft, which belong to the tag.
 
 ## Open on this product
