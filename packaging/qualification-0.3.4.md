@@ -206,6 +206,12 @@ documents. [Publication 44772229425](https://github.com/Robotweax/homebrew-tap/a
 bottle is byte-identical to the qualified artifact, and its provenance names
 that publication run. No vcpkg registry, PPA or COPR is published.
 
+After publication, the change that adds this section also adds tests for two
+of the three corrections listed below as untested: expected-tag erasure and
+batch receive hardening. They run on `main`, not on the released product. The
+group enrolment rollback has no test; by a later reading of the handle
+allocator its corrected branch cannot be reached.
+
 ## Open on this product
 
 - Peer-authentication listener admission is serialised; accepted as a
