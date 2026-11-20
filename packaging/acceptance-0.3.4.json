@@ -1,0 +1,20 @@
+{
+  "version": "0.3.4",
+  "product_commit": "6009c6430b46e8691181bbd8690bf36c3ef0d661",
+  "accepted_risks": [
+    {
+      "risk": "Peer authentication (build option, default off): listener admission is serialised through one pending setup slot; a caller that names a pinned key identifier and never sends its third message delays other admissions on that listener until the connection timeout or retry limit.",
+      "decision_date": "2026-11-19",
+      "decision": "Owner accepted shipping the experimental, default-off 0.3.4 profile with this recorded as a documented limit.",
+      "mitigation_implemented": false,
+      "marked_fixed": false,
+      "documented_in": [
+        "docs/peer-authentication.md",
+        "docs/security-delta-0.3.4.md"
+      ],
+      "tracking_issue": "https://github.com/Robotweax/srt/issues/406"
+    }
+  ],
+  "not_decided_for_this_release": "The residual risks accepted for 0.3.3 in acceptance-0.3.3.json (macOS identity-rendezvous timeout, intermittent OBS desktop reconnect) have not been re-decided for 0.3.4. No correction for either is part of this product.",
+  "scope": "Only the risk listed above. All other required release gates must pass."
+}
