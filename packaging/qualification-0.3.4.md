@@ -39,15 +39,36 @@ changelog entry, and in `packaging/debian/changelog`.
   19.52.37029 and passed with the warning reported as a warning. "OBS Windows
   desktop" has not been observed on 19.52; it uses the same build script.
 
+## Results on the frozen product
+
+Recipe commit `fe91e0a` selects the archive and leaves every frozen path
+unchanged. All runs on it succeeded on the first attempt:
+
+- [Full CI, 44692277103](https://github.com/Robotweax/srt/actions/runs/44692277103) with the Required CI gate and the
+  complete ecosystem suite: 64 jobs passed, 1 skipped ("Live timing
+  interoperability"). "OBS Windows desktop" ran on MSVC 19.52.37029 and
+  "OBS Windows integration" on 19.51.36260; with attempt 3 of the pre-freeze
+  run, both OBS Windows jobs have now passed once on 19.52.
+- [Linux packages, 44692283146](https://github.com/Robotweax/srt/actions/runs/44692283146) and
+  [Package managers, 44692283008](https://github.com/Robotweax/srt/actions/runs/44692283008) from the exact archive.
+- [Windows SDK, 44692283043](https://github.com/Robotweax/srt/actions/runs/44692283043): validation, build matrix,
+  installers and coexistence, 16 jobs. `rebuild`, `rebuild-qualification`,
+  `sign` and `release-draft` were skipped as intended; the from-source rebuild
+  is reserved for the final tag and runs once, see the
+  [release contract](../docs/release-process-0.3.4.md).
+- Pull-request CI 44692283106, hybrid control 44692283265 (includes the Linux
+  strict soak), ACP1 44692283019, BCrypt 44692283017 and peer authentication
+  44692283086.
+
+[Local macOS hybrid soak](soak-0.3.4-macos.json): passed on a clean checkout of
+the product commit, Release/OpenSSL, CTR and GCM at 30 seconds each.
+
+Local macOS arm64 Debug `ctest` on the frozen tree: 97 of 97 passed.
+
 ## Not yet run on the frozen product
 
-- Full CI with the Required CI gate and the complete ecosystem suite.
-- Linux packages and package managers from the exact archive.
-- Windows SDK build matrix, installers and coexistence by plain dispatch. The
-  from-source rebuild is reserved for the final tag and runs once; see the
-  [release contract](../docs/release-process-0.3.4.md).
-- Hybrid soak on a clean checkout of the product commit.
 - Downstream Lab smoke, interoperability and telemetry requests.
+- The protected rebuild, signing and release draft, which belong to the tag.
 
 ## Open on this product
 
