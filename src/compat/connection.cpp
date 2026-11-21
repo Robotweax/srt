@@ -311,6 +311,9 @@ struct ListenerGroupAdmission {
             sockaddr_storage peer_address{};
             int peer_address_size =
                 static_cast<int>(sizeof(peer_address));
+            // A group handle is never reused, so the record that accepts
+            // the row is the one the mirror describes and reports the
+            // mirror's generation. A refused row leaves nothing to remove.
             std::uint64_t group_generation = 0;
             if (write_ip_endpoint(endpoint,
                     reinterpret_cast<sockaddr*>(&peer_address),
@@ -319,17 +322,7 @@ struct ListenerGroupAdmission {
                 || !GroupRegistry::instance().add_member(mirror.group,
                     member_handle, peer_address, peer.weight, -1,
                     group_generation, member_generation, &first_member,
-                    path_identifier, false)
-                || group_generation != mirror.generation) {
-                if (member_generation != 0U) {
-                    // The row lives in the incarnation that accepted it. A
-                    // group replaced since prepare_mirror reports another
-                    // generation; removing by the mirror's would be a no-op
-                    // and leave a pending row counted against the capacity.
-                    GroupRegistry::instance().remove_member(mirror.group,
-                        group_generation, member_handle, member_generation);
-                    member_generation = 0U;
-                }
+                    path_identifier, false)) {
                 return false;
             }
         }
