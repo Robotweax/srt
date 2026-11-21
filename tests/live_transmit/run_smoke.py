@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import secrets
 import socket
 import subprocess
 import sys
@@ -23,13 +24,22 @@ class Smoke:
         self.results: list[dict] = []
 
     def port(self) -> int:
+        # Plan ports below the usual dynamic ranges (Linux from 32768, macOS
+        # and Windows from 49152). A port taken from the dynamic range by
+        # binding to 0 is released before the application binds it, and the
+        # system can hand the same number to another socket in between: the
+        # proxy, a peer's outgoing socket or an unrelated process (issue 407).
         for _ in range(128):
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.bind(('127.0.0.1', 0))
-                value = s.getsockname()[1]
-            if value not in self.allocated:
-                self.allocated.add(value)
-                return value
+            value = 10000 + secrets.randbelow(20000)
+            if value in self.allocated:
+                continue
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.bind(('127.0.0.1', value))
+            except OSError:
+                continue
+            self.allocated.add(value)
+            return value
         raise RuntimeError('unable to allocate distinct loopback ports')
 
     @staticmethod
@@ -178,6 +188,28 @@ class Smoke:
             results.append({'name': f'input-{value}', 'rejected': True})
         return results
 
+    @staticmethod
+    def hung_process_state(pid: int) -> str:
+        """Describe a process that has not exited: CPU time, threads, modules."""
+        if sys.platform == 'win32':
+            script = (
+                f'$p = Get-Process -Id {pid}; '
+                '$p | Format-List Id,StartTime,TotalProcessorTime,Responding,HandleCount | Out-String; '
+                '"threads: " + $p.Threads.Count; '
+                '$p.Threads | Format-Table Id,ThreadState,WaitReason,TotalProcessorTime | Out-String; '
+                '"modules: " + $p.Modules.Count; '
+                '$p.Modules | ForEach-Object { $_.FileName }')
+            command = ['powershell', '-NoProfile', '-NonInteractive', '-Command', script]
+        else:
+            command = ['ps', '-o', 'pid,stat,time,etime,nlwp,command', '-p', str(pid)]
+            if sys.platform == 'darwin':
+                command = ['ps', '-M', '-p', str(pid)]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            return (result.stdout + result.stderr).strip() or f'no output (exit {result.returncode})'
+        except (OSError, subprocess.SubprocessError) as error:
+            return f'process state unavailable: {error!r}'
+
     def version(self) -> dict:
         # The version run covers process start (loading the fresh executable
         # and its libraries), srt_startup, the print and srt_cleanup. On hosted
@@ -196,11 +228,26 @@ class Smoke:
         output = ''
         for _ in range(2):
             started = time.monotonic()
-            version = subprocess.run([str(self.binary), '-version'], capture_output=True,
-                                     text=True, timeout=bound)
+            process = subprocess.Popen([str(self.binary), '-version'], stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True)
+            try:
+                stdout, stderr = process.communicate(timeout=bound)
+            except subprocess.TimeoutExpired:
+                # A run past the bound is a hang (issue 407). Record what the
+                # process was doing before it is killed, then fail as before.
+                state = self.hung_process_state(process.pid)
+                process.kill()
+                stdout, stderr = process.communicate()
+                (self.artifacts / 'version-hang.log').write_text(
+                    f'version run exceeded {bound:g} seconds; earlier runs: {seconds}\n'
+                    f'--- process state before kill ---\n{state}\n'
+                    f'--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n')
+                print(f'version run exceeded {bound:g} seconds; process state before kill:\n{state}',
+                      file=sys.stderr)
+                raise
             seconds.append(round(time.monotonic() - started, 3))
-            output = version.stdout + version.stderr
-            assert version.returncode == 0 and 'Transport provider: Robotweax SRT' in output, output
+            output = stdout + stderr
+            assert process.returncode == 0 and 'Transport provider: Robotweax SRT' in output, output
             if seconds[-1] <= 5.0:
                 break
         (self.artifacts / 'version.log').write_text(

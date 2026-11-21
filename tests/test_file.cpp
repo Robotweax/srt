@@ -132,8 +132,7 @@ TEST(filecc_delayed_ack_and_burst_loss_update_only_on_observed_feedback)
         SequenceNumber{118}, SequenceNumber{217},
         3, 100, 1'000, 50'000);
     REQUIRE_EQ(
-        controller.packet_sending_period_microseconds(),
-        std::ceil(before_delay * 1.03));
+        controller.packet_sending_period_microseconds(), before_delay * 1.03);
 }
 
 TEST(filecc_slow_start_exit_rejects_an_immature_peer_rate)
@@ -207,7 +206,7 @@ TEST(filecc_sparse_ack_without_peer_rate_preserves_startup_fallback)
         initial.advanced(8), initial.advanced(63), 2, 17, 0, 100'000);
     REQUIRE(!controller.slow_start());
     REQUIRE_EQ(controller.packet_sending_period_microseconds(),
-        std::ceil((110'000.0 / 17.0) * 1.03));
+        (110'000.0 / 17.0) * 1.03);
 }
 
 TEST(filecc_missing_rate_fallback_ignores_idle_time_and_respects_bandwidth_cap)
@@ -237,12 +236,12 @@ TEST(filecc_sparse_ack_with_low_peer_rate_keeps_slow_path_and_loss_response)
         // is still valid. It must not be replaced by the no-feedback fallback.
         controller.on_loss(
             SequenceNumber {1}, SequenceNumber {16}, 1, 16, 0, 90'000);
-        const auto first_period = std::ceil(1'000'000.0 / rate * 1.03);
+        const auto first_period = 1'000'000.0 / rate * 1.03;
         REQUIRE_EQ(
             controller.packet_sending_period_microseconds(), first_period);
         controller.on_loss(
             SequenceNumber {17}, SequenceNumber {32}, 1, 16, 0, 90'000);
         REQUIRE_EQ(controller.packet_sending_period_microseconds(),
-            std::ceil(first_period * 1.03));
+            first_period * 1.03);
     }
 }

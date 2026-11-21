@@ -1,5 +1,6 @@
 #include "robotweax/srt/udp.hpp"
 #include "udp_buffer_policy.hpp"
+#include "udp_receive_batch.hpp"
 #include "local_endpoint_probe.hpp"
 
 #include "compat/platform_networking.hpp"
@@ -1199,21 +1200,12 @@ UdpIoResult UdpSocket::receive_from(std::span<std::byte> destination) noexcept
 }
 
 #if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
-std::size_t UdpSocket::receive_batch(std::span<std::byte> storage,
-    std::size_t slot_size, std::span<UdpIoResult> results,
-    UdpIoResult& terminal) noexcept
+namespace detail {
+
+void prepare_receive_batch(std::span<std::byte> storage, std::size_t slot_size,
+    std::size_t count, std::span<mmsghdr> messages, std::span<iovec> buffers,
+    std::span<sockaddr_storage> peers) noexcept
 {
-    terminal = {};
-    const std::size_t slots = slot_size == 0U ? 0U : storage.size() / slot_size;
-    const std::size_t count =
-        std::min({results.size(), slots, maximum_receive_batch});
-    if (count == 0U) {
-        terminal = {.error = Error::buffer_too_small};
-        return 0U;
-    }
-    std::array<mmsghdr, maximum_receive_batch> messages {};
-    std::array<iovec, maximum_receive_batch> buffers;
-    std::array<sockaddr_storage, maximum_receive_batch> peers;
     for (std::size_t index = 0; index < count; ++index) {
         buffers[index] = {
             .iov_base = storage.data() + index * slot_size,
@@ -1227,18 +1219,12 @@ std::size_t UdpSocket::receive_batch(std::span<std::byte> storage,
         header.msg_iov = &buffers[index];
         header.msg_iovlen = 1;
     }
-    // The call reports an error only when it consumed nothing; an error that
-    // follows a consumed datagram is reported by the next call.
-    const int received = ::recvmmsg(to_native(native_), messages.data(),
-        static_cast<unsigned int>(count), MSG_DONTWAIT, nullptr);
-    if (received < 0) {
-        const int error = last_socket_error();
-        terminal = {.error = is_would_block(error) ? Error::would_block
-                                                   : Error::io_error,
-            .system_error = error};
-        return 0U;
-    }
-    const auto consumed = static_cast<std::size_t>(received);
+}
+
+void complete_receive_batch(std::span<const mmsghdr> messages,
+    std::span<const sockaddr_storage> peers, std::size_t slot_size,
+    std::size_t consumed, std::span<UdpIoResult> results) noexcept
+{
     for (std::size_t index = 0; index < consumed; ++index) {
         const bool truncated =
             (messages[index].msg_hdr.msg_flags & MSG_TRUNC) != 0;
@@ -1257,6 +1243,41 @@ std::size_t UdpSocket::receive_batch(std::span<std::byte> storage,
                   .peer = from_sockaddr(peers[index]),
               };
     }
+}
+
+} // namespace detail
+
+std::size_t UdpSocket::receive_batch(std::span<std::byte> storage,
+    std::size_t slot_size, std::span<UdpIoResult> results,
+    UdpIoResult& terminal) noexcept
+{
+    terminal = {};
+    const std::size_t slots = slot_size == 0U ? 0U : storage.size() / slot_size;
+    const std::size_t count =
+        std::min({results.size(), slots, maximum_receive_batch});
+    if (count == 0U) {
+        terminal = {.error = Error::buffer_too_small};
+        return 0U;
+    }
+    std::array<mmsghdr, maximum_receive_batch> messages {};
+    std::array<iovec, maximum_receive_batch> buffers;
+    std::array<sockaddr_storage, maximum_receive_batch> peers;
+    detail::prepare_receive_batch(
+        storage, slot_size, count, messages, buffers, peers);
+    // The call reports an error only when it consumed nothing; an error that
+    // follows a consumed datagram is reported by the next call.
+    const int received = ::recvmmsg(to_native(native_), messages.data(),
+        static_cast<unsigned int>(count), MSG_DONTWAIT, nullptr);
+    if (received < 0) {
+        const int error = last_socket_error();
+        terminal = {.error = is_would_block(error) ? Error::would_block
+                                                   : Error::io_error,
+            .system_error = error};
+        return 0U;
+    }
+    const auto consumed = static_cast<std::size_t>(received);
+    detail::complete_receive_batch(
+        messages, peers, slot_size, consumed, results);
     return consumed;
 }
 

@@ -118,6 +118,44 @@ TEST(packet_pacer_enforces_rate_and_flow_window)
     REQUIRE(!pacer.query(100'000, 4).ready);
 }
 
+TEST(packet_pacer_carries_fractions_of_a_microsecond)
+{
+    // 1,250 bytes at 500 MB/s: one slot every 2.5 us. Whole-microsecond
+    // slots must alternate so that 1,000 packets take 2,500 us, not the
+    // 3,000 us of an interval rounded up for every packet.
+    PacketPacer pacer {500'000'000, 64};
+    std::uint64_t now = 10'000;
+    pacer.on_packet_sent(1'250, now);
+    for (int index = 1; index < 1'000; ++index) {
+        const auto next = pacer.query(now, 0).next_ready_microseconds;
+        REQUIRE(next - now == 2U || next - now == 3U);
+        now = next;
+        pacer.on_packet_sent(1'250, now);
+    }
+    REQUIRE_EQ(pacer.query(now, 0).next_ready_microseconds, 12'500U);
+}
+
+TEST(packet_pacer_follows_a_rate_change_without_losing_the_schedule)
+{
+    PacketPacer pacer {500'000'000, 64};
+    std::uint64_t now = 0;
+    for (int index = 0; index < 100; ++index) {
+        pacer.on_packet_sent(1'250, now);
+        now = pacer.query(now, 0).next_ready_microseconds;
+    }
+    pacer.set_rate(300'000'000); // 4.1666 us per packet.
+    const std::uint64_t changed = now;
+    for (int index = 0; index < 600; ++index) {
+        pacer.on_packet_sent(1'250, now);
+        now = pacer.query(now, 0).next_ready_microseconds;
+    }
+    REQUIRE(now - changed >= 2'500U && now - changed <= 2'501U);
+    // Faster than one packet per microsecond is still capped there.
+    pacer.set_rate(5'000'000'000ULL);
+    pacer.on_packet_sent(1'250, now);
+    REQUIRE_EQ(pacer.query(now, 0).next_ready_microseconds, now + 1U);
+}
+
 #if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
 TEST(packet_pacer_credit_keeps_the_average_rate_across_late_wake_ups)
 {
