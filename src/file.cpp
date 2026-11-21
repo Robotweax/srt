@@ -249,8 +249,10 @@ void FileRateController::on_loss(
     if (first_lost_sequence.is_after(last_decrease_sequence_)) {
         last_decrease_period_microseconds_ =
             effective_period;
-        packet_sending_period_microseconds_ = std::ceil(
-            effective_period * 1.03);
+        // A 3% decrease of the period as it is. Rounding the result up to a
+        // whole microsecond turned it into a cut of up to a half at periods
+        // of a few microseconds.
+        packet_sending_period_microseconds_ = effective_period * 1.03;
         average_nak_count_ = static_cast<std::uint32_t>(std::ceil(
             static_cast<double>(average_nak_count_) * 0.97
             + static_cast<double>(nak_count_) * 0.03));
@@ -266,11 +268,9 @@ void FileRateController::on_loss(
         ++nak_count_;
         if (decrease_count_ <= 5U
             && nak_count_ % decrease_random_threshold_ == 0U) {
-            packet_sending_period_microseconds_ = std::ceil(
-                std::max(
-                    packet_sending_period_microseconds_,
-                    effective_period)
-                * 1.03);
+            packet_sending_period_microseconds_ =
+                std::max(packet_sending_period_microseconds_, effective_period)
+                * 1.03;
             last_decrease_sequence_ = last_sent_sequence;
         }
     }
