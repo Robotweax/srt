@@ -328,9 +328,18 @@ void PacketPacer::on_packet_sent(std::size_t bytes,
     has_schedule_ = true;
 #else
     // Preserve the previous schedule on Windows and other platforms: a late
-    // send starts the next interval at its actual send time.
-    next_send_microseconds_ = std::max(next_send_microseconds_, now_microseconds)
-        + interval;
+    // send starts the next interval at its actual send time. The very first
+    // interval is rounded up, like the first of a fresh schedule above.
+    if (!has_schedule_) {
+        interval = std::max<std::uint64_t>(1U,
+            (static_cast<std::uint64_t>(bytes) * 1'000'000ULL
+                + bytes_per_second_ - 1U)
+                / bytes_per_second_);
+        remainder = 0U;
+        has_schedule_ = true;
+    }
+    next_send_microseconds_ =
+        std::max(next_send_microseconds_, now_microseconds) + interval;
 #endif
     interval_remainder_ = remainder;
 }
