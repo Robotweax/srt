@@ -253,6 +253,53 @@ TEST(timer_wake_monitor_enters_coarse_mode_on_late_streaks_and_recovers)
     REQUIRE(!monitor.coarse());
 }
 
+TEST(coarse_timer_probe_spacing_is_short_for_a_stall_and_backs_off)
+{
+    using Spacing = CoarseTimerProbeSpacing;
+    Spacing spacing;
+    // A first episode probes closely, and punctual probes keep it close, so
+    // a short stall is left after a few milliseconds of resubmission.
+    spacing.on_enter(10'000'000);
+    REQUIRE_EQ(spacing.interval_microseconds(), Spacing::initial_microseconds);
+    spacing.on_wake(TimerWakeMonitor::punctual_threshold_microseconds);
+    REQUIRE_EQ(spacing.interval_microseconds(), Spacing::initial_microseconds);
+    // Probes that are still not punctual double the spacing up to the
+    // maximum, where a host with coarse timers throughout settles.
+    spacing.on_wake(TimerWakeMonitor::punctual_threshold_microseconds + 1);
+    REQUIRE_EQ(
+        spacing.interval_microseconds(), Spacing::initial_microseconds * 2U);
+    for (int probe = 0; probe < 16; ++probe) {
+        spacing.on_wake(5'000);
+    }
+    REQUIRE_EQ(spacing.interval_microseconds(), Spacing::maximum_microseconds);
+}
+
+TEST(coarse_timer_probe_spacing_widens_for_episodes_in_quick_succession)
+{
+    using Spacing = CoarseTimerProbeSpacing;
+    Spacing spacing;
+    std::uint64_t now = 10'000'000;
+    spacing.on_enter(now);
+    spacing.on_leave(now += 20'000);
+    // Re-entering within the window starts each episode twice as wide.
+    spacing.on_enter(now += Spacing::reentry_window_microseconds - 1);
+    REQUIRE_EQ(
+        spacing.interval_microseconds(), Spacing::initial_microseconds * 2U);
+    spacing.on_leave(now += 40'000);
+    spacing.on_enter(now += 1'000);
+    REQUIRE_EQ(
+        spacing.interval_microseconds(), Spacing::initial_microseconds * 4U);
+    for (int episode = 0; episode < 16; ++episode) {
+        spacing.on_leave(now += 1'000);
+        spacing.on_enter(now += 1'000);
+    }
+    REQUIRE_EQ(spacing.interval_microseconds(), Spacing::maximum_microseconds);
+    // A calm period at least as long as the window starts over.
+    spacing.on_leave(now += 1'000);
+    spacing.on_enter(now += Spacing::reentry_window_microseconds);
+    REQUIRE_EQ(spacing.interval_microseconds(), Spacing::initial_microseconds);
+}
+
 TEST(tsbpd_clock_schedules_delivery_and_unwraps_timestamp_rollover)
 {
     TsbpdClock clock{1'000'000, PacketTimestamp{100'000}, 120'000};

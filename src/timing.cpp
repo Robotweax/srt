@@ -372,6 +372,33 @@ void TimerWakeMonitor::observe(std::uint64_t lateness_microseconds) noexcept
     }
 }
 
+void CoarseTimerProbeSpacing::on_enter(std::uint64_t now_microseconds) noexcept
+{
+    const bool reentered = has_left_
+        && now_microseconds - left_microseconds_ < reentry_window_microseconds;
+    episode_start_interval_microseconds_ = reentered
+        ? std::min(
+              episode_start_interval_microseconds_ * 2U, maximum_microseconds)
+        : initial_microseconds;
+    interval_microseconds_ = episode_start_interval_microseconds_;
+}
+
+void CoarseTimerProbeSpacing::on_leave(std::uint64_t now_microseconds) noexcept
+{
+    left_microseconds_ = now_microseconds;
+    has_left_ = true;
+}
+
+void CoarseTimerProbeSpacing::on_wake(
+    std::uint64_t lateness_microseconds) noexcept
+{
+    if (lateness_microseconds
+        > TimerWakeMonitor::punctual_threshold_microseconds) {
+        interval_microseconds_ =
+            std::min(interval_microseconds_ * 2U, maximum_microseconds);
+    }
+}
+
 void PacketPacer::set_rate(std::uint64_t bytes_per_second) noexcept
 {
     bytes_per_second_ = std::max<std::uint64_t>(bytes_per_second, 1U);

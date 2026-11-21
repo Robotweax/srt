@@ -16,6 +16,14 @@ version returned by `srt_getversion()`.
   decrease without rounding the result up to a whole microsecond. At periods
   of a few microseconds the rounding made one decrease a cut of up to a half.
   Periods of 100 us and more change by under 1%.
+- On Linux and macOS a channel whose timer wake-ups arrive late (three in a
+  row more than 1 ms late) serves sub-millisecond pacing deadlines by
+  resubmitting, which keeps a worker busy, and probes the timer to find out
+  when to stop. It now probes after 5 ms instead of 100 ms and returns to
+  timer waits after 4 punctual probes instead of 16, so a brief stall costs
+  about 20 ms of resubmission instead of at least 1.6 s. Probes that are still
+  late, and episodes within a second of each other, double the spacing up to
+  the previous 100 ms.
 
 ## 0.3.4 — Epoll Wake, Setup Hardening and Experimental Profiles
 
