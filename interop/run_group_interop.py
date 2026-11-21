@@ -881,7 +881,11 @@ def run_case(
                             time.sleep(0.02)
                         else:
                             raise RuntimeError(
-                                "baseline group receiver did not become ready"
+                                "baseline group receiver did not become ready\n"
+                                "--- listener stdout ---\n"
+                                f"{stdout_path.read_text(errors='replace')}\n"
+                                "--- listener stderr ---\n"
+                                f"{stderr_path.read_text(errors='replace')}\n"
                             )
                         if (
                             caller_process.poll() is not None
