@@ -4,6 +4,19 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
+## Unreleased
+
+- The packet pacer carries the fraction of a microsecond left over from each
+  packet interval instead of rounding every interval up. At packet periods of
+  a few microseconds (multi-gigabit File transfer on loopback or fast links)
+  the sent rate previously fell on the steps of whole microseconds, up to a
+  third below the rate the congestion controller had set. A schedule that
+  restarts after a pause still rounds its first interval up.
+- The File rate controller lengthens the packet period by 3% on a loss
+  decrease without rounding the result up to a whole microsecond. At periods
+  of a few microseconds the rounding made one decrease a cut of up to a half.
+  Periods of 100 us and more change by under 1%.
+
 ## 0.3.4 — Epoll Wake, Setup Hardening and Experimental Profiles
 
 See the [release notes](docs/release-notes-0.3.4.md) for upgrade behavior and limits.

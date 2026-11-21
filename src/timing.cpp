@@ -294,25 +294,54 @@ PaceDecision PacketPacer::query(std::uint64_t now_microseconds,
 void PacketPacer::on_packet_sent(std::size_t bytes,
     std::uint64_t now_microseconds) noexcept
 {
-    const std::uint64_t interval = std::max<std::uint64_t>(1U,
-        (static_cast<std::uint64_t>(bytes) * 1'000'000ULL
-            + bytes_per_second_ - 1U) / bytes_per_second_);
+    // Whole microseconds for this packet plus the fraction carried from the
+    // packets before it, so the schedule averages the configured rate. A
+    // rounded-up interval alone loses up to a microsecond per packet, which
+    // at a 2.5 us period is a sixth of the rate.
+    const std::uint64_t scaled =
+        static_cast<std::uint64_t>(bytes) * 1'000'000ULL + interval_remainder_;
+    std::uint64_t interval = scaled / bytes_per_second_;
+    std::uint64_t remainder = scaled % bytes_per_second_;
+    if (interval == 0U) {
+        // No more than one packet per microsecond, as before.
+        interval = 1U;
+        remainder = 0U;
+    }
 #if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
     // Keep the ideal schedule while this send is no later than the credit
     // after its slot; otherwise start a fresh schedule at the send time.
     const bool keeps_schedule = has_schedule_
         && now_microseconds
             <= next_send_microseconds_ + schedule_credit_microseconds_;
+    if (!keeps_schedule) {
+        // A fresh schedule owes nothing to the one it replaces. Its first
+        // interval is rounded up so a restart never runs ahead of the rate.
+        interval = std::max<std::uint64_t>(1U,
+            (static_cast<std::uint64_t>(bytes) * 1'000'000ULL
+                + bytes_per_second_ - 1U)
+                / bytes_per_second_);
+        remainder = 0U;
+    }
     const std::uint64_t base =
         keeps_schedule ? next_send_microseconds_ : now_microseconds;
     next_send_microseconds_ = base + interval;
     has_schedule_ = true;
 #else
     // Preserve the previous schedule on Windows and other platforms: a late
-    // send starts the next interval at its actual send time.
-    next_send_microseconds_ = std::max(next_send_microseconds_, now_microseconds)
-        + interval;
+    // send starts the next interval at its actual send time. The very first
+    // interval is rounded up, like the first of a fresh schedule above.
+    if (!has_schedule_) {
+        interval = std::max<std::uint64_t>(1U,
+            (static_cast<std::uint64_t>(bytes) * 1'000'000ULL
+                + bytes_per_second_ - 1U)
+                / bytes_per_second_);
+        remainder = 0U;
+        has_schedule_ = true;
+    }
+    next_send_microseconds_ =
+        std::max(next_send_microseconds_, now_microseconds) + interval;
 #endif
+    interval_remainder_ = remainder;
 }
 
 void PacketPacer::set_schedule_credit(std::uint64_t microseconds) noexcept
