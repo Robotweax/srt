@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import secrets
 import socket
 import subprocess
 import sys
@@ -23,13 +24,22 @@ class Smoke:
         self.results: list[dict] = []
 
     def port(self) -> int:
+        # Plan ports below the usual dynamic ranges (Linux from 32768, macOS
+        # and Windows from 49152). A port taken from the dynamic range by
+        # binding to 0 is released before the application binds it, and the
+        # system can hand the same number to another socket in between: the
+        # proxy, a peer's outgoing socket or an unrelated process (issue 407).
         for _ in range(128):
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.bind(('127.0.0.1', 0))
-                value = s.getsockname()[1]
-            if value not in self.allocated:
-                self.allocated.add(value)
-                return value
+            value = 10000 + secrets.randbelow(20000)
+            if value in self.allocated:
+                continue
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.bind(('127.0.0.1', value))
+            except OSError:
+                continue
+            self.allocated.add(value)
+            return value
         raise RuntimeError('unable to allocate distinct loopback ports')
 
     @staticmethod
