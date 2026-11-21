@@ -142,9 +142,75 @@ The other 110 tests of the job passed.
 - Cause not established. The timeout left no test output. Earlier runs were
   not searched for the same timeout.
 
-## Not yet run on the frozen product
+## Merge, tag and publication
 
-- The protected rebuild, signing and release draft, which belong to the tag.
+This section was added after publication. It records what followed record
+commit `ff3c7fc` and replaces the former "Not yet run on the frozen product"
+section, whose only entry was the protected rebuild, signing and release
+draft. No other earlier statement is changed.
+
+On `ff3c7fc`, [full CI 44726538408](https://github.com/Robotweax/srt/actions/runs/44726538408) passed on the first attempt.
+[Pull-request CI 44726544653](https://github.com/Robotweax/srt/actions/runs/44726544653) failed in its first attempt in
+"windows-latest Release": `robotweax_srt_application_process_support` timed out
+again, after 21.62 seconds. As before, the failure cancelled
+"macos-latest Release", which did not execute in the re-run either, so that
+run's gate stayed failed.
+
+The owner directed the merge with that check red. Pull request 405 was merged
+on 20 November 2026 as `87742777290e6a77e38672ca35701f7184b75526`; its tree is
+identical to `ff3c7fc`.
+
+On the merge commit:
+
+- [CI 44735673903](https://github.com/Robotweax/srt/actions/runs/44735673903) passed on the second attempt. In the first,
+  "macos-latest Release" failed in
+  `robotweax_srt_application_recovery-arqfirst_ctr`: 159 of 160 messages, a
+  largest delivery gap of 256.1 ms.
+- Package managers 44735673734, Linux packages 44735673798, peer
+  authentication 44735673806, hybrid control 44735674389 and ACP1 44735673790
+  passed on the first attempt.
+
+Annotated tag `v0.3.4`, object `559c0c4a0ba0ddbb0d65a62eebbe127f5187f2a5`, points
+at the merge commit. On the tag:
+
+- [CI 44743035936](https://github.com/Robotweax/srt/actions/runs/44743035936) passed on the second attempt. In the first,
+  "srt-live-transmit / windows-latest" failed on image 20261111.635: the built
+  application started with `-version` did not return within 60 seconds. Only
+  that job and the gate were re-run. The same job had passed on the same
+  commit and image in the merge-commit run.
+- Linux packages 44743035891 and Package managers 44743035923 passed on the
+  first attempt.
+- [Windows SDK installers 44743035885](https://github.com/Robotweax/srt/actions/runs/44743035885) passed in one attempt:
+  validation, the twelve-variant matrix, installers, coexistence, `rebuild`,
+  `sign` and `release-draft`. `rebuild-qualification` was skipped. This is the
+  only from-source rebuild run for 0.3.4; it took 81 minutes.
+
+Published assets, 20 November 2026:
+
+- `robotweax-srt-0.3.4-windows-sdk-openssl.exe`, SHA-256
+  `73bf1fe6510d96ddf01e048fa7d1833fbb8b5ffc277c02ceec7d218c0f8805dc`.
+- `robotweax-srt-0.3.4-windows-sdk-bcrypt.exe`, SHA-256
+  `ac638a864f1891a09ad3c01eb1872224a36f616c8cd9f8a89c38c7be71023df6`.
+- Both downloaded installers are byte-identical to signed CI artifact
+  `14640243579` and match `SHA256SUMS`. `tag-provenance.json` names the tag
+  object and commit above. The Authenticode and timestamp validation was done
+  by the `release-draft` job; it was not repeated outside CI.
+
+Homebrew: the tap formula was updated in
+[homebrew-tap pull request 14](https://github.com/Robotweax/homebrew-tap/pull/14). Native qualification
+[44768944062](https://github.com/Robotweax/homebrew-tap/actions/runs/44768944062) passed on the first attempt, with the
+upgrade from the published 0.3.3 bottle, 86 exports and 106 installed
+documents. [Publication 44772229425](https://github.com/Robotweax/homebrew-tap/actions/runs/44772229425) published the
+`arm64_sequoia` bottle, SHA-256
+`585b1aaa343416eaff3aec2bb7d1aac06d0280e811eaa6be00936ce76b743ce4`. The public
+bottle is byte-identical to the qualified artifact, and its provenance names
+that publication run. No vcpkg registry, PPA or COPR is published.
+
+After publication, the change that adds this section also adds tests for two
+of the three corrections listed below as untested: expected-tag erasure and
+batch receive hardening. They run on `main`, not on the released product. The
+group enrolment rollback has no test; by a later reading of the handle
+allocator its corrected branch cannot be reached.
 
 ## Open on this product
 
@@ -158,6 +224,10 @@ The other 110 tests of the job passed.
 - Three corrections from the [0.3.4 delta disposition](../docs/security-delta-0.3.4.md)
   have no test that observes them: expected-tag erasure, batch receive
   hardening and the group enrolment rollback.
+- Three intermittent hosted test failures have no established cause and are
+  tracked in [issue 407](https://github.com/Robotweax/srt/issues/407): the macOS ARQ-first recovery sample, the
+  Windows process-helper timeout and the Windows `srt-live-transmit -version`
+  hang.
 - UDP batching build, Linux container, before the freeze: `remote_harness_tests`
   failed with its output not captured, and was not compared against the
   unchanged tree. Cause not established.

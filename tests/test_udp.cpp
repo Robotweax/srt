@@ -6,6 +6,7 @@
 #include "robotweax/srt/handshake_extensions.hpp"
 #include "robotweax/srt/udp.hpp"
 #include "udp_buffer_policy.hpp"
+#include "udp_receive_batch.hpp"
 #include "srt.h"
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <charconv>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <string_view>
 #include <vector>
@@ -1074,6 +1076,63 @@ TEST(udp_socket_receive_batch_keeps_per_datagram_results_in_order)
     // No usable slot is a caller error, not a drained socket.
     REQUIRE_EQ(receiver.receive_batch(storage, 0U, results, terminal), 0U);
     REQUIRE_EQ(terminal.error, Error::buffer_too_small);
+}
+
+TEST(udp_socket_receive_batch_clears_peers_and_clamps_reported_lengths)
+{
+    constexpr std::size_t slot_size = 32;
+    constexpr std::size_t count = 3;
+    std::array<std::byte, count * slot_size> storage {};
+    std::array<mmsghdr, count> messages {};
+    std::array<iovec, count> buffers {};
+    std::array<sockaddr_storage, count> peers;
+    // Whatever a previous call left in the address storage must not survive.
+    std::memset(peers.data(), 0xff, sizeof(peers));
+
+    detail::prepare_receive_batch(
+        storage, slot_size, count, messages, buffers, peers);
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto* bytes =
+            reinterpret_cast<const unsigned char*>(&peers[index]);
+        REQUIRE(std::all_of(
+            bytes, bytes + sizeof(peers[index]), [](unsigned char value) {
+                return value == 0U;
+            }));
+        REQUIRE_EQ(messages[index].msg_hdr.msg_name,
+            static_cast<void*>(&peers[index]));
+        REQUIRE_EQ(
+            static_cast<std::size_t>(messages[index].msg_hdr.msg_namelen),
+            sizeof(peers[index]));
+        REQUIRE_EQ(messages[index].msg_hdr.msg_iov, &buffers[index]);
+        REQUIRE_EQ(
+            static_cast<std::size_t>(messages[index].msg_hdr.msg_iovlen), 1U);
+        REQUIRE_EQ(buffers[index].iov_base,
+            static_cast<void*>(storage.data() + index * slot_size));
+        REQUIRE_EQ(buffers[index].iov_len, slot_size);
+    }
+
+    // recvmmsg does not report a length above the buffer without MSG_TRUNC.
+    // A result that does anyway must not reach the caller as a length beyond
+    // the slot, which the caller would use to read the neighbouring slot.
+    messages[0].msg_len = 8U;
+    messages[1].msg_len = static_cast<unsigned int>(slot_size + 100U);
+    messages[2].msg_len = static_cast<unsigned int>(slot_size + 9U);
+    messages[2].msg_hdr.msg_flags = MSG_TRUNC;
+    std::array<UdpIoResult, count> results {};
+    detail::complete_receive_batch(messages, peers, slot_size, count, results);
+    REQUIRE(results[0]);
+    REQUIRE_EQ(results[0].bytes_transferred, 8U);
+    REQUIRE(results[1]);
+    REQUIRE_EQ(results[1].bytes_transferred, slot_size);
+    REQUIRE_EQ(results[2].error, Error::buffer_too_small);
+    REQUIRE_EQ(results[2].bytes_transferred, slot_size);
+
+    // Only the consumed prefix is written.
+    std::array<UdpIoResult, count> partial {};
+    partial[1].bytes_transferred = 77U;
+    detail::complete_receive_batch(messages, peers, slot_size, 1U, partial);
+    REQUIRE_EQ(partial[0].bytes_transferred, 8U);
+    REQUIRE_EQ(partial[1].bytes_transferred, 77U);
 }
 
 TEST(udp_socket_send_batch_delivers_whole_datagrams_in_order)

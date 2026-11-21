@@ -226,9 +226,25 @@ public:
     {
         return real.make_aes_gcm_cipher(k, out);
     }
+    // Contents of every 32-byte buffer handed to secure_erase, recorded
+    // before it is cleared. Off unless a test asks for it.
+    bool capture_erased = false;
+    std::vector<std::array<std::byte, 32>> erased;
     void secure_erase(std::span<std::byte> out) noexcept override
     {
+        if (capture_erased && out.size() == 32) {
+            std::array<std::byte, 32> copy {};
+            std::copy(out.begin(), out.end(), copy.begin());
+            erased.push_back(copy);
+        }
         real.secure_erase(out);
+    }
+    [[nodiscard]] bool erased_value(std::span<const std::byte> value) const
+    {
+        return std::any_of(erased.begin(), erased.end(), [&](const auto& item) {
+            return value.size() == item.size()
+                && std::equal(item.begin(), item.end(), value.begin());
+        });
     }
 };
 struct Pair {
@@ -465,6 +481,47 @@ TEST(peer_auth_exchange_valid_signature_bad_confirmation_ends_attempt)
         REQUIRE(p.listener.session_key().empty());
         REQUIRE_EQ(p.listener.accept_confirmation(p.m3, passphrase()),
             Error::invalid_state);
+    }
+}
+TEST(peer_auth_exchange_expected_confirmation_tags_are_erased)
+{
+    // Each side computes the tag it expects from its peer into a local
+    // buffer. That buffer must be erased after the comparison, whether the
+    // tags match or not. A matching expected tag equals the tag on the wire,
+    // the last 32 bytes of the response and of the confirmation.
+    const auto wire_tag = [](const std::vector<std::byte>& message) {
+        return std::vector<std::byte>(message.end() - 32, message.end());
+    };
+    {
+        Pair p;
+        p.cp.capture_erased = p.lp.capture_erased = true;
+        p.configure();
+        p.offer();
+        p.response();
+        const auto listener_tag = wire_tag(p.m2);
+        REQUIRE(!p.cp.erased_value(listener_tag));
+        p.confirmation();
+        REQUIRE(p.cp.erased_value(listener_tag));
+        const auto caller_tag = wire_tag(p.m3);
+        REQUIRE(!p.lp.erased_value(caller_tag));
+        REQUIRE_EQ(
+            p.listener.accept_confirmation(p.m3, passphrase()), Error::none);
+        REQUIRE(p.lp.erased_value(caller_tag));
+    }
+    {
+        // A tampered tag: the listener still computes the correct one, which
+        // depends on the passphrase, and must not leave it behind.
+        Pair p;
+        p.lp.capture_erased = true;
+        p.configure();
+        p.offer();
+        p.response();
+        p.confirmation();
+        const auto expected = wire_tag(p.m3);
+        p.m3.back() ^= std::byte {1};
+        REQUIRE_EQ(p.listener.accept_confirmation(p.m3, passphrase()),
+            Error::authentication_failure);
+        REQUIRE(p.lp.erased_value(expected));
     }
 }
 TEST(peer_auth_exchange_old_confirmation_and_reflection_rejected)
