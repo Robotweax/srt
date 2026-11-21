@@ -136,6 +136,8 @@ struct PaceDecision {
 // send slot advances along the ideal schedule when a send is no later than
 // the credit after its slot. A late timer wake can then send missed packets
 // back to back without lowering the average rate.
+// Intervals are whole microseconds; the fraction left over is carried to the
+// following packets while a schedule is kept, so the average rate is exact.
 // A send later than the credit (an idle source, a closed flow window) starts
 // a fresh schedule at the send time, so a pause is never followed by a burst
 // larger than the credit's worth of packets. Windows and other platforms
@@ -163,6 +165,9 @@ private:
     std::uint64_t bytes_per_second_ = 1;
     std::size_t flow_window_packets_ = 1;
     std::uint64_t next_send_microseconds_ = 0;
+    // Fraction of a microsecond owed to the schedule, in units of
+    // 1 / bytes_per_second_ microseconds.
+    std::uint64_t interval_remainder_ = 0;
     std::uint64_t schedule_credit_microseconds_ =
         default_schedule_credit_microseconds;
     [[maybe_unused]] bool has_schedule_ = false;
