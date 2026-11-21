@@ -1288,10 +1288,22 @@ void DatagramChannel::observe_timer_wake_locked(
         timer_wake_monitor_ = {};
     }
     const bool is_coarse = timer_wake_monitor_.coarse();
+    const auto now_microseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            now.time_since_epoch())
+            .count());
     if (was_coarse != is_coarse) {
-        next_coarse_timer_probe_ = is_coarse
-            ? now + coarse_timer_probe_interval_
-            : std::chrono::steady_clock::time_point {};
+        if (is_coarse) {
+            coarse_timer_probe_spacing_.on_enter(now_microseconds);
+            next_coarse_timer_probe_ = now
+                + std::chrono::microseconds {
+                    coarse_timer_probe_spacing_.interval_microseconds()};
+        } else {
+            coarse_timer_probe_spacing_.on_leave(now_microseconds);
+            next_coarse_timer_probe_ = {};
+        }
+    } else if (is_coarse && lateness_microseconds.has_value()) {
+        coarse_timer_probe_spacing_.on_wake(*lateness_microseconds);
     }
     coarse_timer_mode_.store(is_coarse, std::memory_order_relaxed);
 }
@@ -1768,7 +1780,9 @@ RuntimePollResult DatagramChannel::poll_connections(
         if (now < next_coarse_timer_probe_) {
             return {.immediate_work = true};
         }
-        next_coarse_timer_probe_ = now + coarse_timer_probe_interval_;
+        next_coarse_timer_probe_ = now
+            + std::chrono::microseconds {
+                coarse_timer_probe_spacing_.interval_microseconds()};
         return {.next_work_delay = delay,
             .receive_wait_safe = can_wait,
             .coarse_timer_probe = true,

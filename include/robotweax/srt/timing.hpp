@@ -183,7 +183,7 @@ public:
     static constexpr std::uint64_t late_threshold_microseconds = 1'000;
     static constexpr std::uint64_t punctual_threshold_microseconds = 250;
     static constexpr unsigned late_streak_to_enter = 3;
-    static constexpr unsigned punctual_streak_to_leave = 16;
+    static constexpr unsigned punctual_streak_to_leave = 4;
 
     // Records one timer wake-up that arrived `lateness` after its deadline.
     void observe(std::uint64_t lateness_microseconds) noexcept;
@@ -196,6 +196,35 @@ private:
     unsigned late_streak_ = 0;
     unsigned punctual_streak_ = 0;
     bool coarse_ = false;
+};
+
+// Spaces the timer probes a channel takes while its wake-ups are coarse.
+// Between probes the channel resubmits instead of waiting, which keeps a
+// worker busy, so a short stall should be probed and left quickly: the
+// first probes follow closely. Probes that are still not punctual, and
+// episodes that follow each other closely, back the spacing off to the
+// maximum, where a host whose timers are coarse throughout settles.
+class CoarseTimerProbeSpacing {
+public:
+    static constexpr std::uint64_t initial_microseconds = 5'000;
+    static constexpr std::uint64_t maximum_microseconds = 100'000;
+    static constexpr std::uint64_t reentry_window_microseconds = 1'000'000;
+
+    // The monitor entered or left coarse mode at `now`.
+    void on_enter(std::uint64_t now_microseconds) noexcept;
+    void on_leave(std::uint64_t now_microseconds) noexcept;
+    // A wake-up observed while coarse arrived `lateness` after its deadline.
+    void on_wake(std::uint64_t lateness_microseconds) noexcept;
+    [[nodiscard]] std::uint64_t interval_microseconds() const noexcept
+    {
+        return interval_microseconds_;
+    }
+
+private:
+    std::uint64_t interval_microseconds_ = initial_microseconds;
+    std::uint64_t episode_start_interval_microseconds_ = initial_microseconds;
+    std::uint64_t left_microseconds_ = 0;
+    bool has_left_ = false;
 };
 
 class TsbpdClock {
