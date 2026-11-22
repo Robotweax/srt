@@ -5978,8 +5978,7 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
     // or a filter packet never waits longer than its slot, and the wait never
     // extends beyond the slot of the last packet that is waiting. Any earlier
     // wake still sends what is due by then.
-    const bool live_paced =
-        session_.live_pacing_rate_bytes_per_second() != 0U;
+    const bool live_paced = session_.live_pacing_rate_bytes_per_second() != 0U;
     pacer_.set_coalescing_quantum(
         live_paced ? pacing_coalesce_microseconds_ : 0U);
     const auto& send_buffer = session_.send_buffer();
