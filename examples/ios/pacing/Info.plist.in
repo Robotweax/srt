@@ -9,6 +9,15 @@
 <key>CFBundleShortVersionString</key><string>0.1</string>
 <key>LSRequiresIPhoneOS</key><true/>
 <key>UILaunchScreen</key><dict/>
+<key>UIApplicationSceneManifest</key><dict>
+<key>UIApplicationSupportsMultipleScenes</key><false/>
+<key>UISceneConfigurations</key><dict>
+<key>UIWindowSceneSessionRoleApplication</key><array><dict>
+<key>UISceneConfigurationName</key><string>Default</string>
+<key>UISceneDelegateClassName</key><string>PacingSceneDelegate</string>
+</dict></array>
+</dict>
+</dict>
 <key>NSLocalNetworkUsageDescription</key><string>Send synthetic traffic to your desktop SRT measurement peer.</string>
 <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
 </dict></plist>
