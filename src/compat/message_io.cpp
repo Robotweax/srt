@@ -1114,8 +1114,8 @@ int send_group_message_implementation(
             const auto ttl_us =
                 static_cast<std::int64_t>(local_control.msgttl) * 1'000;
             // int64_t is long on Android and long long elsewhere: name the type.
-            const auto base = std::max<std::int64_t>(
-                local_control.srctime, origin_us + 1);
+            const auto base =
+                std::max<std::int64_t>(local_control.srctime, origin_us + 1);
             const auto expires =
                 base > maximum_us - ttl_us ? maximum_us : base + ttl_us;
             expiration =
