@@ -1378,6 +1378,83 @@ TEST(compat_runtime_reports_the_next_paced_send_deadline)
     REQUIRE_EQ(take_datagrams(output).size(), 1U);
 }
 
+#if ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING
+TEST(compat_runtime_coalesces_live_pacing_waits_within_the_quantum)
+{
+    const auto channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams output;
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    std::uint64_t now = 1'000;
+    ConnectionRuntime runtime {{
+        .channel = channel,
+        .peer =
+            {
+                .address = {192, 0, 2, 22},
+                .port = 10'022,
+            },
+        .peer_socket_id = 0x3402U,
+        .initial_sequence = SequenceNumber {900},
+        .flow_window_packets = 256,
+        .origin = ConnectionRuntime::Clock::now(),
+        .now_function = injected_now,
+        .now_context = &now,
+        .pacing_coalesce_microseconds = 40,
+    }};
+
+    // As in the test above, these packets are paced about 10 us apart.
+    const std::array<std::byte, 1'200> payload {};
+    for (int index = 0; index < 4; ++index) {
+        REQUIRE_EQ(runtime.queue_message(payload, 0, true, false, 0).status,
+            MessageIoStatus::success);
+    }
+
+    // The first packet goes out at once. Three wait, and all three fit in
+    // the 40 us quantum: the wait runs to the slot of the last one instead
+    // of the 10 us to the next.
+    const RuntimePollResult first = runtime.poll();
+    REQUIRE(!first.immediate_work);
+    REQUIRE(first.next_work_delay.has_value());
+    REQUIRE(*first.next_work_delay >= std::chrono::microseconds {29});
+    REQUIRE(*first.next_work_delay <= std::chrono::microseconds {33});
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+
+    // An earlier wake-up sends what is due by then and waits for the rest.
+    now += 10;
+    const RuntimePollResult early = runtime.poll();
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+    REQUIRE(!early.immediate_work);
+    REQUIRE(early.next_work_delay.has_value());
+    REQUIRE(*early.next_work_delay >= std::chrono::microseconds {19});
+    REQUIRE(*early.next_work_delay <= std::chrono::microseconds {22});
+
+    // At the deferred time both remaining packets are sent back to back.
+    now += static_cast<std::uint64_t>(early.next_work_delay->count());
+    const RuntimePollResult batch = runtime.poll();
+    REQUIRE_EQ(take_datagrams(output).size(), 2U);
+    REQUIRE(!batch.immediate_work);
+    REQUIRE(!batch.next_work_delay.has_value());
+
+    // More packets than the quantum holds: the wait is bounded by it, and
+    // one wake-up then sends the packet that was due and those that fit.
+    for (int index = 0; index < 8; ++index) {
+        REQUIRE_EQ(runtime.queue_message(payload, 0, true, false, 0).status,
+            MessageIoStatus::success);
+    }
+    now += 10;
+    const RuntimePollResult refill = runtime.poll();
+    REQUIRE_EQ(take_datagrams(output).size(), 1U);
+    REQUIRE(refill.next_work_delay.has_value());
+    REQUIRE(*refill.next_work_delay > std::chrono::microseconds {40});
+    REQUIRE(*refill.next_work_delay <= std::chrono::microseconds {50});
+    now += static_cast<std::uint64_t>(refill.next_work_delay->count());
+    const RuntimePollResult bounded = runtime.poll();
+    const auto sent = take_datagrams(output).size();
+    REQUIRE(sent >= 4U);
+    REQUIRE(sent <= 5U);
+    REQUIRE(bounded.next_work_delay.has_value());
+}
+#endif
+
 TEST(compat_runtime_waits_for_key_response_without_runnable_send_work)
 {
     const auto channel = std::make_shared<DatagramChannel>();

@@ -1838,6 +1838,7 @@ ConnectionRuntime::ConnectionRuntime(Configuration configuration)
           .npd_enabled = configuration.npd_enabled,
       })
     , pacer_(100'000'000U, effective_peer_flow_window(configuration))
+    , pacing_coalesce_microseconds_(configuration.pacing_coalesce_microseconds)
     , options_(configuration.options)
     , statistics_(configuration.handshake_arrival_microseconds,
           configuration.peer.wire_family() == IpAddressFamily::ipv6
@@ -5970,9 +5971,28 @@ RuntimePollResult ConnectionRuntime::poll_locked() noexcept
             .next_work_delay = std::nullopt,
         };
     }
+    // Bounded coalescing (issue 353): a Live pacing wait for new DATA may be
+    // served late, so that one wake-up sends the packets that became due in
+    // the meantime. The quantum also widens the pacer's schedule credit, so
+    // it is set for Live pacing only and cleared otherwise. A retransmission
+    // or a filter packet never waits longer than its slot, and the wait never
+    // extends beyond the slot of the last packet that is waiting. Any earlier
+    // wake still sends what is due by then.
+    const bool live_paced = session_.live_pacing_rate_bytes_per_second() != 0U;
+    pacer_.set_coalescing_quantum(
+        live_paced ? pacing_coalesce_microseconds_ : 0U);
+    const auto& send_buffer = session_.send_buffer();
+    const std::size_t waiting_packets =
+        send_buffer.size() > send_buffer.packets_in_flight()
+        ? send_buffer.size() - send_buffer.packets_in_flight()
+        : 0U;
+    const std::uint64_t pace_ready = filter_pending || retransmission
+        ? pace.next_ready_microseconds
+        : std::max(pace.next_ready_microseconds,
+              pacer_.coalesced_ready_microseconds(waiting_packets));
     const auto next_ready = retirement_deadline.has_value()
-        ? std::min(pace.next_ready_microseconds, *retirement_deadline)
-        : pace.next_ready_microseconds;
+        ? std::min(pace_ready, *retirement_deadline)
+        : pace_ready;
     return {
         .next_work_delay = std::chrono::microseconds {next_ready - current},
         .next_work_deadline = now_function_ == nullptr

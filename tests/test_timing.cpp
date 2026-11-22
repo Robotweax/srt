@@ -207,6 +207,115 @@ TEST(packet_pacer_catch_up_is_bounded_by_the_credit_and_restarts_after_a_pause)
     REQUIRE_EQ(pacer.schedule_credit_microseconds(), 300U);
 }
 
+TEST(packet_pacer_coalescing_batches_sends_and_keeps_the_rate)
+{
+    // 204 bytes (a 188-byte message with its header) at 1 MB/s: one slot
+    // every 204 us, about 4,900 packets per second. A 2 ms quantum lets one
+    // wake-up serve the slot that is due and the nine that follow it.
+    PacketPacer pacer {1'000'000, 8'192};
+    pacer.set_coalescing_quantum(2'000);
+    REQUIRE_EQ(pacer.coalescing_quantum_microseconds(), 2'000U);
+    pacer.on_packet_sent(204, 0);
+    REQUIRE_EQ(pacer.query(0, 0).next_ready_microseconds, 204U);
+    REQUIRE_EQ(pacer.coalesced_ready_microseconds(1'000), 204U + 9U * 204U);
+
+    constexpr std::uint64_t duration = 1'000'000;
+    constexpr std::uint64_t lateness = 300; // every timer wake-up is late
+    std::size_t packets = 1;
+    std::size_t wakes = 0;
+    std::size_t largest_batch = 0;
+    for (;;) {
+        const std::uint64_t now =
+            pacer.coalesced_ready_microseconds(1'000) + lateness;
+        if (now > duration) {
+            break;
+        }
+        ++wakes;
+        std::size_t batch = 0;
+        while (pacer.query(now, 0).ready) {
+            pacer.on_packet_sent(204, now);
+            ++batch;
+        }
+        REQUIRE(batch >= 10U);
+        largest_batch = std::max(largest_batch, batch);
+        packets += batch;
+    }
+    // The schedule is kept across every late, batched wake-up.
+    REQUIRE(packets >= duration / 204U - 12U);
+    REQUIRE(packets <= duration / 204U + 1U);
+    // One wake-up per batch instead of one per packet.
+    REQUIRE(wakes <= 500U);
+    REQUIRE(wakes >= 400U);
+    // A batch never exceeds the quantum plus the lateness, in slots.
+    REQUIRE(largest_batch <= (2'000U + lateness) / 204U + 1U);
+}
+
+TEST(packet_pacer_coalescing_waits_only_for_packets_it_can_add)
+{
+    PacketPacer pacer {1'000'000, 8'192};
+    pacer.on_packet_sent(204, 0);
+    // No quantum: the next slot, whatever waits.
+    REQUIRE_EQ(pacer.coalesced_ready_microseconds(1'000), 204U);
+    pacer.set_coalescing_quantum(2'000);
+    // Nothing or a single packet waiting: no reason to be late.
+    REQUIRE_EQ(pacer.coalesced_ready_microseconds(0), 204U);
+    REQUIRE_EQ(pacer.coalesced_ready_microseconds(1), 204U);
+    // Three packets waiting: the slot of the third, not the whole quantum.
+    REQUIRE_EQ(pacer.coalesced_ready_microseconds(3), 204U + 2U * 204U);
+    // The quantum never moves the slot itself.
+    REQUIRE_EQ(pacer.query(0, 0).next_ready_microseconds, 204U);
+    REQUIRE(pacer.query(204, 0).ready);
+
+    // An interval longer than the quantum is not delayed at all: 1,332 bytes
+    // at 250 kB/s is one slot every 5,328 us.
+    PacketPacer slow {250'000, 8'192};
+    slow.set_coalescing_quantum(2'000);
+    slow.on_packet_sent(1'332, 0);
+    REQUIRE_EQ(slow.query(0, 0).next_ready_microseconds, 5'328U);
+    REQUIRE_EQ(slow.coalesced_ready_microseconds(1'000), 5'328U);
+
+    // Before the first send there is no schedule to be late against.
+    PacketPacer fresh {1'000'000, 8'192};
+    fresh.set_coalescing_quantum(2'000);
+    REQUIRE_EQ(fresh.coalesced_ready_microseconds(1'000),
+        fresh.query(0, 0).next_ready_microseconds);
+
+    // The quantum is bounded.
+    fresh.set_coalescing_quantum(1'000'000);
+    REQUIRE_EQ(fresh.coalescing_quantum_microseconds(),
+        PacketPacer::maximum_coalescing_quantum_microseconds);
+}
+
+TEST(packet_pacer_coalescing_bounds_the_burst_after_a_pause)
+{
+    // 100 us slots, the default 1 ms credit and a 2 ms quantum.
+    PacketPacer pacer {2'000'000, 8'192};
+    pacer.set_coalescing_quantum(2'000);
+    pacer.on_packet_sent(200, 10'000);
+    // Late by exactly quantum plus credit: the schedule is kept and the
+    // missed slots are sent, no more than that many.
+    const std::uint64_t late = 10'100 + 2'000 + 1'000;
+    std::size_t sent = 0;
+    while (pacer.query(late, 0).ready && sent < 100U) {
+        pacer.on_packet_sent(200, late);
+        ++sent;
+    }
+    REQUIRE_EQ(sent, 31U);
+    // One microsecond later than quantum plus credit: a fresh schedule, so a
+    // pause is not followed by a burst.
+    const std::uint64_t next = pacer.query(late, 0).next_ready_microseconds;
+    const std::uint64_t resumed = next + 2'000 + 1'000 + 1;
+    pacer.on_packet_sent(200, resumed);
+    REQUIRE(!pacer.query(resumed + 99, 0).ready);
+    REQUIRE(pacer.query(resumed + 100, 0).ready);
+
+    // Without a quantum the credit alone applies, as before.
+    PacketPacer plain {2'000'000, 8'192};
+    plain.on_packet_sent(200, 10'000);
+    plain.on_packet_sent(200, 10'100 + 1'001);
+    REQUIRE(!plain.query(10'100 + 1'001 + 99, 0).ready);
+}
+
 #else
 TEST(packet_pacer_preserves_previous_schedule_on_windows_and_other_platforms)
 {

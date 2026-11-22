@@ -40,6 +40,23 @@ class MobileConfigureTests(unittest.TestCase):
             self.assertIn(flag, mobile.command(self.args(
                 target, ["--experimental-mobile-pacing"])))
 
+    def test_pacing_coalescing_requires_mobile_pacing_and_a_bounded_value(self):
+        flag = "-DROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS"
+        for target in ("android-arm64", "ios-arm64", "ios-simulator-arm64"):
+            plain = mobile.command(self.args(target, ["--experimental-mobile-pacing"]))
+            self.assertFalse(any(part.startswith(flag) for part in plain))
+            self.assertIn(f"{flag}=2000", mobile.command(self.args(target, [
+                "--experimental-mobile-pacing",
+                "--mobile-pacing-coalesce-microseconds", "2000"])))
+            with self.assertRaises(ValueError):
+                mobile.command(self.args(target, [
+                    "--mobile-pacing-coalesce-microseconds", "2000"]))
+            for value in ("-1", "10001"):
+                with self.assertRaises(ValueError):
+                    mobile.command(self.args(target, [
+                        "--experimental-mobile-pacing",
+                        "--mobile-pacing-coalesce-microseconds", value]))
+
     def test_invalid_deployment_target(self):
         for value in ("20", "28;other", "28.0"):
             with self.assertRaises(ValueError):

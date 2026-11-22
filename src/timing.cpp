@@ -311,8 +311,9 @@ void PacketPacer::on_packet_sent(std::size_t bytes,
     // Keep the ideal schedule while this send is no later than the credit
     // after its slot; otherwise start a fresh schedule at the send time.
     const bool keeps_schedule = has_schedule_
-        && now_microseconds
-            <= next_send_microseconds_ + schedule_credit_microseconds_;
+        && now_microseconds <= next_send_microseconds_
+                + schedule_credit_microseconds_
+                + coalescing_quantum_microseconds_;
     if (!keeps_schedule) {
         // A fresh schedule owes nothing to the one it replaces. Its first
         // interval is rounded up so a restart never runs ahead of the rate.
@@ -342,11 +343,37 @@ void PacketPacer::on_packet_sent(std::size_t bytes,
         std::max(next_send_microseconds_, now_microseconds) + interval;
 #endif
     interval_remainder_ = remainder;
+    last_interval_microseconds_ = interval;
 }
 
 void PacketPacer::set_schedule_credit(std::uint64_t microseconds) noexcept
 {
     schedule_credit_microseconds_ = microseconds;
+}
+
+void PacketPacer::set_coalescing_quantum(std::uint64_t microseconds) noexcept
+{
+    coalescing_quantum_microseconds_ =
+        std::min(microseconds, maximum_coalescing_quantum_microseconds);
+}
+
+std::uint64_t PacketPacer::coalesced_ready_microseconds(
+    std::size_t waiting_packets) const noexcept
+{
+    if (coalescing_quantum_microseconds_ == 0U || !has_schedule_
+        || last_interval_microseconds_ == 0U || waiting_packets < 2U) {
+        return next_send_microseconds_;
+    }
+    // Whole packet intervals only, and no more of them than packets wait:
+    // waiting longer than the last slot that can be filled would delay every
+    // packet of the batch without adding one to it.
+    // A carried fraction makes some intervals one microsecond longer than
+    // the last one; allow for it so the last packet of the batch is due.
+    const std::uint64_t interval =
+        last_interval_microseconds_ + (interval_remainder_ != 0U ? 1U : 0U);
+    const std::uint64_t further_packets = std::min<std::uint64_t>(
+        coalescing_quantum_microseconds_ / interval, waiting_packets - 1U);
+    return next_send_microseconds_ + further_packets * interval;
 }
 
 void TimerWakeMonitor::observe(std::uint64_t lateness_microseconds) noexcept
