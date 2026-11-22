@@ -514,8 +514,7 @@ private:
     std::chrono::steady_clock::time_point scheduled_deadline_ {};
     bool scheduled_coarse_timer_probe_ = false;
     std::chrono::steady_clock::time_point next_coarse_timer_probe_ {};
-    static constexpr auto coarse_timer_probe_interval_ =
-        std::chrono::milliseconds {100};
+    CoarseTimerProbeSpacing coarse_timer_probe_spacing_ {};
     std::atomic<std::uint64_t> coarse_timer_probe_wakes_ {0};
     // Sub-millisecond deadlines are timer waits unless the host's timer
     // wake-ups have proven too coarse for the pacer's schedule credit.
