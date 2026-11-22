@@ -723,6 +723,56 @@ def group_case_directory(evidence_directory: Path | None):
         yield evidence_directory
 
 
+REFERENCE_GROUP_CONNECT_RACE = re.compile(
+    r"^group connect failed: Success; member=(\d+); "
+    r"endpoint_ids=(\d+),(\d+); endpoint_errors=0,0$",
+    re.MULTILINE,
+)
+
+
+class ReferenceGroupConnectRace(RuntimeError):
+    """A case failed with the signature of the reference caller's connect race."""
+
+
+def is_reference_group_connect_race(
+    caller_returncode: int | None, caller_stderr: str, listener_stderr: str,
+) -> bool:
+    """Recognise the Haivision group caller closing a member it just connected.
+
+    In Haivision SRT 1.5.7 a member whose handshake completes while
+    srt_connect_group inspects the group can be taken for broken and closed
+    (Robotweax/srt issue 417). The caller then reports a successful connect
+    with a valid member and no endpoint error, never reaches two connected
+    members and sends no payload; the listener times out on the first message.
+    Anything else, including any endpoint error, is not this signature.
+    """
+    if caller_returncode != 4:
+        return False
+    match = REFERENCE_GROUP_CONNECT_RACE.search(caller_stderr)
+    if match is None:
+        return False
+    member, first, second = (int(value) for value in match.groups())
+    if member <= 0 or first <= 0 or second <= 0 or member not in (first, second):
+        return False
+    for line in listener_stderr.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(event, dict)
+            and event.get("event") == "group_transfer_failure"
+            and event.get("operation") == "receive-range"
+            and event.get("reason") == "api"
+            and event.get("message_index") == 0
+            and event.get("api_error") == 6003
+        ):
+            return True
+    return False
+
+
 def run_case(
     listener_program: Path,
     caller_program: Path,
@@ -881,7 +931,11 @@ def run_case(
                             time.sleep(0.02)
                         else:
                             raise RuntimeError(
-                                "baseline group receiver did not become ready"
+                                "baseline group receiver did not become ready\n"
+                                "--- listener stdout ---\n"
+                                f"{stdout_path.read_text(errors='replace')}\n"
+                                "--- listener stderr ---\n"
+                                f"{stderr_path.read_text(errors='replace')}\n"
                             )
                         if (
                             caller_process.poll() is not None
@@ -995,7 +1049,14 @@ def run_case(
             or has_invalid_control_size_diagnostic(caller.stderr)
             or has_invalid_control_size_diagnostic(listener_stderr)
         ):
-            raise RuntimeError(
+            failure = (
+                ReferenceGroupConnectRace
+                if caller is not None and is_reference_group_connect_race(
+                    caller.returncode, caller.stderr, listener_stderr
+                )
+                else RuntimeError
+            )
+            raise failure(
                 f"connection-group interoperability failed: {name} "
                 f"({policy}, {profile})\n"
                 f"--- caller stdout ---\n{caller.stdout if caller else '<none>'}\n"
@@ -3080,6 +3141,27 @@ class MatrixEvidence:
             path.write_text(json.dumps(record, indent=2) + "\n")
 
 
+def run_reference_bonded_caller_case(recorder: MatrixEvidence, *args, **kwargs):
+    """Run a Haivision-caller bonded case, repeating it once on the known race.
+
+    Only the signature of the reference caller's connect race is repeated, and
+    only once: the first failure is printed in full and keeps its own evidence
+    directory, and a second failure of any kind fails the matrix. The race is
+    decided by thread timing inside the reference caller, so a repeat is an
+    independent attempt and not a way to hide a persistent listener defect.
+    """
+    try:
+        return recorder.run(run_case, *args, **kwargs)
+    except ReferenceGroupConnectRace as error:
+        print(
+            "RETRY after the known Haivision group connect race "
+            "(Robotweax/srt issue 417); the first failure was:\n"
+            f"{error}",
+            flush=True,
+        )
+    return recorder.run(run_case, *args, **kwargs)
+
+
 def main() -> int:
     global PINNED_SRT_VERSION
     parser = argparse.ArgumentParser()
@@ -3166,7 +3248,8 @@ def main() -> int:
                 True,
                 True,
             )
-            recorder.run(run_case,
+            run_reference_bonded_caller_case(
+                recorder,
                 robotweax,
                 reference,
                 "Haivision group caller -> Robotweax bonded listeners",
