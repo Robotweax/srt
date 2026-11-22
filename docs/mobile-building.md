@@ -225,6 +225,32 @@ scoped CPU/rate gates, but wake-ups increased and an isolated baseline connectio
 failure remains unexplained. The mobile option remains off by default; no
 battery-life or general mobile qualification is claimed.
 
+### Bounded pacing coalescing
+
+With one timer wait per pacing slot, the candidate wakes about once per packet:
+1,370 to 5,275 times per second in the iPhone comparison with 188-byte
+messages. `-DROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS=<quantum>`
+(`--mobile-pacing-coalesce-microseconds` in the configure helper) lets a Live
+pacing wait for new data be served up to that many microseconds late, so one
+wake-up sends the packets that became due in the meantime. It requires the
+experimental mobile pacing option, accepts 0 to 10000, and defaults to 0, which
+keeps one wait per slot.
+
+- The wait runs to the slot of the last packet that both fits in the quantum
+  and is already waiting to be sent. A stream whose packet interval is longer
+  than the quantum, or with a single packet waiting, is not delayed.
+- The pacing credit is widened by the quantum, so the average rate is kept and
+  a burst is bounded by the quantum plus the 1 ms credit at the configured rate
+  (about 3 kB at 8 Mbit/s with a 2 ms quantum).
+- Retransmissions, packet-filter packets, protocol timers and File mode are
+  not deferred. Any earlier wake-up still sends what is due by then.
+- Packets can leave up to one quantum later than their slot.
+
+This is covered by deterministic unit tests of the pacer and the connection
+runtime only. It has not been measured on any device: no wake-up, CPU, energy
+or network result exists for it, and wake-ups from sources other than pacing
+are not reduced by it. The setting is not a public socket option.
+
 Android consumers must package the matching shared C++ runtime and link Crypto
 and all transitive dependencies. iOS consumers must link matching target libraries;
 this step does not yet create an XCFramework or Swift package.

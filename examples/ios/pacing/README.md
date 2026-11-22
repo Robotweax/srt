@@ -44,6 +44,26 @@ The bundle IDs are `ai.robotweax.srt.pacing.baseline` and
 identity, replace the two signing arguments with
 `-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO`; that app cannot be installed.
 
+### Coalescing variants
+
+Bounded pacing coalescing is a further, unmeasured variant of the candidate. It
+serves a Live pacing wait up to a quantum late, so that one wake-up sends the
+packets that became due in the meantime, and it widens the pacing credit by the
+same quantum so the rate is kept. To build one, use a fresh directory, keep the
+experimental option `ON` and add, for a 2 ms quantum:
+
+```sh
+  -DROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS=2000
+```
+
+The bundle ID then ends in `coalesce2000`, so these apps coexist with the
+baseline and the plain candidate. Proposed quanta for a first comparison are
+2000 and 4000. Compare each against the plain candidate with the protocol
+below, and record wake-ups, CPU, delivered rate and retransmissions as before.
+Coalescing adds up to one quantum of sender delay and sends bursts of up to
+the quantum plus 1 ms of the configured rate; neither effect has been measured
+on a device, and no result for these variants exists yet.
+
 Install using Xcode or `xcrun devicectl device install app --device "$DEVICE" APP`.
 The phone must be paired, trusted, unlocked and in Developer Mode. A Simulator
 build can exercise the harness but does not qualify phone timing or CPU.

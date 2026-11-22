@@ -32,3 +32,16 @@
 #else
 #define ROBOTWEAX_SRT_SUBMILLISECOND_TIMER_PACING 0
 #endif
+
+// Bounded pacing coalescing for the mobile timer experiment (issue 353): a
+// Live pacing wait may be served up to this many microseconds late, so that
+// one wake-up sends the packets that became due meanwhile. Zero, the default,
+// keeps one timer wait per pacing slot. It has no effect without mobile timer
+// pacing.
+#if ROBOTWEAX_SRT_MOBILE_TIMER_PACING                                          \
+    && defined(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS)
+#define ROBOTWEAX_SRT_PACING_COALESCE_MICROSECONDS                             \
+    ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS
+#else
+#define ROBOTWEAX_SRT_PACING_COALESCE_MICROSECONDS 0
+#endif

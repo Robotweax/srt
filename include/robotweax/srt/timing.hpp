@@ -142,9 +142,17 @@ struct PaceDecision {
 // a fresh schedule at the send time, so a pause is never followed by a burst
 // larger than the credit's worth of packets. Windows and other platforms
 // retain the previous schedule based on the actual send time.
+//
+// A coalescing quantum lets the owner serve a pacing wait late on purpose:
+// coalesced_ready_microseconds() is the slot of the last packet that becomes
+// due within the quantum after the next slot, so one wake-up sends that many
+// packets back to back. The quantum is added to the schedule credit, which
+// keeps the average rate and bounds a burst to the quantum plus the credit.
 class PacketPacer {
 public:
     static constexpr std::uint64_t default_schedule_credit_microseconds = 1'000;
+    static constexpr std::uint64_t maximum_coalescing_quantum_microseconds =
+        10'000;
 
     PacketPacer(std::uint64_t bytes_per_second,
         std::size_t flow_window_packets) noexcept;
@@ -160,6 +168,18 @@ public:
     {
         return schedule_credit_microseconds_;
     }
+    // Values above maximum_coalescing_quantum_microseconds are clamped.
+    void set_coalescing_quantum(std::uint64_t microseconds) noexcept;
+    [[nodiscard]] std::uint64_t coalescing_quantum_microseconds() const noexcept
+    {
+        return coalescing_quantum_microseconds_;
+    }
+    // The time to wake for the next send when it may be served late, given
+    // how many packets are waiting to be sent. Equal to the next slot when
+    // the quantum is zero, no schedule exists yet, fewer than two packets
+    // wait, or not even one further packet becomes due within the quantum.
+    [[nodiscard]] std::uint64_t coalesced_ready_microseconds(
+        std::size_t waiting_packets) const noexcept;
 
 private:
     std::uint64_t bytes_per_second_ = 1;
@@ -170,6 +190,10 @@ private:
     std::uint64_t interval_remainder_ = 0;
     std::uint64_t schedule_credit_microseconds_ =
         default_schedule_credit_microseconds;
+    std::uint64_t coalescing_quantum_microseconds_ = 0;
+    // Whole-microsecond interval of the most recent packet, the estimate for
+    // the packets that follow it.
+    std::uint64_t last_interval_microseconds_ = 0;
     bool has_schedule_ = false;
 };
 

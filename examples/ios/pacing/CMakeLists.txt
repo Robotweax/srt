@@ -26,6 +26,11 @@ target_link_libraries(SRTMobilePacing PRIVATE RobotweaxSRT::srt Threads::Threads
     "-framework UIKit" "-framework Foundation")
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
     set(PACING_VARIANT candidate)
+    if(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS GREATER 0)
+        # One bundle per quantum, so several can be installed side by side.
+        set(PACING_VARIANT
+            "coalesce${ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS}")
+    endif()
 else()
     set(PACING_VARIANT baseline)
 endif()

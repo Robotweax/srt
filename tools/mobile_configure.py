@@ -23,6 +23,9 @@ def parser():
                         help="Android API level (e.g. 28) or iOS version (e.g. 15.0); not a support claim")
     result.add_argument("--experimental-mobile-pacing", action="store_true",
                         help="Opt in to unqualified mobile timer pacing; requires device qualification")
+    result.add_argument("--mobile-pacing-coalesce-microseconds", type=int, default=0,
+                        help="With --experimental-mobile-pacing: serve Live pacing waits up to this "
+                             "many microseconds late to batch sends (0 to 10000; unqualified)")
     result.add_argument("--plan", action="store_true",
                         help="Print configuration without checking/installing SDKs or creating files")
     return result
@@ -53,8 +56,15 @@ def command(args):
                "-DOPENSSL_USE_STATIC_LIBS=TRUE",
                f"-DOPENSSL_INCLUDE_DIR={root / 'include'}",
                f"-DOPENSSL_CRYPTO_LIBRARY={root / 'lib/libcrypto.a'}"]
+    coalesce = args.mobile_pacing_coalesce_microseconds
+    if not 0 <= coalesce <= 10000:
+        raise ValueError("Pacing coalescing must be from 0 to 10000 microseconds")
+    if coalesce and not args.experimental_mobile_pacing:
+        raise ValueError("Pacing coalescing requires --experimental-mobile-pacing")
     if args.experimental_mobile_pacing:
         options += ["-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING=ON"]
+    if coalesce:
+        options += [f"-DROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS={coalesce}"]
     if android:
         options += [f"-DCMAKE_TOOLCHAIN_FILE={args.ndk.resolve() / 'build/cmake/android.toolchain.cmake'}",
                     "-DANDROID_ABI=arm64-v8a", f"-DANDROID_PLATFORM=android-{args.deployment_target}",

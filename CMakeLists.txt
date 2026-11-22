@@ -47,6 +47,8 @@ option(ROBOTWEAX_SRT_ENABLE_LTO
     "Build the library with interprocedural optimization when supported" OFF)
 option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING
     "Enable unqualified timer pacing without coarse-timer spinning on Android/iOS" OFF)
+set(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS "0" CACHE STRING
+    "Experimental mobile pacing only: serve a Live pacing wait up to this many microseconds late to batch sends (0 to 10000, 0 disables)")
 option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
     "Enable the Linux sender-drop JSONL diagnostic" OFF)
 option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
@@ -320,9 +322,23 @@ endif()
 target_compile_definitions(robotweax_srt PRIVATE ROBOTWEAX_SRT_BUILDING)
 target_compile_definitions(robotweax_srt PRIVATE
     ROBOTWEAX_SRT_MAX_GROUP_MEMBERS=${ROBOTWEAX_SRT_MAX_GROUP_MEMBERS})
+if(NOT ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS MATCHES "^(0|[1-9][0-9]*)$"
+    OR ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS GREATER 10000)
+    message(FATAL_ERROR
+        "ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS must be an integer from 0 to 10000")
+endif()
+if(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS GREATER 0
+    AND NOT ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
+    message(FATAL_ERROR
+        "ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS requires ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING")
+endif()
 if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
     target_compile_definitions(robotweax_srt
         PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_MOBILE_PACING)
+    if(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS GREATER 0)
+        target_compile_definitions(robotweax_srt PUBLIC
+            ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS=${ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS})
+    endif()
 endif()
 target_compile_definitions(robotweax_srt PRIVATE
     ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})

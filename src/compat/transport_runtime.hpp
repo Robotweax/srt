@@ -13,6 +13,7 @@
 #include "compat/readiness.hpp"
 #include "compat/socket_readiness.hpp"
 #include "compat/statistics.hpp"
+#include "compat/submillisecond_pacing_platform.hpp"
 #include "compat/hybrid/hybrid_native.hpp"
 #ifdef ENABLE_MAXREXMITBW
 #include "compat/retransmission_budget.hpp"
@@ -589,6 +590,11 @@ public:
         CryptoState receiver_key_state = CryptoState::unsecured;
         NowFunction now_function = nullptr;
         void* now_context = nullptr;
+        // Bounded Live pacing coalescing in microseconds; zero disables it.
+        // The build sets it only for the experimental mobile timer pacing
+        // (issue 353). Never set by the public API.
+        std::uint64_t pacing_coalesce_microseconds =
+            ROBOTWEAX_SRT_PACING_COALESCE_MICROSECONDS;
         // Internal deterministic-test seam, invoked after a successful pop
         // under this runtime's lock. Never installed by the public API.
         ReceivePopHook receive_pop_hook_for_testing = nullptr;
@@ -1042,6 +1048,7 @@ private:
     std::uint64_t npd_malformed_payloads_ = 0;
     ReliabilitySession session_;
     PacketPacer pacer_;
+    std::uint64_t pacing_coalesce_microseconds_ = 0;
     SocketOptions options_;
 #ifdef ENABLE_MAXREXMITBW
     RetransmissionBudget retransmission_budget_;

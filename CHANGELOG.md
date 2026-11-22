@@ -6,6 +6,12 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
+- The default-off experimental mobile timer pacing gains a build-time setting,
+  `ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS` (0 to 10000, default 0).
+  A non-zero quantum lets a Live pacing wait be served that late, so one
+  wake-up sends several packets, and widens the pacing credit by the same
+  amount. It is not measured on any device. Builds without the experimental
+  mobile pacing option, and every desktop build, are unchanged.
 - The packet pacer carries the fraction of a microsecond left over from each
   packet interval instead of rounding every interval up. At packet periods of
   a few microseconds (multi-gigabit File transfer on loopback or fast links)
