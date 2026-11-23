@@ -17,7 +17,7 @@ frozen paths.
 The [release process](../docs/release-process-0.3.5.md) defines the required
 evidence and the protected rebuild on the final tag.
 
-## Hosted qualification started
+## Hosted qualification
 
 The eight source and package workflows were dispatched on
 `dev/release-0.3.5` at recipe commit
@@ -46,8 +46,27 @@ is `telemetry`.
 | Interop | [45240808065](https://github.com/Robotweax/srt_network_lab/actions/runs/45240808065) |
 | Telemetry and Doctor | [45240805710](https://github.com/Robotweax/srt_network_lab/actions/runs/45240805710) |
 
-Run links record dispatch. Successful completion and any first failures will
-be recorded after reviewing the jobs and their artifacts.
+All eight release workflows and all three downstream Lab requests passed on
+attempt 1. The Lab artifacts identify the frozen product and report PASS with
+archive validation and cleanup verified for each request.
+
+- Full CI passed 64 jobs, including the Required CI gate, all five multicast
+  OS/backend jobs and the full ecosystem suite. The separate Live timing
+  interoperability job was skipped by the full-suite condition. Linux Release
+  ran on Ubuntu 26.04 image `20261116.202.1`.
+- Package managers passed Homebrew source installation and audit plus all six
+  vcpkg profiles. The Linux distribution builds are recorded below.
+- Windows SDK passed 16 jobs, including all twelve build variants, both
+  installers, and coexistence. The coexistence log confirms the signed 0.3.4
+  upgrades, repair, downgrade rejection, both installation orders and
+  independent uninstall. Both rebuild jobs, signing and draft creation were
+  skipped as planned for this dispatch.
+- BCrypt passed its default native and shared-library rows. Its standalone
+  NPD and performance jobs correspond to separate workflow inputs.
+- ACP1, peer authentication and all hybrid jobs passed. The Linux hybrid
+  strict soak passed CTR and GCM, and GCC and Clang sanitizer jobs passed.
+  The hosted macOS hybrid job excludes cases labelled both `hybrid` and
+  `network`. Native results for those cases appear below.
 
 ## Native macOS
 
@@ -67,3 +86,9 @@ and removal checks.
   [Job 137924508270](https://github.com/Robotweax/srt/actions/runs/45240776987/job/137924508270).
 - Fedora 44 RPM image `fedora@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e`.
   [Job 137924508772](https://github.com/Robotweax/srt/actions/runs/45240776987/job/137924508772).
+
+## Remaining release gates
+
+Physical Android and iOS pacing comparisons on the frozen product are pending.
+A release PR also needs the contributor's DCO sign-off. Merge, protected tag
+creation, signing and publication remain pending.
