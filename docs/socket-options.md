@@ -534,6 +534,7 @@ The initial binding is cleartext individual Live Message Caller/Listener only.
 
 `SRTO_PACKETFILTER` accepts up to 512 bytes using
 `fec,cols:N[,rows:N][,layout:even|staircase][,arq:never|onreq|always]`.
+A zero-length string clears the configured FEC filter.
 Enabling it reserves the four-byte FEC control header from the maximum live
 payload and participates in HSv5 negotiation. Row, Column, and recursively
 composed Matrix paths are supported for Caller/Listener and Rendezvous in the
@@ -542,7 +543,8 @@ plugins, and unbounded geometry are not supported. See
 [Packet filters and FEC](packet-filter.md).
 
 `SRTO_CONGESTION` is a pre-connection, write-only string option. The default build accepts
-exactly `"live"` or `"file"` without the terminating NUL byte. Opt-in
+`"live"` or `"file"` without the terminating NUL byte. A zero-length string
+selects `"live"`. Opt-in
 [experimental controller builds](experimental-controllers.md) also accept
 locally compiled names and require explicit bilateral confirmation. Directly
 setting it changes only the congestion controller; `SRTO_TRANSTYPE` remains
