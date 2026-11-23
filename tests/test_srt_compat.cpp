@@ -7956,6 +7956,14 @@ TEST(srt_compat_receive_control_is_output_only)
     REQUIRE_EQ(control.msgno, previous_message);
     REQUIRE_EQ(control.pktseq, previous_sequence);
     REQUIRE_EQ(control.srctime, previous_time);
+    packet.data.sequence = packet.data.sequence.advanced(1);
+    packet.data.message_number = 8;
+    runtime->process_packet(packet, peer);
+    SRT_MSGCTRL zero {};
+    REQUIRE_EQ(srt_recvmsg2(socket, output.data(), output.size(), &zero), 2);
+    REQUIRE_EQ(zero.msgno, 8);
+    REQUIRE(zero.grpdata == nullptr);
+    REQUIRE_EQ(zero.grpdata_size, 0U);
     REQUIRE_EQ(srt_close(socket), 0);
 }
 
