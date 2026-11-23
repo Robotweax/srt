@@ -759,7 +759,9 @@ Error UdpSocket::join_multicast(IpEndpoint group, IpEndpoint interface) noexcept
 #endif
         ipv6_mreq request {};
         std::memcpy(&request.ipv6mr_multiaddr, group.address.data(), 16U);
-        request.ipv6mr_interface = interface.scope_id;
+        // The member is int in Android's headers and unsigned elsewhere.
+        request.ipv6mr_interface =
+            static_cast<decltype(request.ipv6mr_interface)>(interface.scope_id);
         result = set_option(to_native(native_), IPPROTO_IPV6, IPV6_JOIN_GROUP,
             &request, sizeof(request));
     }
@@ -788,7 +790,9 @@ Error UdpSocket::leave_multicast(
     } else {
         ipv6_mreq request {};
         std::memcpy(&request.ipv6mr_multiaddr, group.address.data(), 16U);
-        request.ipv6mr_interface = interface.scope_id;
+        // The member is int in Android's headers and unsigned elsewhere.
+        request.ipv6mr_interface =
+            static_cast<decltype(request.ipv6mr_interface)>(interface.scope_id);
         result = set_option(to_native(native_), IPPROTO_IPV6, IPV6_LEAVE_GROUP,
             &request, sizeof(request));
     }
