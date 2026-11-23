@@ -148,6 +148,9 @@ struct PaceDecision {
 // due within the quantum after the next slot, so one wake-up sends that many
 // packets back to back. The quantum is added to the schedule credit, which
 // keeps the average rate and bounds a burst to the quantum plus the credit.
+// A send later than that starts a fresh schedule the quantum before the send
+// time: the deliberate wait is kept and only the lateness beyond it is
+// forgiven, so such a send is followed by the quantum's worth of packets.
 class PacketPacer {
 public:
     static constexpr std::uint64_t default_schedule_credit_microseconds = 1'000;
