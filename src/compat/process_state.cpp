@@ -1,7 +1,7 @@
 #include "compat/process_state.hpp"
 
 #if defined(_WIN32) && defined(SRT_EXPORTS)
-#  include <windows.h>
+#include <windows.h>
 
 namespace {
 bool process_terminating = false;
