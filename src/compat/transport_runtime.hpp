@@ -452,6 +452,10 @@ private:
     void notify_work(bool receive_release) noexcept;
 
     // Written and read only by the thread that runs the current slice.
+    std::shared_ptr<ConnectionRuntime> gap_runtime_;
+    SequenceNumber gap_sequence_;
+    std::uint32_t gap_destination_ = 0;
+    void flush_gap_recheck() noexcept;
 #if defined(ROBOTWEAX_SRT_EXPERIMENTAL_UDP_BATCHING)
     // Slots for one batched receive, allocated by the first slice.
     std::unique_ptr<std::byte[]> receive_batch_storage_;
@@ -726,7 +730,8 @@ public:
         std::optional<Clock::time_point> ingress = std::nullopt,
         PacketIngress provenance = PacketIngress::unicast_session,
         const std::shared_ptr<const MulticastIngressBinding>&
-            multicast_binding = {}) noexcept;
+            multicast_binding = {},
+        bool* recheck_gap = nullptr) noexcept;
     [[nodiscard]] bool process_handshake(
         const HandshakeMessage& message,
         IpEndpoint peer) noexcept;
@@ -955,6 +960,7 @@ private:
         const PacketView& packet) noexcept;
     [[nodiscard]] FecReceiveBatch receive_fec_packet(
         const PacketView& wire_packet) noexcept;
+    void flush_receive_loss_report() noexcept;
     [[nodiscard]] bool process_reliability_packet_locked(
         const PacketView& packet, std::uint64_t now_microseconds,
         ReliabilityReceiveContext context = {}, bool wire_received = true,

@@ -1549,8 +1549,15 @@ void DatagramChannel::dispatch(const PacketView& packet,
     }
     if (runtime != nullptr) {
         routed_datagrams_.fetch_add(1U, std::memory_order_relaxed);
-        runtime->process_packet(
-            packet, peer, ingress, provenance, multicast_binding);
+        bool recheck = false;
+        runtime->process_packet(packet, peer, ingress, provenance,
+            multicast_binding,
+            ingress_only || gap_runtime_ ? nullptr : &recheck);
+        if (recheck) {
+            gap_runtime_ = runtime;
+            gap_destination_ = destination_socket_id;
+            gap_sequence_ = packet.data.sequence.advanced(SequenceNumber::mask);
+        }
         if (ingress_only) {
             // Multicast ingress does not poll this runtime. Wake its control
             // channel so newly armed ACK/NAK deadlines are serviced even if
@@ -1585,6 +1592,10 @@ void DatagramChannel::mark_connections_broken(int system_error) noexcept
 bool DatagramChannel::accept_received(
     const UdpIoResult& received, std::span<const std::byte> datagram) noexcept
 {
+    // Reuse the next nonblocking receive already budgeted for this slice.
+    // An empty read, discarded datagram or unrelated packet ends the recheck.
+    if (!received && gap_runtime_)
+        flush_gap_recheck();
     if (received.error == Error::would_block) {
         return false;
     }
@@ -1605,15 +1616,43 @@ bool DatagramChannel::accept_received(
     last_datagram_time_ = ingress;
     const auto bytes = datagram.first(received.bytes_transferred);
     const auto decoded = decode_packet(bytes);
-    if (decoded) {
+    const bool possible_repair = gap_runtime_ && decoded
+        && decoded.packet.kind == PacketKind::data
+        && decoded.packet.data.destination_socket_id == gap_destination_
+        && decoded.packet.data.sequence == gap_sequence_
+        && received.peer == gap_runtime_->peer_;
+    if (gap_runtime_ && !possible_repair)
+        flush_gap_recheck();
+    if (decoded)
         dispatch(decoded.packet, bytes, received.peer, ingress);
-    }
+    // Even a matching header may have failed authentication or admission.
+    if (possible_repair)
+        flush_gap_recheck();
     return true;
+}
+
+void DatagramChannel::flush_gap_recheck() noexcept
+{
+    auto runtime = std::move(gap_runtime_);
+    runtime->flush_receive_loss_report();
+}
+
+void ConnectionRuntime::flush_receive_loss_report() noexcept
+{
+    std::lock_guard lock(mutex_);
+    if (locally_closed_ || broken_)
+        return;
+    const auto now = now_microseconds();
+    ReliabilityActions actions;
+    session_.append_pending_loss_report(actions, true, now);
+    (void)send_actions(actions, now);
 }
 
 RuntimePollResult DatagramChannel::finish_receive_slice(
     std::size_t received_count) noexcept
 {
+    if (gap_runtime_)
+        flush_gap_recheck();
     // Sparse traffic: no datagram for several short-poll intervals. A
     // readiness wake costs two thread hops, so it only beats the poll when
     // datagrams are far apart; denser traffic keeps the poll, which
@@ -4956,8 +4995,8 @@ ConnectionRuntime::hybrid_multicast_coverage(
 void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
     IpEndpoint peer, std::optional<Clock::time_point> ingress,
     PacketIngress provenance,
-    const std::shared_ptr<const MulticastIngressBinding>&
-        multicast_binding) noexcept
+    const std::shared_ptr<const MulticastIngressBinding>& multicast_binding,
+    bool* recheck_gap) noexcept
 {
     if (provenance != PacketIngress::multicast_data
         && provenance != PacketIngress::unicast_session)
@@ -5408,8 +5447,12 @@ void ConnectionRuntime::process_packet(const PacketView& incoming_packet,
         }
     }
 #endif
-    if (process_reliability_packet_locked(
-            packet, now, {}, true, {}, observation_path, arrival)) {
+    const bool recheck = recheck_gap && packet.kind == PacketKind::data
+        && session_.opens_single_immediate_gap(packet.data.sequence);
+    if (process_reliability_packet_locked(packet, now,
+            {.defer_feedback = recheck}, true, {}, observation_path, arrival)) {
+        if (recheck)
+            *recheck_gap = true;
         last_peer_activity_microseconds_ = now;
     }
 }

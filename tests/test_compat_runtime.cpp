@@ -11395,6 +11395,116 @@ struct QueuedReceiveSlice {
 
 } // namespace
 
+TEST(compat_channel_same_pass_nak_rechecks_one_packet_gap)
+{
+    struct Case {
+        std::vector<unsigned> trace;
+        unsigned empty_datagrams;
+        unsigned first_nak_read;
+    };
+    // Read 2 reveals the gap. Read 3 either fills it, exposes a later
+    // original, or returns would_block. At the slice limit no read remains.
+    for (const Case& scenario :
+        {Case {{0, 2, 1, 3}, 0, 0}, Case {{0, 2, 3}, 0, 3}, Case {{0, 2}, 0, 3},
+            Case {{0, 2}, 62, 64}}) {
+        const auto& trace = scenario.trace;
+        const bool swapped = scenario.first_nak_read == 0;
+        const auto sender_channel = std::make_shared<DatagramChannel>();
+        const auto receiver_channel = std::make_shared<DatagramChannel>();
+        CapturedDatagrams sender_output, feedback;
+        sender_channel->set_send_hook_for_testing(
+            capture_datagram, &sender_output);
+        receiver_channel->set_send_hook_for_testing(
+            capture_datagram, &feedback);
+        const auto peer = Ipv4Endpoint::loopback(9000);
+        std::uint64_t now = 1000;
+        const ConnectionRuntime::Configuration config {
+            .channel = sender_channel,
+            .peer = peer,
+            .peer_socket_id = 42,
+            .initial_sequence = SequenceNumber {103},
+            .negotiated_options = {.periodic_nak = false,
+                .retransmit_flag = true},
+            .origin = ConnectionRuntime::Clock::now(),
+            .now_function = injected_now,
+            .now_context = &now,
+        };
+        ConnectionRuntime sender {config};
+        auto receiver_config = config;
+        receiver_config.channel = receiver_channel;
+        auto receiver = std::make_shared<ConnectionRuntime>(receiver_config);
+        REQUIRE(receiver_channel->register_connection(42, receiver));
+        std::vector<std::vector<std::byte>> originals;
+        for (unsigned index = 0; index < 4; ++index) {
+            const std::array payload {static_cast<std::byte>(index)};
+            REQUIRE_EQ(sender.queue_message(payload, 0, true, false, -1).status,
+                MessageIoStatus::success);
+            now += 1000;
+            (void)sender.poll();
+            for (auto& bytes : take_datagrams(sender_output)) {
+                const auto packet = decode_packet(bytes);
+                REQUIRE(packet);
+                if (packet.packet.kind == PacketKind::data) {
+                    REQUIRE_EQ(packet.packet.data.sequence,
+                        SequenceNumber {103 + index});
+                    originals.push_back(std::move(bytes));
+                }
+            }
+        }
+        REQUIRE_EQ(originals.size(), 4U);
+        const auto slice_start = now;
+        std::size_t next = 0;
+        auto receive = [&](std::span<std::byte> slot) noexcept -> UdpIoResult {
+            ++now; // One logical tick per nonblocking receive attempt.
+            if (now - slice_start <= scenario.empty_datagrams)
+                return {.bytes_transferred = 0, .peer = peer};
+            if (next == trace.size())
+                return {.error = Error::would_block};
+            const auto& bytes = originals[trace[next++]];
+            std::copy(bytes.begin(), bytes.end(), slot.begin());
+            return {.bytes_transferred = bytes.size(), .peer = peer};
+        };
+        (void)receiver_channel->run_once_for_testing(receive);
+        std::size_t naks = 0;
+        for (const auto& bytes : take_datagrams(feedback)) {
+            const auto decoded = decode_packet(bytes);
+            REQUIRE(decoded);
+            if (decoded.packet.control.type
+                == ControlType::negative_acknowledgement) {
+                const auto loss = decode_loss_range(decoded.packet.payload);
+                REQUIRE(loss);
+                REQUIRE_EQ(loss.range.first, SequenceNumber {104});
+                REQUIRE_EQ(loss.range.last, SequenceNumber {104});
+                REQUIRE_EQ(decoded.packet.control.timestamp.value(),
+                    slice_start + scenario.first_nak_read);
+                ++naks;
+            }
+            sender.process_packet(decoded.packet, peer);
+        }
+        (void)sender.poll();
+        std::size_t retransmissions = 0;
+        for (const auto& bytes : take_datagrams(sender_output)) {
+            const auto decoded = decode_packet(bytes);
+            REQUIRE(decoded);
+            if (decoded.packet.kind == PacketKind::data) {
+                REQUIRE(decoded.packet.data.retransmitted);
+                REQUIRE_EQ(decoded.packet.data.sequence, SequenceNumber {104});
+                ++retransmissions;
+                receiver->process_packet(decoded.packet, peer);
+            }
+        }
+        REQUIRE_EQ(naks, swapped ? 0U : 1U);
+        REQUIRE_EQ(retransmissions, swapped ? 0U : 1U);
+        const unsigned delivered = trace.size() == 2 ? 3 : 4;
+        for (unsigned index = 0; index < delivered; ++index) {
+            std::array<std::byte, 1> payload {};
+            REQUIRE_EQ(receiver->receive_message(payload, false, -1).status,
+                MessageIoStatus::success);
+            REQUIRE_EQ(payload[0], static_cast<std::byte>(index));
+        }
+    }
+}
+
 TEST(compat_channel_receive_slice_drained_burst_preserves_the_poll_wait)
 {
     for (const std::size_t packets : {0U, 1U, 63U}) {
