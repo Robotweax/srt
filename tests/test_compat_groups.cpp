@@ -8752,10 +8752,45 @@ TEST(compat_group_receive_control_reads_only_metadata_buffer_inputs)
             REQUIRE_EQ(control.grpdata_size, 1U);
             if (capacity == 0U) {
                 REQUIRE(control.grpdata == nullptr);
+                REQUIRE_EQ(metadata[0].id, 0);
             } else {
                 REQUIRE(control.grpdata == metadata.data());
                 REQUIRE_EQ(metadata[0].id, socket);
             }
+
+            std::array<std::byte, sizeof(metadata)> snapshot {};
+            std::memcpy(snapshot.data(), metadata.data(), snapshot.size());
+            packet.data.sequence = packet.data.sequence.next();
+            const auto survivor = srt_create_socket();
+            REQUIRE(survivor != SRT_INVALID_SOCK);
+            const auto survivor_runtime = attach_group_runtime(
+                group, survivor, packet.data.sequence.value());
+            REQUIRE_EQ(srt_close(socket), 0);
+            SRT_SOCKGROUPDATA current {};
+            std::size_t count = 1;
+            REQUIRE_EQ(srt_group_data(group, &current, &count), 1);
+            REQUIRE_EQ(count, 1U);
+            REQUIRE_EQ(current.id, survivor);
+
+            packet.data.message_number = 2;
+            constexpr std::array<std::byte, 1> next_payload {std::byte {'s'}};
+            packet.payload = next_payload;
+            survivor_runtime->process_packet(
+                packet, IpEndpoint::loopback(9'000));
+            REQUIRE(robotweax::srt::compat::group_receive_readiness(record)
+                    .message_ready);
+            SRT_MSGCTRL no_metadata {};
+            REQUIRE_EQ(
+                srt_recvmsg2(group, output.data(), output.size(), &no_metadata),
+                1);
+            REQUIRE_EQ(output[0], 's');
+            REQUIRE_EQ(no_metadata.msgno, 2);
+            REQUIRE(no_metadata.grpdata == nullptr);
+            REQUIRE_EQ(no_metadata.grpdata_size, 0U);
+            REQUIRE_EQ(
+                std::memcmp(snapshot.data(), metadata.data(), snapshot.size()),
+                0);
+            REQUIRE_EQ(metadata[1].id, 0);
         }
     }
 }

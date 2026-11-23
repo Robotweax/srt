@@ -70,7 +70,27 @@ def adapt(name: str, text: str) -> str:
         text = replace(text, '<< value;', '<< robotweax_app::display_option(o.name, value);')
         text = replace(text, marker,
                        '    if (all_clear && options.count("arqfirst"))\n        Verb() << robotweax_app::policy_description(socket);\n' + marker)
+    elif name == 'apps/uriparser.cpp':
+        # Preserve a missing groupconnect value for single-stream validation.
+        marker = '        if (idx != string::npos)\n        {\n            m_mapQuery[url_decode'
+        text = replace(text, marker,
+                       '        if (idx == string::npos && url_decode(strQueryPair) == "groupconnect")\n'
+                       '            m_mapQuery["groupconnect"] = "";\n' + marker)
     elif name == 'apps/srt-live-transmit.cpp':
+        marker = '    cfg.target = params[""].at(1);'
+        text = replace(text, marker, marker + '''
+    for (const auto* endpoint : {&cfg.source, &cfg.target})
+    {
+        const UriParser uri(*endpoint);
+        if (uri.type() != UriParser::SRT)
+            continue;
+        const auto group = uri.parameters().find("groupconnect");
+        if (group != uri.parameters().end() && group->second != "0")
+        {
+            cerr << "ERROR: groupconnect must be 0 for single-stream SRT URIs" << endl;
+            return 1;
+        }
+    }''')
         marker = '        cerr << "Supported schemes:\\n";'
         text = replace(text, '#include <srt.h>', '#include <srt.h>\n#include \"robotweax_app.hpp\"')
         text = replace(text, '<< cfg.source', '<< robotweax_app::display_uri(cfg.source)')
@@ -83,6 +103,7 @@ def adapt(name: str, text: str) -> str:
         text = replace(text, 'srt::setlogstream(logfile_stream);',
                        'srt_setloghandler(&logfile_stream, [](void* opaque, int, const char*, int, const char*, const char* message) {\n                *static_cast<std::ofstream*>(opaque) << message << std::flush;\n            });')
     elif name == 'apps/transmitmedia.cpp':
+        text = replace(text, '    SRT_MSGCTRL ctrl;', '    SRT_MSGCTRL ctrl = srt_msgctrl_default;')
         text = replace(text, '#include <stdexcept>', '#include <stdexcept>\n#include <system_error>\n#include "robotweax_app.hpp"')
         marker = 'void SrtCommon::Init(string host, int port, map<string,string> par, bool dir_output)\n{'
         text = replace(text, marker, marker + '\n    robotweax_app::configure_uri(par, dir_output);')

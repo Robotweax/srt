@@ -3398,6 +3398,83 @@ TEST(srt_compat_broken_socket_cannot_be_reconnected)
     REQUIRE_EQ(srt_cleanup(), 0);
 }
 
+namespace {
+
+void check_rendezvous_timeout(robotweax::srt::IpAddressFamily family)
+{
+    using namespace robotweax::srt;
+    using namespace std::chrono;
+    ScopedSrtRuntime runtime;
+    REQUIRE_EQ(runtime.startup_result, 0);
+    const bool ipv6 = family == IpAddressFamily::ipv6;
+    const auto loopback =
+        ipv6 ? IpEndpoint::ipv6_loopback() : IpEndpoint::loopback();
+    sockaddr_storage local {};
+    int local_size = sizeof(local);
+    REQUIRE_EQ(compat::write_ip_endpoint(
+                   loopback, reinterpret_cast<sockaddr*>(&local), &local_size),
+        0);
+
+    // With the default 10x multiplier, 24 and 26 ms straddle the first
+    // handshake retransmission at 250 ms. A bound UDP peer never replies.
+    for (const int timeout_ms : {24, 26}) {
+        UdpSocket peer {family};
+        REQUIRE_EQ(peer.bind(loopback), Error::none);
+        const auto destination = peer.local_endpoint();
+        REQUIRE(destination);
+        sockaddr_storage remote {};
+        int remote_size = sizeof(remote);
+        REQUIRE_EQ(compat::write_ip_endpoint(destination.endpoint,
+                       reinterpret_cast<sockaddr*>(&remote), &remote_size),
+            0);
+
+        const SRTSOCKET socket = srt_create_socket();
+        REQUIRE(socket != SRT_INVALID_SOCK);
+        const bool rendezvous = true;
+        REQUIRE_EQ(srt_setsockflag(socket, SRTO_RENDEZVOUS, &rendezvous,
+                       sizeof(rendezvous)),
+            0);
+        REQUIRE_EQ(srt_setsockflag(
+                       socket, SRTO_CONNTIMEO, &timeout_ms, sizeof(timeout_ms)),
+            0);
+        REQUIRE_EQ(
+            srt_bind(socket, reinterpret_cast<sockaddr*>(&local), local_size),
+            0);
+
+        const auto start = steady_clock::now();
+        const int result = srt_connect(
+            socket, reinterpret_cast<sockaddr*>(&remote), remote_size);
+        const auto elapsed = steady_clock::now() - start;
+        REQUIRE_EQ(result, SRT_ERROR);
+        REQUIRE_EQ(srt_getlasterror(nullptr), SRT_ENOSERVER);
+        REQUIRE_EQ(srt_close(socket), 0);
+        const auto pending = peer.wait_readable(0);
+        REQUIRE(pending && pending.ready);
+
+        const auto expected = milliseconds {10 * timeout_ms};
+        std::clog << (ipv6 ? "IPv6" : "IPv4")
+                  << " Rendezvous CONNTIMEO=" << timeout_ms << " ms, elapsed="
+                  << duration_cast<milliseconds>(elapsed).count() << " ms\n";
+        // Allow timer rounding at the lower bound and scheduler delay at
+        // the upper bound, while excluding both 1x and an extra retry period.
+        REQUIRE(elapsed >= expected - milliseconds {5});
+        REQUIRE(elapsed <= expected + milliseconds {150});
+    }
+}
+
+} // namespace
+
+TEST(srt_compat_rendezvous_timeout_ipv4)
+{
+    check_rendezvous_timeout(robotweax::srt::IpAddressFamily::ipv4);
+}
+
+TEST(srt_compat_rendezvous_timeout_ipv6)
+{
+    SKIP_WITHOUT_IPV6_LOOPBACK();
+    check_rendezvous_timeout(robotweax::srt::IpAddressFamily::ipv6);
+}
+
 TEST(srt_compat_rendezvous_option_enforces_socket_lifecycle)
 {
     const SRTSOCKET socket = srt_create_socket();
@@ -7956,6 +8033,14 @@ TEST(srt_compat_receive_control_is_output_only)
     REQUIRE_EQ(control.msgno, previous_message);
     REQUIRE_EQ(control.pktseq, previous_sequence);
     REQUIRE_EQ(control.srctime, previous_time);
+    packet.data.sequence = packet.data.sequence.advanced(1);
+    packet.data.message_number = 8;
+    runtime->process_packet(packet, peer);
+    SRT_MSGCTRL zero {};
+    REQUIRE_EQ(srt_recvmsg2(socket, output.data(), output.size(), &zero), 2);
+    REQUIRE_EQ(zero.msgno, 8);
+    REQUIRE(zero.grpdata == nullptr);
+    REQUIRE_EQ(zero.grpdata_size, 0U);
     REQUIRE_EQ(srt_close(socket), 0);
 }
 
