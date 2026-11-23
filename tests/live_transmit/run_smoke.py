@@ -71,6 +71,9 @@ class Smoke:
         sender = (f'srt://127.0.0.1:{srt_in if listener_sender else relay}'
                   f'?mode={"listener" if listener_sender else "caller"}&latency=120'
                   f'&arqfirst={"yes" if enabled else "no"}' + secret + ('' if enabled else fec))
+        if name == 'always-control':
+            receiver += '&groupconnect=0'
+            sender += '&groupconnect=0'
         common = [str(self.binary), '-v', '-a:no', '-c:1316']
         udp_source = f'udp://127.0.0.1:{udp_in}'
         udp_target = f'udp://127.0.0.1:{sink.getsockname()[1]}'
@@ -167,7 +170,6 @@ class Smoke:
             ('implicit-rendezvous', 'arqfirst=yes&adapter=127.0.0.1', 'arqfirst requires'),
             ('tsbpd', 'arqfirst=yes&tsbpdmode=no', 'ConfigurePre'),
             ('row-filter', 'arqfirst=yes&packetfilter=fec,cols:8,rows:1,arq:always', 'ConfigurePre'),
-            ('group', 'arqfirst=yes&groupconnect=yes', 'arqfirst requires'),
         ]
         for name, options, marker in cases:
             result = subprocess.run([str(self.binary), '-a:no',
@@ -186,6 +188,19 @@ class Smoke:
                 f'udp://127.0.0.1:{self.port()}'], capture_output=True, text=True, timeout=5)
             assert result.returncode != 0 and 'arqfirst is an SRT output option' in result.stderr
             results.append({'name': f'input-{value}', 'rejected': True})
+        for side in ('source', 'target'):
+            for query in ('groupconnect=1', 'groupconnect=invalid', 'groupconnect=',
+                          'groupconnect', 'groupconnect=false', 'arqfirst=yes&groupconnect=1'):
+                # Even a bad target must fail before the valid listener source opens.
+                endpoints = [f'srt://127.0.0.1:{self.port()}?mode=listener',
+                             f'srt://127.0.0.1:{self.port()}?mode=caller']
+                endpoints[0 if side == 'source' else 1] += '&' + query
+                result = subprocess.run([str(self.binary), '-v', '-a:no', *endpoints],
+                                        capture_output=True, text=True, timeout=5)
+                output = result.stdout + result.stderr
+                assert result.returncode != 0 and 'groupconnect must be 0' in output, output
+                assert 'Media path:' not in output and 'Opening SRT' not in output, output
+                results.append({'name': f'{side}-{query}', 'rejected': True})
         return results
 
     @staticmethod

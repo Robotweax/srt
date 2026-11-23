@@ -39,11 +39,6 @@ inline void configure_uri(
         || (type != options.end() && type->second != "live"))
         throw std::invalid_argument(
             "arqfirst requires a Live SRT output in Caller/Listener mode");
-    const auto group = options.find("groupconnect");
-    if (group != options.end() && group->second != "0" && group->second != "no"
-        && group->second != "false" && group->second != "off")
-        throw std::invalid_argument(
-            "arqfirst requires an individual SRT socket");
     options.try_emplace(
         "packetfilter", "fec,cols:8,rows:8,layout:even,arq:always");
 }
