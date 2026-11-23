@@ -591,7 +591,7 @@ public:
         NowFunction now_function = nullptr;
         void* now_context = nullptr;
         // Bounded Live pacing coalescing in microseconds; zero disables it.
-        // The build sets it only for the experimental mobile timer pacing
+        // The build sets it only with mobile timer pacing, as an experiment
         // (issue 353). Never set by the public API.
         std::uint64_t pacing_coalesce_microseconds =
             ROBOTWEAX_SRT_PACING_COALESCE_MICROSECONDS;

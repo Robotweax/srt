@@ -507,9 +507,9 @@ jobs:
             target=arm64-apple-ios17.0
             if [[ "$sdk" == iphonesimulator ]]; then target+=-simulator; fi
             for pacing in legacy timer coalesce; do
-              pacing_flags=(-UROBOTWEAX_SRT_EXPERIMENTAL_MOBILE_PACING)
-              if [[ "$pacing" != legacy ]]; then
-                pacing_flags=(-DROBOTWEAX_SRT_EXPERIMENTAL_MOBILE_PACING=1)
+              pacing_flags=(-UROBOTWEAX_SRT_MOBILE_LEGACY_PACING)
+              if [[ "$pacing" == legacy ]]; then
+                pacing_flags=(-DROBOTWEAX_SRT_MOBILE_LEGACY_PACING=1)
               fi
               if [[ "$pacing" == coalesce ]]; then
                 pacing_flags+=(-DROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS=2000)

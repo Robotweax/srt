@@ -45,10 +45,11 @@ option(ROBOTWEAX_SRT_BUILD_EXAMPLES "Build public API examples" OFF)
 option(ROBOTWEAX_SRT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(ROBOTWEAX_SRT_ENABLE_LTO
     "Build the library with interprocedural optimization when supported" OFF)
-option(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING
-    "Enable unqualified timer pacing without coarse-timer spinning on Android/iOS" OFF)
+set(ROBOTWEAX_SRT_MOBILE_PACING "timer" CACHE STRING
+    "Android/iOS pacing policy: timer (default, waits on timers) or legacy (previous spinning policy)")
+set_property(CACHE ROBOTWEAX_SRT_MOBILE_PACING PROPERTY STRINGS timer legacy)
 set(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS "0" CACHE STRING
-    "Experimental mobile pacing only: serve a Live pacing wait up to this many microseconds late to batch sends (0 to 10000, 0 disables)")
+    "Experimental, mobile timer pacing only: serve a Live pacing wait up to this many microseconds late to batch sends (0 to 10000, 0 disables)")
 option(ROBOTWEAX_SRT_SENDER_DROP_TRACE
     "Enable the Linux sender-drop JSONL diagnostic" OFF)
 option(ROBOTWEAX_SRT_INSTALL_LIBSRT_PKGCONFIG_COMPAT
@@ -327,18 +328,39 @@ if(NOT ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS MATCHES "^(0|[1-9][0-9]
     message(FATAL_ERROR
         "ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS must be an integer from 0 to 10000")
 endif()
-if(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS GREATER 0
-    AND NOT ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
-    message(FATAL_ERROR
-        "ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS requires ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING")
-endif()
-if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
-    target_compile_definitions(robotweax_srt
-        PUBLIC ROBOTWEAX_SRT_EXPERIMENTAL_MOBILE_PACING)
-    if(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS GREATER 0)
-        target_compile_definitions(robotweax_srt PUBLIC
-            ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS=${ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS})
+# ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING selected the timer policy
+# before it became the default. Honour an explicit value, including one kept
+# in an existing build cache, and say what it now means.
+if(DEFINED ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
+    if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
+        set(_robotweax_srt_legacy_pacing_request timer)
+    else()
+        set(_robotweax_srt_legacy_pacing_request legacy)
     endif()
+    if(NOT ROBOTWEAX_SRT_MOBILE_PACING STREQUAL _robotweax_srt_legacy_pacing_request
+        AND NOT ROBOTWEAX_SRT_MOBILE_PACING STREQUAL "timer")
+        message(FATAL_ERROR
+            "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING conflicts with ROBOTWEAX_SRT_MOBILE_PACING=${ROBOTWEAX_SRT_MOBILE_PACING}; remove the former")
+    endif()
+    message(DEPRECATION
+        "ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING is replaced by ROBOTWEAX_SRT_MOBILE_PACING; using ROBOTWEAX_SRT_MOBILE_PACING=${_robotweax_srt_legacy_pacing_request}")
+    set(ROBOTWEAX_SRT_MOBILE_PACING "${_robotweax_srt_legacy_pacing_request}")
+endif()
+if(NOT ROBOTWEAX_SRT_MOBILE_PACING MATCHES "^(timer|legacy)$")
+    message(FATAL_ERROR
+        "ROBOTWEAX_SRT_MOBILE_PACING must be timer or legacy, not '${ROBOTWEAX_SRT_MOBILE_PACING}'")
+endif()
+if(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS GREATER 0
+    AND ROBOTWEAX_SRT_MOBILE_PACING STREQUAL "legacy")
+    message(FATAL_ERROR
+        "ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS requires ROBOTWEAX_SRT_MOBILE_PACING=timer")
+endif()
+if(ROBOTWEAX_SRT_MOBILE_PACING STREQUAL "legacy")
+    target_compile_definitions(robotweax_srt
+        PUBLIC ROBOTWEAX_SRT_MOBILE_LEGACY_PACING)
+elseif(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS GREATER 0)
+    target_compile_definitions(robotweax_srt PUBLIC
+        ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS=${ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS})
 endif()
 target_compile_definitions(robotweax_srt PRIVATE
     ROBOTWEAX_SRT_COMPILED_CRYPTO_BACKEND=${ROBOTWEAX_SRT_CRYPTO_BACKEND_ID})

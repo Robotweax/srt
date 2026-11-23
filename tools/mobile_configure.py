@@ -21,10 +21,12 @@ def parser():
     result.add_argument("--ndk", type=Path, help="Exact Android NDK installation")
     result.add_argument("--deployment-target", required=True,
                         help="Android API level (e.g. 28) or iOS version (e.g. 15.0); not a support claim")
+    result.add_argument("--mobile-pacing", choices=("timer", "legacy"), default="timer",
+                        help="Pacing policy: timer (default) or legacy, the previous spinning policy")
     result.add_argument("--experimental-mobile-pacing", action="store_true",
-                        help="Opt in to unqualified mobile timer pacing; requires device qualification")
+                        help="Deprecated: timer pacing is now the default; accepted and ignored")
     result.add_argument("--mobile-pacing-coalesce-microseconds", type=int, default=0,
-                        help="With --experimental-mobile-pacing: serve Live pacing waits up to this "
+                        help="Experimental, timer pacing only: serve Live pacing waits up to this "
                              "many microseconds late to batch sends (0 to 10000; unqualified)")
     result.add_argument("--plan", action="store_true",
                         help="Print configuration without checking/installing SDKs or creating files")
@@ -59,10 +61,11 @@ def command(args):
     coalesce = args.mobile_pacing_coalesce_microseconds
     if not 0 <= coalesce <= 10000:
         raise ValueError("Pacing coalescing must be from 0 to 10000 microseconds")
-    if coalesce and not args.experimental_mobile_pacing:
-        raise ValueError("Pacing coalescing requires --experimental-mobile-pacing")
-    if args.experimental_mobile_pacing:
-        options += ["-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING=ON"]
+    if args.experimental_mobile_pacing and args.mobile_pacing != "timer":
+        raise ValueError("--experimental-mobile-pacing conflicts with --mobile-pacing legacy")
+    if coalesce and args.mobile_pacing != "timer":
+        raise ValueError("Pacing coalescing requires --mobile-pacing timer")
+    options += [f"-DROBOTWEAX_SRT_MOBILE_PACING={args.mobile_pacing}"]
     if coalesce:
         options += [f"-DROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS={coalesce}"]
     if android:

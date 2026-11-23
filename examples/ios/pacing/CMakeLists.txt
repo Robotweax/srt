@@ -24,15 +24,18 @@ target_include_directories(SRTMobilePacing PRIVATE "${SRT_SOURCE}/src")
 target_compile_options(SRTMobilePacing PRIVATE -fobjc-arc)
 target_link_libraries(SRTMobilePacing PRIVATE RobotweaxSRT::srt Threads::Threads
     "-framework UIKit" "-framework Foundation")
-if(ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING)
-    set(PACING_VARIANT candidate)
-    if(ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS GREATER 0)
-        # One bundle per quantum, so several can be installed side by side.
-        set(PACING_VARIANT
-            "coalesce${ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS}")
-    endif()
-else()
+# Name the bundle after the policy the library was actually built with, so
+# variants can be installed side by side.
+get_target_property(SRT_DEFINITIONS robotweax_srt INTERFACE_COMPILE_DEFINITIONS)
+if(NOT SRT_DEFINITIONS)
+    set(SRT_DEFINITIONS "")
+endif()
+if("ROBOTWEAX_SRT_MOBILE_LEGACY_PACING" IN_LIST SRT_DEFINITIONS)
     set(PACING_VARIANT baseline)
+elseif(SRT_DEFINITIONS MATCHES "ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS=([0-9]+)")
+    set(PACING_VARIANT "coalesce${CMAKE_MATCH_1}")
+else()
+    set(PACING_VARIANT candidate)
 endif()
 configure_file(Info.plist.in Info.plist @ONLY)
 set_target_properties(SRTMobilePacing PROPERTIES
