@@ -346,7 +346,8 @@ TEST(packet_pacer_coalescing_bounds_the_burst_after_a_pause)
     // One microsecond later than quantum plus credit, or much later after a
     // long pause: a fresh schedule that keeps the quantum and forgives the
     // rest. The send is followed by the quantum's worth of slots, no more.
-    for (const std::uint64_t pause : {std::uint64_t {3'001}, std::uint64_t {5'000'000}}) {
+    for (const std::uint64_t pause :
+        {std::uint64_t {3'001}, std::uint64_t {5'000'000}}) {
         const std::uint64_t next = pacer.query(late, 0).next_ready_microseconds;
         const std::uint64_t resumed = next + pause;
         std::size_t burst = 0;
@@ -355,8 +356,8 @@ TEST(packet_pacer_coalescing_bounds_the_burst_after_a_pause)
             ++burst;
         }
         REQUIRE_EQ(burst, 21U);
-        REQUIRE_EQ(pacer.query(resumed, 0).next_ready_microseconds,
-            resumed + 100U);
+        REQUIRE_EQ(
+            pacer.query(resumed, 0).next_ready_microseconds, resumed + 100U);
     }
 
     // Without a quantum the credit alone applies, as before.
