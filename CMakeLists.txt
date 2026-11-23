@@ -1198,6 +1198,18 @@ if(ROBOTWEAX_SRT_BUILD_TESTS)
     endif()
 
     if(BUILD_SHARED_LIBS)
+        if(WIN32)
+            add_executable(robotweax_srt_windows_dll_exit_tests tests/windows_dll_exit_probe.cpp)
+            target_link_libraries(robotweax_srt_windows_dll_exit_tests PRIVATE RobotweaxSRT::srt ws2_32)
+            target_compile_features(robotweax_srt_windows_dll_exit_tests PRIVATE cxx_std_20)
+            foreach(mode IN ITEMS cleanup active)
+                add_test(NAME robotweax_srt_windows_dll_exit_${mode}
+                    COMMAND robotweax_srt_windows_dll_exit_tests ${mode})
+                set_tests_properties(robotweax_srt_windows_dll_exit_${mode}
+                    PROPERTIES TIMEOUT 15 LABELS "shared-library")
+            endforeach()
+        endif()
+
         # This probe must not link against Robotweax SRT: it loads only the
         # produced shared object and resolves the compatible C ABI at runtime.
         add_executable(

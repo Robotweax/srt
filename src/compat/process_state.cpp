@@ -1,6 +1,21 @@
 #include "compat/process_state.hpp"
 
-#if !defined(_WIN32)
+#if defined(_WIN32) && defined(SRT_EXPORTS)
+#include <windows.h>
+
+namespace {
+bool process_terminating = false;
+}
+
+// During ExitProcess the loader calls DllMain before CRT destructors and
+// after terminating the other threads. Worker-backed objects cannot drain.
+extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
+{
+    if (reason == DLL_PROCESS_DETACH)
+        process_terminating = reserved != nullptr;
+    return TRUE;
+}
+#elif !defined(_WIN32)
 #  include <atomic>
 #  include <cstdint>
 #  include <unistd.h>
@@ -23,6 +38,15 @@ std::uint32_t current_process_id() noexcept
 #else
     return 0;
 #endif
+}
+
+bool can_destroy_process_state(std::uint32_t owner) noexcept
+{
+#if defined(_WIN32) && defined(SRT_EXPORTS)
+    if (process_terminating)
+        return false;
+#endif
+    return owner == current_process_id();
 }
 
 bool stateful_process_available() noexcept
