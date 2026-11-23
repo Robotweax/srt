@@ -4,7 +4,15 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
-## Unreleased
+## 0.3.5 — Mobile Timer Pacing and Transport Reliability
+
+See the [release notes](docs/release-notes-0.3.5.md) for upgrade behavior and limits.
+
+- Recheck a newly detected isolated one-packet gap on the next nonblocking UDP
+  read within the same receive slice before sending its immediate NAK.
+- Validate single-stream group options before opening endpoints. Accept empty
+  FEC and congestion option values as resets.
+- Avoid worker teardown when Windows terminates a process using the DLL.
 
 - Android and iOS builds now use timer pacing by default: a sub-millisecond
   pacing deadline is a timer wait and the sender no longer spins, also when

@@ -20,7 +20,7 @@ HISTORICAL_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.1.0.txt"
 FROZEN_0_2_0_ABI_PATH = (
     ROOT / "cmake" / "abi" / "robotweax-srt-0.2.0.txt"
 )
-CURRENT_PROJECT_VERSION = "0.3.4"
+CURRENT_PROJECT_VERSION = "0.3.5"
 FROZEN_0_3_0_ABI_PATH = ROOT / "cmake/abi/robotweax-srt-0.3.0.txt"
 PREVIOUS_ABI_PATH = ROOT / "cmake" / "abi" / "robotweax-srt-0.2.8.txt"
 CURRENT_ABI_PATH = (
@@ -178,6 +178,9 @@ class AeadContractTests(unittest.TestCase):
         # Published snapshots stay frozen when development adds an API.
         symbols = (ROOT / "cmake/abi/robotweax-srt-0.3.4.txt").read_bytes()
         self.assertEqual(symbols.decode().splitlines(), expected)
+
+    def test_release_0_3_5_preserves_the_0_3_4_exports(self):
+        symbols = (ROOT / "cmake/abi/robotweax-srt-0.3.4.txt").read_bytes()
         self.assertEqual(CURRENT_ABI_PATH.read_bytes(), symbols)
         self.assertEqual(PUBLIC_SYMBOLS_PATH.read_bytes(), symbols)
         self.assertEqual(symbols,
