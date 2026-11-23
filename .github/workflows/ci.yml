@@ -639,6 +639,7 @@ jobs:
           --config Release
           --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
           --target robotweax_srt_shared_lifecycle_tests
+          ${{ runner.os == 'Windows' && 'robotweax_srt_windows_dll_exit_tests' || '' }}
           robotweax_srt_global_lifecycle_tests
           robotweax_srt_late_cleanup_tests
           robotweax_srt_c_api_test

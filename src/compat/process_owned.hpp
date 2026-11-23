@@ -19,7 +19,7 @@ public:
     }
     ~ProcessOwned()
     {
-        if (owner_process_id_ == current_process_id()) {
+        if (can_destroy_process_state(owner_process_id_)) {
             value_.~T();
         }
     }

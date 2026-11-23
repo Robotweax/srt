@@ -8,6 +8,9 @@ namespace robotweax::srt::compat {
 // ownership or touches an inherited mutex. Non-POSIX processes use zero.
 [[nodiscard]] std::uint32_t current_process_id() noexcept;
 
+// Destruction requires the owning process and live runtime workers.
+[[nodiscard]] bool can_destroy_process_state(std::uint32_t owner) noexcept;
+
 // Claims process-wide runtime ownership on first use. Returns false in a
 // POSIX child that inherited state owned by its parent. No at-fork handler or
 // inherited lock is used. On non-POSIX platforms it always returns true.
