@@ -116,6 +116,33 @@ class ConsoleTests(unittest.TestCase):
         self.assertIn("SameSite=Strict", headers["Set-Cookie"])
         self.assertEqual(self.request("/api/session", {}, headers={"Cookie": "srt_sample_session=previous-launch"})[0], 200)
 
+    def test_rejected_posts_read_their_body_first(self):
+        bodies = []
+        original = Handler.read_body
+        def recording(handler):
+            body = original(handler)
+            bodies.append(body)
+            return body
+        payload = {"pad": "x" * 512}
+        with patch.object(Handler, "read_body", recording):
+            self.assertEqual(self.request("/api/stop", payload, headers={"Origin": "https://untrusted.invalid"})[0], 403)
+            self.assertEqual(self.request("/api/stop", payload, auth=False)[0], 401)
+            self.assertEqual(self.request("/api/stop", payload, headers={"Host": "untrusted.invalid"})[0], 403)
+        self.assertEqual(bodies, [json.dumps(payload).encode()] * 3)
+
+    def test_oversized_and_malformed_lengths_are_rejected(self):
+        for length in ("4097", "-1", "not-a-number"):
+            with self.subTest(length=length):
+                connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
+                connection.putrequest("POST", "/api/stop")
+                connection.putheader("Authorization", "Bearer " + self.server.console.token)
+                connection.putheader("Content-Length", length)
+                connection.endheaders()
+                response = connection.getresponse()
+                self.assertEqual(response.status, 400)
+                self.assertIn(b"request body length", response.read())
+                connection.close()
+
     def test_reject_arbitrary_commands_and_invalid_controls(self):
         self.assertEqual(self.request("/api/start", {"command": "arbitrary"})[0], 400)
         self.assertEqual(self.request("/api/start", {"duration": True})[0], 400)

@@ -286,6 +286,48 @@ TEST(packet_pacer_coalescing_waits_only_for_packets_it_can_add)
         PacketPacer::maximum_coalescing_quantum_microseconds);
 }
 
+TEST(packet_pacer_coalescing_keeps_the_rate_when_wake_ups_are_very_late)
+{
+    // 204 bytes at 271,277 B/s: a 188-byte message at 2 Mbit/s, one slot
+    // about every 752 us. With a 2 ms quantum a wake-up serves three slots.
+    // Every fifth wake-up arrives 3.5 ms late, later than the quantum and
+    // the credit allow for, as measured on a phone that sleeps deeply at
+    // low rates. Only the lateness beyond the quantum may be forgiven: the
+    // deliberate wait must not be lost with it.
+    PacketPacer pacer {271'277, 8'192};
+    pacer.set_coalescing_quantum(2'000);
+    pacer.on_packet_sent(204, 0);
+    constexpr std::uint64_t duration = 1'000'000;
+    std::size_t packets = 1;
+    std::size_t wakes = 0;
+    std::size_t largest_batch = 0;
+    for (;;) {
+        const std::uint64_t lateness = wakes % 5U == 4U ? 3'500U : 100U;
+        const std::uint64_t now =
+            pacer.coalesced_ready_microseconds(1'000) + lateness;
+        if (now > duration) {
+            break;
+        }
+        ++wakes;
+        std::size_t batch = 0;
+        while (pacer.query(now, 0).ready) {
+            pacer.on_packet_sent(204, now);
+            ++batch;
+        }
+        largest_batch = std::max(largest_batch, batch);
+        packets += batch;
+    }
+    // 1,329 slots fit in the second. A very late wake-up is about 5 ms
+    // after its slot: 1.5 ms of deliberate wait and 3.5 ms of lateness. The
+    // quantum is kept, so it may cost about 3 ms (four slots). Forgiving the
+    // whole delay would cost 5 ms (nearly seven slots) each time.
+    const std::size_t very_late = wakes / 5U;
+    REQUIRE(very_late >= 40U);
+    REQUIRE(packets + 4U * very_late + 12U >= duration / 752U);
+    // A catch-up burst stays within the quantum's worth of slots.
+    REQUIRE(largest_batch <= 2'000U / 752U + 2U);
+}
+
 TEST(packet_pacer_coalescing_bounds_the_burst_after_a_pause)
 {
     // 100 us slots, the default 1 ms credit and a 2 ms quantum.
@@ -301,13 +343,22 @@ TEST(packet_pacer_coalescing_bounds_the_burst_after_a_pause)
         ++sent;
     }
     REQUIRE_EQ(sent, 31U);
-    // One microsecond later than quantum plus credit: a fresh schedule, so a
-    // pause is not followed by a burst.
-    const std::uint64_t next = pacer.query(late, 0).next_ready_microseconds;
-    const std::uint64_t resumed = next + 2'000 + 1'000 + 1;
-    pacer.on_packet_sent(200, resumed);
-    REQUIRE(!pacer.query(resumed + 99, 0).ready);
-    REQUIRE(pacer.query(resumed + 100, 0).ready);
+    // One microsecond later than quantum plus credit, or much later after a
+    // long pause: a fresh schedule that keeps the quantum and forgives the
+    // rest. The send is followed by the quantum's worth of slots, no more.
+    for (const std::uint64_t pause :
+        {std::uint64_t {3'001}, std::uint64_t {5'000'000}}) {
+        const std::uint64_t next = pacer.query(late, 0).next_ready_microseconds;
+        const std::uint64_t resumed = next + pause;
+        std::size_t burst = 0;
+        while (pacer.query(resumed, 0).ready && burst < 100U) {
+            pacer.on_packet_sent(200, resumed);
+            ++burst;
+        }
+        REQUIRE_EQ(burst, 21U);
+        REQUIRE_EQ(
+            pacer.query(resumed, 0).next_ready_microseconds, resumed + 100U);
+    }
 
     // Without a quantum the credit alone applies, as before.
     PacketPacer plain {2'000'000, 8'192};

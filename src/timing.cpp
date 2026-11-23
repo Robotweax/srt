@@ -323,8 +323,18 @@ void PacketPacer::on_packet_sent(std::size_t bytes,
                 / bytes_per_second_);
         remainder = 0U;
     }
+    // A fresh schedule starts at the send time. With a coalescing quantum a
+    // late send has two parts: the wait the owner chose, up to the quantum,
+    // and the lateness of the wake-up. Only the second is forgiven, so the
+    // fresh schedule starts the quantum before the send time. Forgiving both
+    // would lose the deliberate wait at every late wake-up and lower the
+    // rate. A send later than the credit and the quantum is then followed
+    // by at most the quantum's worth of packets.
+    const std::uint64_t fresh_base = has_schedule_
+        ? now_microseconds - coalescing_quantum_microseconds_
+        : now_microseconds;
     const std::uint64_t base =
-        keeps_schedule ? next_send_microseconds_ : now_microseconds;
+        keeps_schedule ? next_send_microseconds_ : fresh_base;
     next_send_microseconds_ = base + interval;
     has_schedule_ = true;
 #else
