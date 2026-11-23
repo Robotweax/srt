@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-echo "66ab41f65523fce7cea66c5ac54b44f3f8d7b5a87586755b00ee91a70d870116  /source.tar.gz" | sha256sum --check -
+echo "d0874116bd14f27eaf5f9a3fba523e3f32d6f579896009b540de1c08e95a9336  /source.tar.gz" | sha256sum --check -
 
 apt-get update
 apt-get install -y --no-install-recommends build-essential cmake debhelper dpkg-dev lintian libssl-dev pkgconf
 mkdir -p /build /out
 cd /build
-cp /source.tar.gz robotweax-srt_0.3.4.orig.tar.gz
+cp /source.tar.gz robotweax-srt_0.3.5.orig.tar.gz
 tar -xf /source.tar.gz
-mv srt-6009c6430b46e8691181bbd8690bf36c3ef0d661 robotweax-srt-0.3.4
-cp -R /work/packaging/debian robotweax-srt-0.3.4/debian
-cd robotweax-srt-0.3.4
+mv srt-3415d7c155d393755c8e49f88db4e68789fdf1b6 robotweax-srt-0.3.5
+cp -R /work/packaging/debian robotweax-srt-0.3.5/debian
+cd robotweax-srt-0.3.5
 dpkg-buildpackage -S -us -uc
 cd /build
-dpkg-source -x robotweax-srt_0.3.4-1.dsc /build/source-reextract
-cmp robotweax-srt_0.3.4.orig.tar.gz /source.tar.gz
-lintian --tag-display-limit 0 robotweax-srt_0.3.4-1.dsc
+dpkg-source -x robotweax-srt_0.3.5-1.dsc /build/source-reextract
+cmp robotweax-srt_0.3.5.orig.tar.gz /source.tar.gz
+lintian --tag-display-limit 0 robotweax-srt_0.3.5-1.dsc
 cp /build/*.dsc /build/*_source.changes /build/*_source.buildinfo /build/*.debian.tar.xz /build/*.orig.tar.gz /out/
-cd robotweax-srt-0.3.4
+cd robotweax-srt-0.3.5
 dpkg-buildpackage -b -us -uc
 cp /build/*.deb /out/
 
-apt-get install -y /build/librobotweax-srt0.3_0.3.4-1_*.deb /build/librobotweax-srt-dev_0.3.4-1_*.deb
-test "$(pkg-config --modversion robotweax-srt)" = 0.3.4
+apt-get install -y /build/librobotweax-srt0.3_0.3.5-1_*.deb /build/librobotweax-srt-dev_0.3.5-1_*.deb
+test "$(pkg-config --modversion robotweax-srt)" = 0.3.5
 cmake -S /work/packaging/tests -B /build/standalone -DTEST_HAIVISION=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build /build/standalone
 ctest --test-dir /build/standalone --output-on-failure
