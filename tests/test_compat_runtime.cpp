@@ -4725,6 +4725,141 @@ TEST(compat_runtime_gcm_row_fec_authenticates_reconstructed_wire_payload)
     REQUIRE(receiver.broken());
 }
 
+namespace {
+
+void check_gcm_row_fec_mss_boundary(IpEndpoint address, std::size_t ip_header)
+{
+    constexpr std::size_t mss = 1280;
+    constexpr std::size_t udp_header = 8;
+    // Independent wire-size oracle: IP + UDP + SRT + FEC + ciphertext + GCM tag.
+    const auto plaintext_size = mss - ip_header - udp_header
+        - packet_header_size - fec_filter_header_size
+        - srt_gcm_authentication_tag_size;
+    SocketOptions options;
+    REQUIRE_EQ(
+        options.set(SocketOption::maximum_segment_size, mss), Error::none);
+    REQUIRE_EQ(
+        options.set_packet_filter("fec,cols:2,rows:1,arq:onreq"), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::maximum_payload_size, plaintext_size),
+        Error::none);
+
+    const CryptoConfiguration config {.passphrase = "fec mss boundary fixture",
+        .mode = CryptoMode::aes_gcm,
+        .enable_aes_gcm = true};
+    auto tx = std::make_shared<CryptoSession>(config);
+    auto rx = std::make_shared<CryptoSession>(config);
+    REQUIRE_EQ(tx->start_initiator(), Error::none);
+    REQUIRE_EQ(
+        rx->accept_key_material(tx->pending_key_material(), true), Error::none);
+    REQUIRE_EQ(tx->acknowledge_key_material(rx->key_material_response(), true),
+        Error::none);
+    confirm_directional_test_keys(*tx, *rx);
+
+    CapturedDatagrams output;
+    auto channel = std::make_shared<DatagramChannel>();
+    channel->set_send_hook_for_testing(capture_datagram, &output);
+    auto receive_channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams feedback;
+    receive_channel->set_send_hook_for_testing(capture_datagram, &feedback);
+    auto sender_endpoint = address;
+    sender_endpoint.port = 14501;
+    auto receiver_endpoint = address;
+    receiver_endpoint.port = 14502;
+    std::uint64_t now = 1'000'000;
+    const SequenceNumber initial {900};
+    ConnectionRuntime::Configuration runtime {.channel = channel,
+        .peer = receiver_endpoint,
+        .local_socket_id = 71,
+        .peer_socket_id = 72,
+        .initial_sequence = initial,
+        .options = options,
+        .origin = ConnectionRuntime::Clock::now(),
+        .crypto = tx,
+        .now_function = injected_now,
+        .now_context = &now};
+    ConnectionRuntime sender {runtime};
+    runtime.channel = receive_channel;
+    runtime.peer = sender_endpoint;
+    runtime.local_socket_id = 72;
+    runtime.peer_socket_id = 71;
+    runtime.crypto = rx;
+    ConnectionRuntime receiver {runtime};
+
+    std::array<std::vector<std::byte>, 2> messages;
+    for (std::size_t i = 0; i < messages.size(); ++i) {
+        auto& message = messages[i];
+        message.resize(plaintext_size);
+        for (std::size_t j = 0; j < message.size(); ++j)
+            message[j] = static_cast<std::byte>((17U * j + 113U * i) % 251U);
+        REQUIRE_EQ(sender.queue_message(message, 0, false, false, -1).status,
+            MessageIoStatus::success);
+    }
+    for (unsigned i = 0; i < 8; ++i) {
+        (void)sender.poll();
+        now += 1000;
+    }
+    std::array<unsigned, 2> sources {};
+    std::vector<std::byte> parity;
+    for (const auto& bytes : take_datagrams(output)) {
+        const auto decoded = decode_packet(bytes);
+        REQUIRE(decoded);
+        const auto& packet = decoded.packet;
+        if (packet.kind != PacketKind::data)
+            continue;
+        if (packet.data.message_number == 0) {
+            REQUIRE(parity.empty());
+            REQUIRE_EQ(bytes.size() + ip_header + udp_header, mss);
+            parity = bytes;
+            continue;
+        }
+        const auto index = packet.data.sequence.distance_from(initial);
+        REQUIRE(index == 0 || index == 1);
+        ++sources[index];
+        REQUIRE(packet.data.encryption_key == EncryptionKey::even
+            || packet.data.encryption_key == EncryptionKey::odd);
+        REQUIRE_EQ(packet.payload.size(),
+            plaintext_size + srt_gcm_authentication_tag_size);
+        // Drop the second full-size source. Only parity can deliver it.
+        if (index == 0)
+            receiver.process_packet(packet, sender_endpoint);
+    }
+    REQUIRE_EQ(sources[0], 1U);
+    REQUIRE_EQ(sources[1], 1U);
+    REQUIRE(!parity.empty());
+    std::vector<std::byte> received(plaintext_size);
+    auto first = receiver.receive_message(received, false, -1);
+    REQUIRE_EQ(first.status, MessageIoStatus::success);
+    REQUIRE_EQ(first.bytes, plaintext_size);
+    REQUIRE_EQ(received, messages[0]);
+    REQUIRE_EQ(receiver.receive_message(received, false, -1).status,
+        MessageIoStatus::would_block);
+    receiver.process_packet(decode_packet(parity).packet, sender_endpoint);
+    auto rebuilt = receiver.receive_message(received, false, -1);
+    REQUIRE_EQ(rebuilt.status, MessageIoStatus::success);
+    REQUIRE_EQ(rebuilt.first_sequence, initial.advanced(1));
+    REQUIRE_EQ(rebuilt.bytes, plaintext_size);
+    REQUIRE_EQ(received, messages[1]);
+    const auto stats = receiver.statistics(false, true);
+    REQUIRE_EQ(stats.total.receiver_filter_supply, 1U);
+    REQUIRE_EQ(stats.total.receiver_undecryptable.packets, 0U);
+}
+
+} // namespace
+
+TEST(compat_runtime_gcm_fec_mss_boundary_native_ipv6)
+{
+    check_gcm_row_fec_mss_boundary(IpEndpoint::ipv6_loopback(), 40U);
+}
+
+TEST(compat_runtime_gcm_fec_mss_boundary_ipv4_mapped_ipv6)
+{
+    auto mapped = IpEndpoint::ipv6_loopback();
+    mapped.address[10] = mapped.address[11] = 0xff;
+    mapped.address[12] = 127; // ::ffff:127.0.0.1
+    REQUIRE(mapped.is_ipv4_mapped_ipv6());
+    check_gcm_row_fec_mss_boundary(mapped, 20U);
+}
+
 TEST(compat_runtime_gcm_column_fec_reconstructs_before_authentication)
 {
     constexpr std::array dropped {0U};
