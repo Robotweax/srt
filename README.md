@@ -12,23 +12,23 @@ depending on implementation-specific C++ internals.
 
 ## Release status
 
-Version **0.3.4** adds the epoll wake extension, bounds group membership,
-hardens setup validation and file receive, and reduces idle polling. Null packet
-deletion, pinned-key peer authentication and Linux UDP batching are included as
-experimental, default-off profiles.
-See the [0.3.4 release notes](docs/release-notes-0.3.4.md) for changes and migration,
+Version **0.3.5** makes timer pacing the default for Android and iOS builds,
+improves short-interval pacing and File rate control, and rechecks isolated
+receive gaps before sending a NAK. It also updates group option validation,
+string option resets and Windows process-exit handling.
+See the [0.3.5 release notes](docs/release-notes-0.3.5.md) for changes and migration,
 and [GitHub releases](https://github.com/Robotweax/srt/releases) for published
 artifacts, signed Windows SDK installers, checksums and tag provenance.
-The preceding [v0.3.3](https://github.com/Robotweax/srt/releases/tag/v0.3.3)
-retains its own [release notes](docs/release-notes-0.3.3.md) and qualification limits.
+The preceding [v0.3.4](https://github.com/Robotweax/srt/releases/tag/v0.3.4)
+has its own [release notes](docs/release-notes-0.3.4.md) and qualification limits.
 
-The separate Homebrew 0.3.0 ARM64 bottle for macOS 15 (`arm64_sequoia`)
-was published on 22 October 2026; see the [tap publication record](https://github.com/Robotweax/homebrew-tap/blob/8490b0b7d6eda295207b180fb2704de1878d8908/README.md).
+The Homebrew 0.3.4 ARM64 bottle for macOS 15 (`arm64_sequoia`) was published
+on 20 November 2026. See the [tap publication run](https://github.com/Robotweax/homebrew-tap/actions/runs/44772229425).
 Other bottle platforms require their own qualification.
 
-| Axis | Robotweax SRT 0.3.4 |
+| Axis | Robotweax SRT 0.3.5 |
 | --- | --- |
-| Project release | `0.3.4` |
+| Project release | `0.3.5` |
 | Shared-library ABI | `0.3` |
 | Default public API target | SRT `1.5.7` |
 | `srt_getversion()` | `1.5.7` |
@@ -42,7 +42,7 @@ handshake, and encryption profile are separate version axes. In particular,
 release number.
 
 Version 0.3 is a pre-1.0 release. Rebuild applications and dependencies when
-moving from ABI line 0.2 to 0.3. See the [0.3.4 release notes](docs/release-notes-0.3.4.md)
+moving from ABI line 0.2 to 0.3. See the [0.3.5 release notes](docs/release-notes-0.3.5.md)
 and [0.1-to-0.2 migration guide](docs/migration-0.2.md).
 
 See the [ecosystem support matrix](docs/compatibility.md#ecosystem-build-profiles)

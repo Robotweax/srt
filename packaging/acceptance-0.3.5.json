@@ -1,0 +1,23 @@
+{
+  "version": "0.3.5",
+  "product_commit": "3415d7c155d393755c8e49f88db4e68789fdf1b6",
+  "decision_date": "2026-11-23",
+  "decision": "The release owner approved the 0.3.5 scope, directed the candidate freeze and accepted the three documented residual risks for this product.",
+  "prior_release_record": "acceptance-0.3.4.json",
+  "accepted_risks": [
+    {
+      "risk": "Serial listener admission in the experimental, default-off peer-authentication profile",
+      "tracking_issue": "https://github.com/Robotweax/srt/issues/406",
+      "documented_in": "docs/peer-authentication.md"
+    },
+    {
+      "risk": "Unresolved macOS identity Rendezvous timeout",
+      "documented_in": "packaging/qualification-0.3.4.md"
+    },
+    {
+      "risk": "Intermittent OBS desktop automatic SRT reconnect failure on Windows and macOS",
+      "documented_in": "packaging/qualification-0.3.4.md"
+    }
+  ],
+  "scope": "The listed risks only. Other release gates still apply."
+}

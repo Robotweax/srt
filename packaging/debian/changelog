@@ -1,3 +1,11 @@
+robotweax-srt (0.3.5-1) resolute; urgency=medium
+
+  * Package mobile timer pacing and transport reliability changes from
+    immutable source.
+  * Preserve shared-library ABI 0.3 and matching public documentation.
+
+ -- Robotweax GmbH <srtpioneer@proton.me>  Mon, 23 Nov 2026 19:39:19 +0100
+
 robotweax-srt (0.3.4-1) resolute; urgency=medium
 
   * Package epoll wake, setup hardening and experimental profiles from
