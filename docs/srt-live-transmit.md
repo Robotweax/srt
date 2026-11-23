@@ -6,6 +6,10 @@ URIs. The executable is named `srt-live-transmit-robotweax` so it can coexist
 with a regular Haivision installation. The version banner identifies the
 transport provider; SRT 1.5.7 is the compatibility version.
 
+This single-stream application accepts SRT source and target URIs with
+`groupconnect` omitted or set to `0`. It checks both URIs before opening
+either endpoint and rejects other values.
+
 Use a current SDK containing the ARQ-first API and the listener capacity fix
 from PR #376. The published Robotweax 0.3.1 SDK predates ARQ-first; its version
 number alone does not establish availability. Configuration checks for the
@@ -142,7 +146,7 @@ The harness sends 128 ordered, byte-identical 1,316-byte datagrams per case:
 | Listener sender | Reversed Caller/Listener roles, eight originals dropped |
 
 It checks read-back policy, tail probe off, exact delivery, proxy drop counts
-and zero proxy queue overflow. Nine invalid configurations must fail promptly,
+and zero proxy queue overflow. Invalid configurations must fail promptly,
 including invalid values, File and explicit/implicit Rendezvous activation,
 disabled TSBPD, an incompatible row-only filter, group activation and input-side
 options. The encrypted fixture uses a public synthetic passphrase and requires
