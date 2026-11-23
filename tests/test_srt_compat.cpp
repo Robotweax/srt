@@ -4776,6 +4776,12 @@ TEST(srt_compat_congestion_option_selects_a_controller_without_a_mode_bundle)
         record->state = SRTS_OPENED;
     }
 
+    REQUIRE_EQ(srt_setsockflag(socket, SRTO_CONGESTION, "", 0), 0);
+    {
+        std::lock_guard lock(record->mutex);
+        REQUIRE_EQ(record->native_options.congestion_controller(),
+            robotweax::srt::CongestionController::live);
+    }
     constexpr char live_controller[] = "live";
     REQUIRE_EQ(srt_setsockflag(socket, SRTO_CONGESTION,
                    live_controller,

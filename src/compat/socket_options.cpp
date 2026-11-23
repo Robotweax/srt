@@ -1190,12 +1190,13 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         return 0;
     }
     case SRTO_CONGESTION: {
-        if (value == nullptr || value_size == 0) {
+        if (value == nullptr) {
             return invalid_parameter();
         }
-        const std::string_view name{
-            static_cast<const char*>(value),
-            static_cast<std::size_t>(value_size)};
+        const std::string_view name = value_size == 0
+            ? "live"
+            : std::string_view {static_cast<const char*>(value),
+                  static_cast<std::size_t>(value_size)};
         CongestionController selected_controller {};
         if (options.group_connect
             && parse_congestion_controller(name, selected_controller)
@@ -1306,7 +1307,7 @@ static int set_socket_option_value(SocketRecord& socket, SRT_SOCKOPT option,
         return 0;
     }
     case SRTO_PACKETFILTER: {
-        if (value == nullptr || value_size == 0) {
+        if (value == nullptr) {
             return invalid_parameter();
         }
         const std::string_view configuration{
