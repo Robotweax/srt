@@ -1898,3 +1898,121 @@ TEST(lifecycle_cleanup_stops_an_active_key_rotation)
     }
     REQUIRE_EQ(srt_getsockstate(socket), SRTS_NONEXIST);
 }
+
+TEST(lifecycle_retained_dispatch_ignores_key_controls_after_socket_close)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    const auto socket = srt_create_socket();
+    const auto record = SocketRegistry::instance().find(socket);
+    REQUIRE(record != nullptr);
+    const CryptoConfiguration configuration {
+        .passphrase = "dispatch lifetime test"};
+    auto crypto = std::make_shared<CryptoSession>(configuration);
+    CryptoSession peer_crypto {configuration};
+    REQUIRE_EQ(crypto->start_initiator(), Error::none);
+    REQUIRE_EQ(
+        peer_crypto.accept_key_material(crypto->pending_key_material(), true),
+        Error::none);
+    REQUIRE_EQ(crypto->acknowledge_key_material(
+                   peer_crypto.key_material_response(), true),
+        Error::none);
+    REQUIRE_EQ(
+        peer_crypto.accept_key_material(crypto->pending_key_material(), false),
+        Error::none);
+    const Ipv4Endpoint peer {{192, 0, 2, 11}, 20001};
+    auto channel = std::make_shared<DatagramChannel>();
+    struct CloseGate {
+        std::promise<void> shutdown;
+        std::shared_future<void> dispatch_ready;
+        static UdpIoResult send(std::span<const std::byte> bytes, Ipv4Endpoint,
+            void* context) noexcept
+        {
+            const auto decoded = decode_packet(bytes);
+            if (decoded && decoded.packet.kind == PacketKind::control
+                && decoded.packet.control.type == ControlType::shutdown) {
+                auto& gate = *static_cast<CloseGate*>(context);
+                gate.shutdown.set_value();
+                gate.dispatch_ready.wait();
+            }
+            return {.bytes_transferred = bytes.size()};
+        }
+    };
+    std::promise<void> ready;
+    CloseGate gate {{}, ready.get_future().share()};
+    auto shutdown = gate.shutdown.get_future();
+    channel->set_send_hook_for_testing(CloseGate::send, &gate);
+    auto dispatch =
+        std::make_shared<ConnectionRuntime>(ConnectionRuntime::Configuration {
+            .channel = channel,
+            .peer = peer,
+            .peer_socket_id = 11,
+            .initial_sequence = SequenceNumber {500},
+            .flow_window_packets = 256,
+            .options = {},
+            .origin = ConnectionRuntime::Clock::now(),
+            .crypto = crypto,
+        });
+    {
+        std::lock_guard lock(record->mutex);
+        record->state = SRTS_CONNECTED;
+        record->channel = channel;
+        record->runtime = dispatch;
+        record->crypto = crypto;
+    }
+    // The close path holds the runtime lock while submitting shutdown.
+    // Release that hook with both peer controls ready for delayed dispatch.
+    const auto prior = crypto->key_material_response();
+    const std::vector<std::byte> previous_response(prior.begin(), prior.end());
+    REQUIRE(!peer_crypto.pending_key_material().empty());
+    REQUIRE(!std::ranges::equal(
+        previous_response, peer_crypto.pending_key_material()));
+    auto closer = std::async(std::launch::async, [socket] {
+        return srt_close(socket);
+    });
+    const auto entered = shutdown.wait_for(2s);
+    ready.set_value();
+    PacketView control {};
+    control.kind = PacketKind::control;
+    control.control.type = ControlType::user_defined;
+    control.control.subtype = key_material_response_subtype;
+    control.payload = peer_crypto.key_material_response();
+    dispatch->process_packet(control, peer);
+    control.control.subtype = key_material_request_subtype;
+    control.payload = peer_crypto.pending_key_material();
+    dispatch->process_packet(control, peer);
+    REQUIRE_EQ(closer.get(), 0);
+    REQUIRE_EQ(entered, std::future_status::ready);
+    REQUIRE(!crypto->ready_to_send_data());
+    REQUIRE(
+        std::ranges::equal(crypto->key_material_response(), previous_response));
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
+
+TEST(lifecycle_accept_bond_rejects_closed_ready_listener)
+{
+    REQUIRE_EQ(srt_startup(), 0);
+    const auto listener = create_active_listener();
+    REQUIRE(listener != SRT_INVALID_SOCK);
+    sockaddr_in address {};
+    int size = static_cast<int>(sizeof(address));
+    REQUIRE_EQ(
+        srt_getsockname(listener, reinterpret_cast<sockaddr*>(&address), &size),
+        0);
+    const auto epoll = srt_epoll_create();
+    const int events = SRT_EPOLL_IN | SRT_EPOLL_ERR;
+    REQUIRE_EQ(srt_epoll_add_usock(epoll, listener, &events), 0);
+    const auto caller = srt_create_socket();
+    REQUIRE(caller != SRT_INVALID_SOCK);
+    REQUIRE_EQ(
+        srt_connect(caller, reinterpret_cast<sockaddr*>(&address), size), 0);
+    SRT_EPOLL_EVENT event {};
+    REQUIRE_EQ(srt_epoll_uwait(epoll, &event, 1, 2000), 1);
+    REQUIRE_EQ(event.fd, listener);
+    REQUIRE((event.events & SRT_EPOLL_IN) != 0);
+    REQUIRE_EQ(srt_close(listener), 0);
+    REQUIRE_EQ(srt_accept_bond(&listener, 1, 0), SRT_INVALID_SOCK);
+    REQUIRE_EQ(srt_getlasterror(nullptr), SRT_EINVSOCK);
+    REQUIRE_EQ(srt_close(caller), 0);
+    REQUIRE_EQ(srt_epoll_release(epoll), 0);
+    REQUIRE_EQ(srt_cleanup(), 0);
+}
