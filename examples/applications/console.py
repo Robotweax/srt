@@ -404,17 +404,35 @@ class Handler(BaseHTTPRequestHandler):
             return
         return self.send(404)
 
+    MAXIMUM_BODY = 4096
+
+    def read_body(self):
+        """Read a bounded request body, or return None if it is not acceptable.
+
+        Every response to a POST, rejections included, is sent after this, so
+        the connection is never closed with request bytes still unread. On
+        Windows that resets the connection, and a client that has not yet
+        read the response then fails with WSAECONNABORTED (issue 407).
+        """
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return None
+        if not 0 <= size <= self.MAXIMUM_BODY:
+            return None
+        return self.rfile.read(size)
+
     def do_POST(self):
+        body = self.read_body()
         origin = self.headers.get("Origin")
         if not self.valid_host() or (origin and origin not in (f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}")):
             return self.send(403)
         if not self.authorized():
             return self.send(401)
         try:
-            size = int(self.headers.get("Content-Length", "0"))
-            if not 0 <= size <= 4096:
-                raise ValueError("request too large")
-            data = json.loads(self.rfile.read(size) or b"{}")
+            if body is None:
+                raise ValueError("request body length missing, invalid or over 4096 bytes")
+            data = json.loads(body or b"{}")
             console = self.server.console
             if self.path == "/api/session":
                 return self.send(200, b"{}", headers={"Set-Cookie": f"srt_sample_session={console.token}; HttpOnly; SameSite=Strict; Path=/"})
