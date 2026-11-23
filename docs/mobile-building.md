@@ -242,6 +242,10 @@ keeps one wait per slot.
 - The pacing credit is widened by the quantum, so the average rate is kept and
   a burst is bounded by the quantum plus the 1 ms credit at the configured rate
   (about 3 kB at 8 Mbit/s with a 2 ms quantum).
+- A wake-up that arrives later than the quantum and the credit together starts
+  a fresh schedule the quantum before the send time: the deliberate wait is
+  kept and only the lateness beyond it is given up. Giving up both lowered the
+  delivered rate to 87 to 91% at 2 Mbit/s on an Android phone.
 - Retransmissions, packet-filter packets, protocol timers and File mode are
   not deferred. Any earlier wake-up still sends what is due by then.
 - Packets can leave up to one quantum later than their slot.
