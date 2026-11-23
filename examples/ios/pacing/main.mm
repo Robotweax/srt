@@ -5,6 +5,7 @@
 #include <mach/mach.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
+#include <unistd.h>
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -12,14 +13,21 @@
 #include <vector>
 
 int rwx_mobile_pacing_peer_main(int, char**);
+// Declared in libproc.h, which the iOS SDK does not ship. Used for this
+// process only, to read the instruction, cycle and energy counters.
+extern "C" int proc_pid_rusage(int pid, int flavor, rusage_info_t* buffer);
 namespace {
 struct Resources {
     rusage cpu {};
     task_power_info_data_t power {};
+    rusage_info_v4 counters {};
     bool cpuValid = false;
+    bool countersValid = false;
     kern_return_t powerError = KERN_FAILURE;
     Resources() {
         cpuValid = getrusage(RUSAGE_SELF, &cpu) == 0;
+        countersValid = proc_pid_rusage(getpid(), RUSAGE_INFO_V4,
+            reinterpret_cast<rusage_info_t*>(&counters)) == 0;
         mach_msg_type_number_t count = TASK_POWER_INFO_COUNT;
         powerError = task_info(mach_task_self(), TASK_POWER_INFO,
             reinterpret_cast<task_info_t>(&power), &count);
@@ -149,6 +157,7 @@ struct Streams {
         const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
         Resources after;
         log.close();
+        const BOOL countersValid = before.countersValid && after.countersValid;
         const BOOL powerValid = before.powerError == KERN_SUCCESS && after.powerError == KERN_SUCCESS
             && after.power.task_interrupt_wakeups >= before.power.task_interrupt_wakeups
             && after.power.task_platform_idle_wakeups >= before.power.task_platform_idle_wakeups
@@ -167,10 +176,17 @@ struct Streams {
             @"low_power_before": @(lowPowerBefore),
             @"low_power_after": @(NSProcessInfo.processInfo.lowPowerModeEnabled),
             @"task_power_info_available": @(powerValid),
+            @"rusage_counters_available": @(countersValid),
             @"task_power_before_error": @(before.powerError),
             @"task_power_after_error": @(after.powerError),
             @"peer_log": logPath.lastPathComponent,
             @"cpu_seconds": before.cpuValid && after.cpuValid ? @(after.cpuSeconds() - before.cpuSeconds()) : NSNull.null,
+            // CPU seconds depend on the clock speed the work ran at; the
+            // instruction and cycle counts do not. Energy is as billed by
+            // the kernel and can be zero where it is not accounted.
+            @"instructions": countersValid ? @(after.counters.ri_instructions - before.counters.ri_instructions) : NSNull.null,
+            @"cycles": countersValid ? @(after.counters.ri_cycles - before.counters.ri_cycles) : NSNull.null,
+            @"billed_energy_nanojoules": countersValid ? @(after.counters.ri_billed_energy - before.counters.ri_billed_energy) : NSNull.null,
             @"interrupt_wakeups": powerValid ? @(after.power.task_interrupt_wakeups - before.power.task_interrupt_wakeups) : NSNull.null,
             @"platform_idle_wakeups": powerValid ? @(after.power.task_platform_idle_wakeups - before.power.task_platform_idle_wakeups) : NSNull.null,
             @"timer_wakeups_bin_1": powerValid ? @(after.power.task_timer_wakeups_bin_1 - before.power.task_timer_wakeups_bin_1) : NSNull.null,
@@ -189,14 +205,26 @@ struct Streams {
 }
 @end
 
-@interface PacingDelegate : UIResponder <UIApplicationDelegate>
+// The window belongs to a scene: an app built with a current iOS SDK that
+// creates its window from the application delegate is terminated at launch.
+@interface PacingSceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (nonatomic, strong) UIWindow *window;
+@end
+@implementation PacingSceneDelegate
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session
+      options:(UISceneConnectionOptions *)options {
+    if (![scene isKindOfClass:UIWindowScene.class]) return;
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    self.window.rootViewController = [PacingController new];
+    [self.window makeKeyAndVisible];
+}
+@end
+
+@interface PacingDelegate : UIResponder <UIApplicationDelegate>
 @end
 @implementation PacingDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
-    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [PacingController new];
-    [self.window makeKeyAndVisible]; return YES;
+    return YES;
 }
 @end
 int main(int argc, char **argv) {

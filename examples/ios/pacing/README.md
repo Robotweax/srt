@@ -65,6 +65,10 @@ the quantum plus 1 ms of the configured rate; neither effect has been measured
 on a device, and no result for these variants exists yet.
 
 Install using Xcode or `xcrun devicectl device install app --device "$DEVICE" APP`.
+A free Apple developer profile allows three of these apps on a device at once;
+remove one variant before installing a fourth. The developer profile must be
+trusted on the phone (Settings → General → VPN & Device Management) before the
+first launch.
 The phone must be paired, trusted, unlocked and in Developer Mode. A Simulator
 build can exercise the harness but does not qualify phone timing or CPU.
 
@@ -159,7 +163,14 @@ not qualify transport wake-ups or saturation throughput. Use identical corrected
 harness settings for both variants and restart the full ABBA matrix.
 
 CPU is the whole app process's `getrusage` delta around the peer run, including
-startup and shutdown. Wake-up deltas come from Mach `TASK_POWER_INFO` interrupt,
+startup and shutdown. CPU seconds depend on the clock speed the work ran at, so
+they cannot compare variants that sleep differently: a variant that sleeps
+longer and wakes at a lower clock speed can use more CPU seconds for less work.
+The report therefore also carries `instructions` and `cycles` for the same
+interval, read with `proc_pid_rusage`, and `billed_energy_nanojoules`. The
+energy field is whatever the kernel bills to the process; where it is not
+accounted it is zero or implausibly small, and it must not be used as an energy
+measurement without checking it against a known load. Wake-up deltas come from Mach `TASK_POWER_INFO` interrupt,
 platform-idle and timer-bin counters. These categories can overlap; do not sum
 them into a unique total, equate them with scheduler dispatches, or infer battery
 energy from them. Unsupported counters are null, not zero. More timer wakes with
