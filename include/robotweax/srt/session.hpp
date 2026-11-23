@@ -741,6 +741,18 @@ private:
     [[nodiscard]] bool add_unsettled_receive_losses(SequenceRange range,
         std::uint32_t initial_ttl, std::size_t& added_packets,
         std::size_t* inspected = nullptr) noexcept;
+    // A channel can recheck an isolated, immediately reportable gap once
+    // before leaving its current nonblocking receive slice.
+    [[nodiscard]] bool opens_single_immediate_gap(
+        SequenceNumber seq) const noexcept
+    {
+        return seq.distance_from(highest_received_sequence_) == 2
+            && receive_loss_list_.empty()
+            && packet_filter_policy_.effective_arq_level()
+            == PacketFilterArqLevel::always
+            && (!live_options_.retransmit_flag
+                || reorder_tolerance_packets_ == 0U);
+    }
     void append_pending_loss_report(ReliabilityActions& actions,
         bool action_slot_available, std::uint64_t now_microseconds) noexcept;
     void append_pending_drop_requests(ReliabilityActions& actions) noexcept;
