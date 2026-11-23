@@ -3456,9 +3456,12 @@ void check_rendezvous_timeout(robotweax::srt::IpAddressFamily family)
                   << " Rendezvous CONNTIMEO=" << timeout_ms << " ms, elapsed="
                   << duration_cast<milliseconds>(elapsed).count() << " ms\n";
         // Allow timer rounding at the lower bound and scheduler delay at
-        // the upper bound, while excluding both 1x and an extra retry period.
+        // the upper bound, while excluding both 1x and an extra retry period
+        // (250 ms). The first connect after runtime start-up has measured up
+        // to 155 ms over on a hosted macOS runner, against at most 5 ms on an
+        // idle or loaded local Mac.
         REQUIRE(elapsed >= expected - milliseconds {5});
-        REQUIRE(elapsed <= expected + milliseconds {150});
+        REQUIRE(elapsed <= expected + milliseconds {200});
     }
 }
 
