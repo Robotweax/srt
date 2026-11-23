@@ -33,28 +33,35 @@ class MobileConfigureTests(unittest.TestCase):
             self.assertIn("-DCMAKE_SYSTEM_NAME=iOS", command)
             self.assertFalse(any("ANDROID" in part for part in command))
 
-    def test_mobile_pacing_requires_explicit_opt_in(self):
-        flag = "-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING=ON"
+    def test_mobile_pacing_defaults_to_timer_with_a_legacy_opt_out(self):
+        timer = "-DROBOTWEAX_SRT_MOBILE_PACING=timer"
+        legacy = "-DROBOTWEAX_SRT_MOBILE_PACING=legacy"
         for target in ("android-arm64", "ios-arm64", "ios-simulator-arm64"):
-            self.assertNotIn(flag, mobile.command(self.args(target)))
-            self.assertIn(flag, mobile.command(self.args(
+            default = mobile.command(self.args(target))
+            self.assertIn(timer, default)
+            self.assertFalse(any("EXPERIMENTAL_MOBILE_PACING" in part for part in default))
+            self.assertIn(legacy, mobile.command(self.args(target, ["--mobile-pacing", "legacy"])))
+            # The former opt-in flag is accepted and changes nothing.
+            self.assertEqual(default, mobile.command(self.args(
                 target, ["--experimental-mobile-pacing"])))
+            with self.assertRaises(ValueError):
+                mobile.command(self.args(target, [
+                    "--experimental-mobile-pacing", "--mobile-pacing", "legacy"]))
 
-    def test_pacing_coalescing_requires_mobile_pacing_and_a_bounded_value(self):
+    def test_pacing_coalescing_requires_timer_pacing_and_a_bounded_value(self):
         flag = "-DROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS"
         for target in ("android-arm64", "ios-arm64", "ios-simulator-arm64"):
-            plain = mobile.command(self.args(target, ["--experimental-mobile-pacing"]))
+            plain = mobile.command(self.args(target))
             self.assertFalse(any(part.startswith(flag) for part in plain))
             self.assertIn(f"{flag}=2000", mobile.command(self.args(target, [
-                "--experimental-mobile-pacing",
                 "--mobile-pacing-coalesce-microseconds", "2000"])))
             with self.assertRaises(ValueError):
                 mobile.command(self.args(target, [
+                    "--mobile-pacing", "legacy",
                     "--mobile-pacing-coalesce-microseconds", "2000"]))
             for value in ("-1", "10001"):
                 with self.assertRaises(ValueError):
                     mobile.command(self.args(target, [
-                        "--experimental-mobile-pacing",
                         "--mobile-pacing-coalesce-microseconds", value]))
 
     def test_invalid_deployment_target(self):

@@ -12,8 +12,8 @@ removes the anchor-socket workaround; it does not qualify simultaneous mobile
 Wi-Fi/cellular operation or background execution.
 
 The required macOS Release CI job also compiles `src/timing.cpp` for iOS ARM64
-device and simulator targets, with both legacy and experimental mobile pacing
-and warnings treated as errors. This exercises the pacing translation unit
+device and simulator targets, with the timer, legacy and coalescing pacing
+policies and warnings treated as errors. This exercises the pacing translation unit
 without target OpenSSL dependencies. It is a translation-unit
 compile check, not a full mobile build/link, runtime or timing qualification.
 
@@ -202,28 +202,57 @@ licenses. Normal configuration requires an empty build directory and explicit
 target dependencies. It builds Release/PIC/static with AES-GCM enabled, and disables
 host tests/tools/examples. Existing desktop defaults are unchanged.
 
-## Experimental mobile timer pacing
+## Mobile pacing
 
-Mobile pacing retains its legacy behavior by default. To exercise the unqualified
-timer-wait policy for issue #353, add `--experimental-mobile-pacing` to the
-configure helper, or set
-`-DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING=ON` directly in CMake.
-It applies to Android and iOS device/simulator targets, excluding Mac Catalyst;
-other platforms retain their existing pacing policy. Use a fresh build directory
-for each variant.
+Android and iOS device and simulator targets, excluding Mac Catalyst, use
+**timer pacing by default**: a sub-millisecond pacing deadline is a timer wait,
+and the sender never spins for a future deadline, even when the device's timers
+are coarse. It keeps the 1 ms pacing credit used on desktop. Other platforms are
+unaffected.
 
-This candidate uses the existing 1 ms pacing credit and does not restore busy
-pacing resubmission when mobile timers are coarse. That avoids one source of
-idle CPU consumption but can reduce throughput on coarse timers. No performance,
-power or battery improvement is claimed without physical-device measurements.
-The [iOS pacing measurement app](../examples/ios/pacing/README.md) supplies
-separate baseline/candidate bundles, CPU and Mach wake-up counters, and a
-predeclared same-phone comparison protocol at 2–8 Mbit/s. Android has no
-physical-device qualification from this iOS experiment. The initial physical iPhone
-comparison is recorded in that app's results section: the candidate met its
-scoped CPU/rate gates, but wake-ups increased and an isolated baseline connection
-failure remains unexplained. The mobile option remains off by default; no
-battery-life or general mobile qualification is claimed.
+`-DROBOTWEAX_SRT_MOBILE_PACING=legacy` (`--mobile-pacing legacy` in the
+configure helper) restores the previous policy, which resubmits instead of
+waiting and keeps a core busy for the whole stream. The former opt-in option
+`ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING` is deprecated: `ON` selects
+`timer`, `OFF` selects `legacy`, and CMake reports the replacement. Use a fresh
+build directory when changing the policy.
+
+### Evidence for the default (issue #353)
+
+Cleartext, one connection, 188-byte messages, 30-second transfers to a desktop
+receiver on the same Wi-Fi, means of two runs.
+
+Samsung Galaxy A56 (Android 17), the sender as a shell process over adb,
+plugged in, mostly with the screen off, 23 November 2026:
+
+| Target | Policy | Delivered | CPU seconds | Fast-cluster average clock |
+|---|---|---|---|---|
+| 2 Mbit/s | legacy | 99.4% | 32.0 | 2.80 GHz |
+| 2 Mbit/s | timer | 98.6% | 15.4 | 0.72 GHz |
+| 5 Mbit/s | legacy | 97.6% | 35.1 | 2.81 GHz |
+| 5 Mbit/s | timer | 98.2% | 18.7 | 0.75 GHz |
+| 8 Mbit/s | legacy | 94.7% | 37.0 | 2.78 GHz |
+| 8 Mbit/s | timer | 98.9% | 22.0 | 0.74 GHz |
+
+iPhone 14 Pro: in October the timer policy needed 68 to 89% less CPU per
+delivered bit at 2 to 8 Mbit/s, and reached the requested rate at 5 and
+8 Mbit/s where the legacy policy did not; see the
+[iOS pacing measurement app](../examples/ios/pacing/README.md). In November,
+72 timer-policy attempts on that phone (plain and coalescing) produced 65
+complete transfers with the requested message count and intact data; the other
+7 failed when the app was launched directly after being reinstalled, before any
+data was sent.
+
+The timer policy wakes the sender far more often than the legacy policy, which
+never sleeps: about once per packet, up to 5,000 times per second at 8 Mbit/s.
+Energy was not measured on either phone. The default rests on halved CPU time
+and on the fastest cores no longer being held near their maximum clock, not on a
+battery measurement.
+
+Not qualified: encrypted streams, background execution, connection groups,
+network migration, an Android app in the foreground, and devices other than the
+two above. The legacy policy remains available for comparison and as a
+fallback.
 
 ### Bounded pacing coalescing
 
@@ -232,9 +261,9 @@ With one timer wait per pacing slot, the candidate wakes about once per packet:
 messages. `-DROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS=<quantum>`
 (`--mobile-pacing-coalesce-microseconds` in the configure helper) lets a Live
 pacing wait for new data be served up to that many microseconds late, so one
-wake-up sends the packets that became due in the meantime. It requires the
-experimental mobile pacing option, accepts 0 to 10000, and defaults to 0, which
-keeps one wait per slot.
+wake-up sends the packets that became due in the meantime. It is experimental
+and off by default, requires timer pacing, accepts 0 to 10000, and with 0 keeps
+one wait per slot.
 
 - The wait runs to the slot of the last packet that both fits in the quantum
   and is already waiting to be sent. A stream whose packet interval is longer
@@ -249,6 +278,12 @@ keeps one wait per slot.
 - Retransmissions, packet-filter packets, protocol timers and File mode are
   not deferred. Any earlier wake-up still sends what is due by then.
 - Packets can leave up to one quantum later than their slot.
+
+Measured on both phones with a 1 to 4 ms quantum, coalescing reduces wake-ups by
+50 to 95% and instructions per packet by 6 to 38% against plain timer pacing,
+with the same delivered rate within two points. Its CPU time is not lower at 5
+and 8 Mbit/s, and whether the fewer wake-ups save energy is not measured, so it
+stays off.
 
 This is covered by deterministic unit tests of the pacer and the connection
 runtime only. It has not been measured on any device: no wake-up, CPU, energy

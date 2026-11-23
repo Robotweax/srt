@@ -1,7 +1,8 @@
 # iOS pacing measurement app
 
-This experimental foreground app compares legacy mobile pacing with the
-**default-off** timer-wait candidate for issue #353. It reuses
+This experimental foreground app compares the legacy mobile pacing policy with
+timer pacing, the default since issue #353, and with its experimental
+coalescing variants. It reuses
 `benchmarks/scalability_peer.cpp` and the public SRT API, with one backlogged
 caller, cleartext synthetic messages and a desktop receiver. It is a measurement
 harness, not a streaming application or mobile support commitment.
@@ -9,8 +10,9 @@ harness, not a streaming application or mobile support commitment.
 The candidate keeps the existing 1 ms pacing credit and waits for future pacing
 deadlines even after coarse timer wakes. Due work and bounded route sweeps still
 continue immediately. Unlike the desktop policy, it never restores pacing spin
-because timers are coarse. Coarse mobile timers can therefore reduce throughput;
-that tradeoff must be measured before enabling the policy by default.
+because timers are coarse. Coarse mobile timers can therefore reduce throughput.
+The results below and in [mobile-building](../../../docs/mobile-building.md)
+did not show that on the measured devices.
 
 ## Build both variants
 
@@ -29,15 +31,15 @@ cmake -S examples/ios/pacing -B build-pacing-baseline -G Xcode \
   -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
   -DOPENSSL_INCLUDE_DIR="$CRYPTO/include" \
   -DOPENSSL_CRYPTO_LIBRARY="$CRYPTO/lib/libcrypto.a" \
-  -DROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING=OFF \
+  -DROBOTWEAX_SRT_MOBILE_PACING=legacy \
   -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE=Automatic \
   -DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM="$TEAM_ID"
 cmake --build build-pacing-baseline --config Release --parallel 3 -- \
   -allowProvisioningUpdates
 ```
 
-Repeat with a fresh directory `build-pacing-candidate` and the experimental
-option `ON`. Do not reuse a desktop, simulator or differently configured cache.
+Repeat with a fresh directory `build-pacing-candidate` and
+`-DROBOTWEAX_SRT_MOBILE_PACING=timer`, the default. Do not reuse a desktop, simulator or differently configured cache.
 The bundle IDs are `ai.robotweax.srt.pacing.baseline` and
 `ai.robotweax.srt.pacing.candidate`, so both apps can coexist. Each build produces
 `Release-iphoneos/SRTMobilePacing.app`. For compile/link checks without a signing
@@ -49,8 +51,8 @@ identity, replace the two signing arguments with
 Bounded pacing coalescing is a further, unmeasured variant of the candidate. It
 serves a Live pacing wait up to a quantum late, so that one wake-up sends the
 packets that became due in the meantime, and it widens the pacing credit by the
-same quantum so the rate is kept. To build one, use a fresh directory, keep the
-experimental option `ON` and add, for a 2 ms quantum:
+same quantum so the rate is kept. To build one, use a fresh directory with
+timer pacing and add, for a 2 ms quantum:
 
 ```sh
   -DROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS=2000
@@ -180,8 +182,9 @@ must fall. Thermal observations are not an energy measurement.
 This first matrix qualifies only one foreground, cleartext, single-connection
 iPhone workload. Android physical-device qualification, encrypted performance,
 background behavior, network migration and long-running battery measurements
-remain separate work. Keep the mobile option off by default until evidence
-supports a platform-specific decision.
+remain separate work. This protocol was written while timer pacing was still
+off by default; the default has since changed on the evidence recorded in
+[mobile-building](../../../docs/mobile-building.md).
 
 
 ## Initial physical iPhone results — 2026-10-23
@@ -191,7 +194,8 @@ and CPU gates on one iPhone. It substantially increased wake-ups for 188-byte
 messages. This is **not a full mobile qualification pass or a battery-life
 result**: the original protocol's baseline throughput gates failed for the
 5/8 Mbit/s controls, and one baseline connection failure remains unexplained.
-Keep `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING=OFF` by default.
+At the time the recommendation was to keep timer pacing off by default; see the
+November results below for what changed.
 
 Tested source: `fcead32652951dccdb550863ac527bb76c80c819`. Both installed app
 variants were Release builds from that source, differing in the mobile pacing
@@ -272,3 +276,34 @@ Before default enablement: investigate the baseline connection failure, assess
 timer coalescing with bounded burst/latency behavior, and perform longer device
 energy/resource checks. Android physical devices, encrypted performance,
 background execution, connection groups and network migration remain unqualified.
+
+## Physical iPhone results with coalescing — 22 and 23 November 2026
+
+Source: `main` with the late-wake fix and this app's scene-based launch and
+instruction counters. iPhone 14 Pro, iOS 27.2, foreground, Low Power Mode off,
+nominal thermal state before and after every run, receiver on a Mac on the same
+Wi-Fi. 188-byte messages, 30 seconds, means of two to four runs. The legacy
+policy was not part of these passes: a free developer profile allows three of
+these apps on a device at once.
+
+| Target | Variant | Delivered | Interrupt wake-ups / s | Instructions / packet | Cycles / packet |
+|---|---|---|---|---|---|
+| 2 Mbit/s | timer | 99.0% | 1,347 | 225,000 | 151,000 |
+| 2 Mbit/s | coalesce 2 ms | 99.6% | 391 | 212,000 | 110,000 |
+| 2 Mbit/s | coalesce 4 ms | 99.8% | 366 | 205,000 | 109,000 |
+| 5 Mbit/s | timer | 99.0% | 3,225 | 218,000 | 121,000 |
+| 5 Mbit/s | coalesce 2 ms | 98.5% | 236 | 191,000 | 95,000 |
+| 5 Mbit/s | coalesce 4 ms | 99.4% | 229 | 185,000 | 92,000 |
+| 8 Mbit/s | timer | 96.1% | 5,068 | 211,000 | 81,000 |
+| 8 Mbit/s | coalesce 2 ms | 95.6% | 256 | 188,000 | 101,000 |
+| 8 Mbit/s | coalesce 4 ms | 95.7% | 261 | 184,000 | 101,000 |
+
+At 8 Mbit/s every variant varied between 93 and 98% from run to run; that is
+attributed to the network. CPU seconds are not shown: variants that sleep
+differently run at different clock speeds, so instructions and cycles compare
+the work better. Of 33 attempts, 7 were invalid (launch refusals and immediate
+sender failures directly after reinstalling the apps, and two launches that
+ended at start-up) and the affected blocks were repeated; all attempts are
+retained. The `billed_energy_nanojoules` field returned 7 to 9 mJ per run for
+every variant, too small to be a total, so no energy result exists.
+

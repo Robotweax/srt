@@ -6,12 +6,21 @@ version returned by `srt_getversion()`.
 
 ## Unreleased
 
-- The default-off experimental mobile timer pacing gains a build-time setting,
+- Android and iOS builds now use timer pacing by default: a sub-millisecond
+  pacing deadline is a timer wait and the sender no longer spins, also when
+  timers are coarse. On a Samsung Galaxy A56 this halved the sender's CPU time
+  at 2 to 8 Mbit/s with the same or a higher delivered rate. Energy was not
+  measured. `ROBOTWEAX_SRT_MOBILE_PACING=legacy` restores the previous policy.
+  The former opt-in `ROBOTWEAX_SRT_ENABLE_EXPERIMENTAL_MOBILE_PACING` is
+  deprecated and mapped to the new setting; the configure helper gains
+  `--mobile-pacing` and ignores `--experimental-mobile-pacing`. Desktop builds
+  are unchanged.
+- Mobile timer pacing gains an experimental build-time setting,
   `ROBOTWEAX_SRT_MOBILE_PACING_COALESCE_MICROSECONDS` (0 to 10000, default 0).
   A non-zero quantum lets a Live pacing wait be served that late, so one
   wake-up sends several packets, and widens the pacing credit by the same
-  amount. It is not measured on any device. Builds without the experimental
-  mobile pacing option, and every desktop build, are unchanged.
+  amount. It is off by default and requires timer pacing; desktop builds are
+  unchanged.
 - The packet pacer carries the fraction of a microsecond left over from each
   packet interval instead of rounding every interval up. At packet periods of
   a few microseconds (multi-gigabit File transfer on loopback or fast links)
