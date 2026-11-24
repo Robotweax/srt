@@ -87,8 +87,64 @@ and removal checks.
 - Fedora 44 RPM image `fedora@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e`.
   [Job 137924508772](https://github.com/Robotweax/srt/actions/runs/45240776987/job/137924508772).
 
-## Remaining release gates
+## Merge, final tag and publication
 
-Physical Android and iOS pacing comparisons on the frozen product are pending.
-A release PR also needs the contributor's DCO sign-off. Merge, protected tag
-creation, signing and publication remain pending.
+The release owner approved using the physical Android and iOS pacing evidence
+from [development PR 433](https://github.com/Robotweax/srt/pull/433).
+[Release PR 435](https://github.com/Robotweax/srt/pull/435) records that decision,
+DCO sign-off and early PR CI failures. The signed PR head passed the Required CI
+gate on [attempt 3](https://github.com/Robotweax/srt/actions/runs/45252184176/attempts/3).
+The identical tree also passed [full CI](https://github.com/Robotweax/srt/actions/runs/45246269538).
+The PR merged as `fd9dac31675b12022579d28a748abb0839004cde`; its tree matches the
+signed PR head, and its frozen paths and package inputs match qualification.
+[Post-merge CI](https://github.com/Robotweax/srt/actions/runs/45262113042) passed.
+
+The annotated tag `v0.3.5` has object ID
+`d7b6ba7959593db1d37bac8178c6bff26ecfc5b0` and points to the merge commit.
+[Final-tag CI](https://github.com/Robotweax/srt/actions/runs/45266706013) passed
+on attempt 2. The [first attempt's OBS macOS desktop job](https://github.com/Robotweax/srt/actions/runs/45266706013/job/138015541188)
+failed in debugger-capture verification. The retry passed and the cause of
+the first failure remains unestablished. [Linux packages](https://github.com/Robotweax/srt/actions/runs/45266705607)
+and [package managers](https://github.com/Robotweax/srt/actions/runs/45266705848)
+passed on their first attempts.
+
+The [tag Windows workflow](https://github.com/Robotweax/srt/actions/runs/45266705773)
+passed on attempt 1. It performed one protected independent rebuild
+(artifact `14868254541`) and signed and tested the resulting installers
+(artifact `14869079365`, ZIP SHA-256
+`3b83fb6b0849d9c088bb354091790a7c479f44a0d371c2a923893e359c302d8b`).
+The [release-draft job](https://github.com/Robotweax/srt/actions/runs/45266705773/job/138071516775)
+used Windows SignTool to verify the Robotweax GmbH Authenticode signatures and
+trusted timestamps on both installers with zero warnings or errors.
+
+The release owner approved publication. The [GitHub release](https://github.com/Robotweax/srt/releases/tag/v0.3.5)
+was published on 23 November 2026 at 23:58 CET with the reviewed release notes.
+Both public downloads are byte-identical to the verified signed artifact. The
+published checksums match, and the published tag provenance matches the live
+annotated tag and peeled release commit.
+
+| Windows SDK | SHA-256 |
+| --- | --- |
+| OpenSSL | `fb82ee5ff1e301ca2811a84e2e313fd968c40788a1a06ed075c514e05a2eb7b0` |
+| BCrypt | `6d67e0447c6386885f1afd046a15528b7560184687f9149a95079d5e09844644` |
+
+## Homebrew bottle publication
+
+The [0.3.5 bottle for Apple Silicon macOS 15](https://github.com/Robotweax/homebrew-tap/releases/tag/robotweax-srt-0.3.5)
+(`arm64_sequoia`) was published on 24 November 2026.
+[Native tap qualification](https://github.com/Robotweax/homebrew-tap/actions/runs/45340361072)
+passed on attempt 1 at head `d7a81277139736aeca2c2bbb85da3d795912b656`.
+Homebrew upgraded the checksum-verified published 0.3.4 bottle to the
+candidate 0.3.5 bottle and ran the original C executable against the new keg
+without rebuilding it. ABI 0.3, all 86 exports, installed C/C++ consumers,
+109 public Markdown files, default-prefix relocation, coexistence and removal
+passed.
+
+The [tested artifact](https://github.com/Robotweax/homebrew-tap/actions/runs/45340361072/artifacts/14895972609)
+and the independently downloaded public bottle match SHA-256
+`33824f8702ec667745a5c4322f99dc71447ccc4da2ebfe15bce6a3e27a194c7f`.
+The signed provenance for that digest verified against the tap's
+[publication workflow and run](https://github.com/Robotweax/homebrew-tap/actions/runs/45341293566/attempts/1).
+The tap's pull-request rule rejected the workflow's direct push. The same
+formula and bottle metadata landed through [tap PR 16](https://github.com/Robotweax/homebrew-tap/pull/16)
+as `0060f8445ba2e0ee3ff4a613bc06cef74a16d84f`.
