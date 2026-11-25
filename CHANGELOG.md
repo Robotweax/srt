@@ -4,6 +4,13 @@ All notable project changes are recorded in this file. Robotweax SRT uses
 semantic project versions independently from the compatible Haivision SRT API
 version returned by `srt_getversion()`.
 
+## 0.3.6 — Unreleased
+
+- Fix sparse, small-payload pacing for standalone, unfiltered Live. Automatic
+  relative pacing now counts the SRT DATA header and any AES-GCM authentication
+  tag for each accepted packet. Grouped Live, FEC, and null-packet deletion
+  retain their existing accounting.
+
 ## 0.3.5 — Mobile Timer Pacing and Transport Reliability
 
 See the [release notes](docs/release-notes-0.3.5.md) for upgrade behavior and limits.
