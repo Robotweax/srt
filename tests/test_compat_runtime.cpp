@@ -5734,7 +5734,8 @@ TEST(compat_runtime_sparse_gcm_live_auto_bandwidth_keeps_up_and_drains)
     CapturedDatagrams caller_output;
     CapturedDatagrams listener_output;
     caller_channel->set_send_hook_for_testing(capture_datagram, &caller_output);
-    listener_channel->set_send_hook_for_testing(capture_datagram, &listener_output);
+    listener_channel->set_send_hook_for_testing(
+        capture_datagram, &listener_output);
 
     const auto caller_endpoint = IpEndpoint::loopback(14'321);
     const auto listener_endpoint = IpEndpoint::loopback(14'322);
@@ -5745,7 +5746,8 @@ TEST(compat_runtime_sparse_gcm_live_auto_bandwidth_keeps_up_and_drains)
         .key_length = 32,
     };
     auto caller_crypto = std::make_shared<CryptoSession>(crypto_configuration);
-    auto listener_crypto = std::make_shared<CryptoSession>(crypto_configuration);
+    auto listener_crypto =
+        std::make_shared<CryptoSession>(crypto_configuration);
     REQUIRE_EQ(caller_crypto->start_initiator(), Error::none);
     REQUIRE_EQ(listener_crypto->accept_key_material(
                    caller_crypto->pending_key_material(), true),
@@ -5760,7 +5762,8 @@ TEST(compat_runtime_sparse_gcm_live_auto_bandwidth_keeps_up_and_drains)
     REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second, 0),
         Error::none);
     REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 64), Error::none);
-    REQUIRE_EQ(options.set(SocketOption::receive_buffer_packets, 64), Error::none);
+    REQUIRE_EQ(
+        options.set(SocketOption::receive_buffer_packets, 64), Error::none);
     const auto origin = ConnectionRuntime::Clock::now();
     std::uint64_t now = 1'000'000;
     ConnectionRuntime caller {{
@@ -5796,7 +5799,7 @@ TEST(compat_runtime_sparse_gcm_live_auto_bandwidth_keeps_up_and_drains)
     std::size_t delivered = 0;
     std::size_t peak_pending = 0;
     for (std::size_t tick = 0; tick < messages * cadence_ticks + idle_ticks;
-         ++tick, now += 5'000U) {
+        ++tick, now += 5'000U) {
         if (tick < messages * cadence_ticks && tick % cadence_ticks == 0U) {
             payload.front() = static_cast<std::byte>(tick / cadence_ticks);
             REQUIRE_EQ(caller.queue_message(payload, 0, true, false, -1).status,

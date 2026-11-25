@@ -103,12 +103,12 @@ TEST(live_rate_controller_framed_estimate_preserves_explicit_bandwidth)
     controller.observe_input(64, 100'001, 32);
     REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 3'600U);
 
-    // A configured minimum uses the original payload estimate, whether or
-    // not the floor binds. Explicit input, fixed and unlimited modes win.
+    // A nonbinding floor leaves the framed estimate selected. A binding floor
+    // applies before overhead, and explicit input, fixed and unlimited win.
     controller.set_minimum_input_bandwidth(1'000);
-    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 2'400U);
-    controller.set_minimum_input_bandwidth(2'000);
-    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 2'500U);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 3'600U);
+    controller.set_minimum_input_bandwidth(4'000);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 5'000U);
     controller.set_input_bandwidth(1'600);
     REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 2'000U);
     controller.set_maximum_bandwidth(1'200);

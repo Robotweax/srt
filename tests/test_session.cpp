@@ -69,23 +69,23 @@ TEST(session_live_input_accounts_only_accepted_fragments)
             .send_capacity_packets = 6,
             .maximum_payload_size = 32,
         }};
-        session.configure_live({}, 0, PacketTimestamp {0},
-            {.overhead_percent = 0});
+        session.configure_live(
+            {}, 0, PacketTimestamp {0}, {.overhead_percent = 0});
         return session;
     };
     const std::array<std::byte, 80> payload {};
 
     auto messages = make_session();
-    REQUIRE_EQ(messages.queue_message(payload, PacketTimestamp {0},
-                   true, 1, 0, 32),
+    REQUIRE_EQ(
+        messages.queue_message(payload, PacketTimestamp {0}, true, 1, 0, 32),
         Error::none);
     // A refused input cannot contribute bytes or update the estimator.
     const std::array<std::byte, 97> too_large {};
-    REQUIRE_EQ(messages.queue_message(too_large, PacketTimestamp {0},
-                   true, 50'001, 0, 32),
+    REQUIRE_EQ(messages.queue_message(
+                   too_large, PacketTimestamp {0}, true, 50'001, 0, 32),
         Error::buffer_too_small);
-    REQUIRE_EQ(messages.queue_message(payload, PacketTimestamp {0},
-                   true, 100'001, 0, 32),
+    REQUIRE_EQ(messages.queue_message(
+                   payload, PacketTimestamp {0}, true, 100'001, 0, 32),
         Error::none);
     REQUIRE_EQ(messages.live_pacing_rate_bytes_per_second(), 3'520U);
 

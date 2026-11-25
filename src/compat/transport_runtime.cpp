@@ -2694,8 +2694,8 @@ MessageIoResult ConnectionRuntime::queue_stream(
             now, session_.send_buffer().size() != 0U);
         const std::uint32_t message_number =
             session_.next_message_number();
-        const auto queued = session_.queue_stream(bytes, packet_timestamp(0),
-            now, live_input_framing_per_packet());
+        const auto queued = session_.queue_stream(
+            bytes, packet_timestamp(0), now, live_input_framing_per_packet());
         if (queued) {
             statistics_.update_send_duration(now, true);
             sample_sender_buffer_statistics(now);

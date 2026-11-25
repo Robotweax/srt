@@ -79,27 +79,21 @@ LiveRateController::LiveRateController(Configuration configuration) noexcept
 {
 }
 
-void LiveRateController::observe_input(
-    std::size_t payload_bytes,
-    std::uint64_t enqueue_microseconds,
-    std::uint64_t framing_bytes) noexcept
+void LiveRateController::observe_input(std::size_t payload_bytes,
+    std::uint64_t enqueue_microseconds, std::uint64_t framing_bytes) noexcept
 {
-    // Keep fixed-memory estimates of application input and framed DATA. A
-    // 100 ms minimum window avoids treating same-tick bursts as line-rate
-    // spikes while still following normal live bitrate changes quickly.
+    // Observe the bytes charged by the pacer on the framed path. A 100 ms
+    // minimum window keeps same-tick bursts from looking like line-rate input.
     constexpr std::uint64_t minimum_window_microseconds = 100'000U;
     if (!input_window_started_) {
         input_window_start_microseconds_ = enqueue_microseconds;
         input_window_started_ = true;
     }
-    const auto bytes = static_cast<std::uint64_t>(payload_bytes);
-    const auto accumulate = [](std::uint64_t& total, std::uint64_t amount) {
-        const auto room = std::numeric_limits<std::uint64_t>::max() - total;
-        total += std::min(amount, room);
-    };
-    accumulate(input_window_bytes_, bytes);
-    accumulate(framed_input_window_bytes_, bytes);
-    accumulate(framed_input_window_bytes_, framing_bytes);
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    input_window_bytes_ += std::min(static_cast<std::uint64_t>(payload_bytes),
+        maximum - input_window_bytes_);
+    input_window_bytes_ +=
+        std::min(framing_bytes, maximum - input_window_bytes_);
     if (enqueue_microseconds <= input_window_start_microseconds_
         || enqueue_microseconds - input_window_start_microseconds_
             < minimum_window_microseconds) {
@@ -107,20 +101,16 @@ void LiveRateController::observe_input(
     }
     const std::uint64_t elapsed =
         enqueue_microseconds - input_window_start_microseconds_;
-    const auto update = [elapsed](std::uint64_t& estimate, std::uint64_t total) {
-        const auto maximum = std::numeric_limits<std::uint64_t>::max();
-        const std::uint64_t measured = total > maximum / 1'000'000U
-            ? maximum
-            : total * 1'000'000U / elapsed;
-        estimate = estimate == 0U
-            ? measured
-            : estimate - estimate / 8U + measured / 8U;
-    };
-    update(estimated_input_bandwidth_, input_window_bytes_);
-    update(estimated_framed_input_bandwidth_, framed_input_window_bytes_);
+    const std::uint64_t measured = input_window_bytes_ > maximum / 1'000'000U
+        ? maximum
+        : input_window_bytes_ * 1'000'000U / elapsed;
+    estimated_input_bandwidth_ = estimated_input_bandwidth_ == 0U
+        ? measured
+        : estimated_input_bandwidth_
+            - estimated_input_bandwidth_ / 8U
+            + measured / 8U;
     input_window_start_microseconds_ = enqueue_microseconds;
     input_window_bytes_ = 0U;
-    framed_input_window_bytes_ = 0U;
 }
 
 void LiveRateController::observe_payload(std::size_t payload_bytes) noexcept
@@ -166,12 +156,8 @@ std::uint64_t LiveRateController::pacing_rate_bytes_per_second() const noexcept
     }
     std::uint64_t rate = configuration_.input_bandwidth_bytes_per_second;
     if (rate == 0U) {
-        const auto minimum =
-            configuration_.minimum_input_bandwidth_bytes_per_second;
-        // An explicit minimum keeps the application-byte estimate. Track both
-        // estimates across post-connect option changes without resetting either.
-        rate = minimum == 0U ? estimated_framed_input_bandwidth_
-                             : std::max(estimated_input_bandwidth_, minimum);
+        rate = std::max(estimated_input_bandwidth_,
+            configuration_.minimum_input_bandwidth_bytes_per_second);
     }
     if (rate != 0U) {
         const auto multiplier = 100U + configuration_.overhead_percent;

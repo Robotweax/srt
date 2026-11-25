@@ -74,10 +74,8 @@ private:
     Configuration configuration_;
     std::size_t average_payload_size_ = 1;
     std::uint64_t estimated_input_bandwidth_ = 0;
-    std::uint64_t estimated_framed_input_bandwidth_ = 0;
     std::uint64_t input_window_start_microseconds_ = 0;
     std::uint64_t input_window_bytes_ = 0;
-    std::uint64_t framed_input_window_bytes_ = 0;
     bool input_window_started_ = false;
 };
 

@@ -196,8 +196,7 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
 
 Error ReliabilitySession::queue_message(std::span<const std::byte> message,
     PacketTimestamp timestamp, bool in_order,
-    std::uint64_t enqueue_microseconds,
-    std::uint64_t expiration_microseconds,
+    std::uint64_t enqueue_microseconds, std::uint64_t expiration_microseconds,
     std::size_t input_framing_per_packet) noexcept
 {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
@@ -389,8 +388,7 @@ Error ReliabilitySession::retire_group_prefix(
 }
 
 StreamEnqueueResult ReliabilitySession::queue_stream(
-    std::span<const std::byte> bytes,
-    PacketTimestamp timestamp,
+    std::span<const std::byte> bytes, PacketTimestamp timestamp,
     std::uint64_t enqueue_microseconds,
     std::size_t input_framing_per_packet) noexcept
 {
