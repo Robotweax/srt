@@ -62,6 +62,46 @@ PacketView encode_and_decode(const ReliabilityAction& action,
 
 } // namespace
 
+TEST(session_live_input_accounts_only_accepted_fragments)
+{
+    const auto make_session = [] {
+        ReliabilitySession session {{
+            .send_capacity_packets = 6,
+            .maximum_payload_size = 32,
+        }};
+        session.configure_live({}, 0, PacketTimestamp {0},
+            {.overhead_percent = 0});
+        return session;
+    };
+    const std::array<std::byte, 80> payload {};
+
+    auto messages = make_session();
+    REQUIRE_EQ(messages.queue_message(payload, PacketTimestamp {0},
+                   true, 1, 0, 32),
+        Error::none);
+    // A refused input cannot contribute bytes or update the estimator.
+    const std::array<std::byte, 97> too_large {};
+    REQUIRE_EQ(messages.queue_message(too_large, PacketTimestamp {0},
+                   true, 50'001, 0, 32),
+        Error::buffer_too_small);
+    REQUIRE_EQ(messages.queue_message(payload, PacketTimestamp {0},
+                   true, 100'001, 0, 32),
+        Error::none);
+    REQUIRE_EQ(messages.live_pacing_rate_bytes_per_second(), 3'520U);
+
+    auto stream = make_session();
+    const std::array<std::byte, 100> stream_input {};
+    const auto first =
+        stream.queue_stream(stream_input, PacketTimestamp {0}, 1, 16);
+    const auto last =
+        stream.queue_stream(stream_input, PacketTimestamp {0}, 100'001, 16);
+    REQUIRE(first);
+    REQUIRE(last);
+    REQUIRE_EQ(first.bytes_accepted, 100U);
+    REQUIRE_EQ(last.bytes_accepted, 64U);
+    REQUIRE_EQ(stream.live_pacing_rate_bytes_per_second(), 2'600U);
+}
+
 TEST(session_drop_request_rejects_ambiguous_progress_transactionally)
 {
     constexpr auto limit = SequenceNumber::half_range / 2U;

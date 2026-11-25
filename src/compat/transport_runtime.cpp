@@ -2238,6 +2238,20 @@ MessageIoResult ConnectionRuntime::queue_message(
     }
 }
 
+std::size_t ConnectionRuntime::live_input_framing_per_packet() const noexcept
+{
+    if (options_.transmission_type() != TransmissionType::live
+        || options_.congestion_controller() != CongestionController::live
+        || options_.packet_filter_configuration().enabled || npd_enabled_) {
+        return 0U;
+    }
+    // The pacer charges the SRT datagram, excluding IP and UDP headers.
+    const auto tag = crypto_ != nullptr && crypto_->authenticated_data_enabled()
+        ? srt_gcm_authentication_tag_size
+        : 0U;
+    return packet_header_size + tag;
+}
+
 MessageIoResult ConnectionRuntime::try_queue_message_locked(
     std::span<const std::byte> message, std::int64_t source_time_microseconds,
     bool in_order, std::int32_t ttl_milliseconds) noexcept
@@ -2273,7 +2287,7 @@ MessageIoResult ConnectionRuntime::try_queue_message_locked(
         session_.send_buffer().next_sequence();
     const Error queued = session_.queue_message(message,
         packet_timestamp(source_time_microseconds), in_order, now,
-        expiration_microseconds);
+        expiration_microseconds, live_input_framing_per_packet());
     if (queued == Error::none) {
         statistics_.update_send_duration(now, true);
         sample_sender_buffer_statistics(now);
@@ -2681,7 +2695,7 @@ MessageIoResult ConnectionRuntime::queue_stream(
         const std::uint32_t message_number =
             session_.next_message_number();
         const auto queued = session_.queue_stream(bytes, packet_timestamp(0),
-            now);
+            now, live_input_framing_per_packet());
         if (queued) {
             statistics_.update_send_duration(now, true);
             sample_sender_buffer_statistics(now);

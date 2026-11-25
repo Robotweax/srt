@@ -5727,6 +5727,108 @@ TEST(compat_runtime_gcm_caller_listener_authenticates_live_data_and_faults)
     exercise_gcm_message_profile(false);
 }
 
+TEST(compat_runtime_sparse_gcm_live_auto_bandwidth_keeps_up_and_drains)
+{
+    const auto caller_channel = std::make_shared<DatagramChannel>();
+    const auto listener_channel = std::make_shared<DatagramChannel>();
+    CapturedDatagrams caller_output;
+    CapturedDatagrams listener_output;
+    caller_channel->set_send_hook_for_testing(capture_datagram, &caller_output);
+    listener_channel->set_send_hook_for_testing(capture_datagram, &listener_output);
+
+    const auto caller_endpoint = IpEndpoint::loopback(14'321);
+    const auto listener_endpoint = IpEndpoint::loopback(14'322);
+    const CryptoConfiguration crypto_configuration {
+        .passphrase = "synthetic sparse Live pacing fixture",
+        .mode = CryptoMode::aes_gcm,
+        .enable_aes_gcm = true,
+        .key_length = 32,
+    };
+    auto caller_crypto = std::make_shared<CryptoSession>(crypto_configuration);
+    auto listener_crypto = std::make_shared<CryptoSession>(crypto_configuration);
+    REQUIRE_EQ(caller_crypto->start_initiator(), Error::none);
+    REQUIRE_EQ(listener_crypto->accept_key_material(
+                   caller_crypto->pending_key_material(), true),
+        Error::none);
+    REQUIRE_EQ(caller_crypto->acknowledge_key_material(
+                   listener_crypto->key_material_response(), true),
+        Error::none);
+    confirm_directional_test_keys(*caller_crypto, *listener_crypto);
+    REQUIRE(caller_crypto->authenticated_data_enabled());
+
+    SocketOptions options;
+    REQUIRE_EQ(options.set(SocketOption::maximum_bandwidth_bytes_per_second, 0),
+        Error::none);
+    REQUIRE_EQ(options.set(SocketOption::send_buffer_packets, 64), Error::none);
+    REQUIRE_EQ(options.set(SocketOption::receive_buffer_packets, 64), Error::none);
+    const auto origin = ConnectionRuntime::Clock::now();
+    std::uint64_t now = 1'000'000;
+    ConnectionRuntime caller {{
+        .channel = caller_channel,
+        .peer = listener_endpoint,
+        .peer_socket_id = 320,
+        .initial_sequence = SequenceNumber {1'000},
+        .flow_window_packets = 64,
+        .options = options,
+        .origin = origin,
+        .crypto = caller_crypto,
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+    ConnectionRuntime listener {{
+        .channel = listener_channel,
+        .peer = caller_endpoint,
+        .peer_socket_id = 310,
+        .initial_sequence = SequenceNumber {1'000},
+        .flow_window_packets = 64,
+        .options = options,
+        .origin = origin,
+        .crypto = listener_crypto,
+        .now_function = injected_now,
+        .now_context = &now,
+    }};
+
+    constexpr auto messages = 200U;
+    constexpr auto cadence_ticks = 10U;
+    constexpr auto idle_ticks = 40U;
+    std::array<std::byte, 64> payload {};
+    std::array<std::byte, 1'500> received {};
+    std::size_t delivered = 0;
+    std::size_t peak_pending = 0;
+    for (std::size_t tick = 0; tick < messages * cadence_ticks + idle_ticks;
+         ++tick, now += 5'000U) {
+        if (tick < messages * cadence_ticks && tick % cadence_ticks == 0U) {
+            payload.front() = static_cast<std::byte>(tick / cadence_ticks);
+            REQUIRE_EQ(caller.queue_message(payload, 0, true, false, -1).status,
+                MessageIoStatus::success);
+        }
+        (void)caller.poll();
+        deliver(caller_output, listener, caller_endpoint);
+        (void)listener.poll();
+        deliver(listener_output, caller, listener_endpoint);
+        const auto result = listener.receive_message(received, false, -1);
+        if (result.status == MessageIoStatus::success) {
+            REQUIRE_EQ(result.bytes, payload.size());
+            REQUIRE_EQ(received.front(), static_cast<std::byte>(delivered));
+            ++delivered;
+        } else {
+            REQUIRE_EQ(result.status, MessageIoStatus::would_block);
+        }
+        peak_pending = std::max(
+            peak_pending, caller.buffer_packet_counts().unacknowledged_send);
+    }
+
+    REQUIRE(peak_pending <= 2U);
+    REQUIRE_EQ(delivered, messages);
+    REQUIRE_EQ(caller.buffer_packet_counts().unacknowledged_send, 0U);
+    const auto stats = caller.statistics(false, true);
+    REQUIRE_EQ(stats.total.sent_unique.packets, messages);
+    REQUIRE_EQ(stats.total.sent_retransmitted.packets, 0U);
+    REQUIRE_EQ(stats.total.sender_message_ttl_dropped.packets, 0U);
+    REQUIRE_EQ(stats.total.sender_tlpktdrop_dropped.packets, 0U);
+    REQUIRE(stats.total.received_acknowledgements > 0U);
+}
+
 #ifdef ENABLE_AEAD_API_PREVIEW
 TEST(compat_runtime_gcm_control_authenticates_ordered_recovery_at_sequence_wrap)
 {

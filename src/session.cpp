@@ -197,7 +197,8 @@ ReliabilitySession::ReliabilitySession(Configuration configuration)
 Error ReliabilitySession::queue_message(std::span<const std::byte> message,
     PacketTimestamp timestamp, bool in_order,
     std::uint64_t enqueue_microseconds,
-    std::uint64_t expiration_microseconds) noexcept
+    std::uint64_t expiration_microseconds,
+    std::size_t input_framing_per_packet) noexcept
 {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
     if (experimental_error_ != Error::none)
@@ -222,14 +223,17 @@ Error ReliabilitySession::queue_message(std::span<const std::byte> message,
         queued = std::span {npd_payload}.first(encoded.bytes_written);
     }
     compact_sensor_retired_prefix();
+    const auto initial_position = send_buffer_.next_sequence_position();
     const auto error = send_buffer_.enqueue_message(queued,
         next_message_number_, timestamp, peer_socket_id_, in_order,
         enqueue_microseconds, expiration_microseconds);
     if (error == Error::none) {
         npd_deleted_units_ += encoded.null_units;
         if (live_rate_controller_.has_value()) {
-            live_rate_controller_->observe_input(
-                message.size(), enqueue_microseconds);
+            const auto packets =
+                send_buffer_.next_sequence_position() - initial_position;
+            live_rate_controller_->observe_input(message.size(),
+                enqueue_microseconds, packets * input_framing_per_packet);
         }
         next_message_number_ = (next_message_number_ + 1U) & 0x03ff'ffffU;
         if (next_message_number_ == 0U) {
@@ -387,19 +391,23 @@ Error ReliabilitySession::retire_group_prefix(
 StreamEnqueueResult ReliabilitySession::queue_stream(
     std::span<const std::byte> bytes,
     PacketTimestamp timestamp,
-    std::uint64_t enqueue_microseconds) noexcept
+    std::uint64_t enqueue_microseconds,
+    std::size_t input_framing_per_packet) noexcept
 {
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_CONTROLLERS
     if (experimental_error_ != Error::none)
         return {.error = experimental_error_};
 #endif
+    const auto initial_position = send_buffer_.next_sequence_position();
     auto result = send_buffer_.enqueue_stream(bytes,
         next_message_number_, timestamp, peer_socket_id_,
         enqueue_microseconds);
     if (result) {
         if (live_rate_controller_.has_value()) {
-            live_rate_controller_->observe_input(
-                result.bytes_accepted, enqueue_microseconds);
+            const auto packets =
+                send_buffer_.next_sequence_position() - initial_position;
+            live_rate_controller_->observe_input(result.bytes_accepted,
+                enqueue_microseconds, packets * input_framing_per_packet);
         }
         next_message_number_ =
             (next_message_number_ + 1U) & 0x03ff'ffffU;
