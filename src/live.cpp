@@ -79,22 +79,21 @@ LiveRateController::LiveRateController(Configuration configuration) noexcept
 {
 }
 
-void LiveRateController::observe_input(
-    std::size_t payload_bytes,
-    std::uint64_t enqueue_microseconds) noexcept
+void LiveRateController::observe_input(std::size_t payload_bytes,
+    std::uint64_t enqueue_microseconds, std::uint64_t framing_bytes) noexcept
 {
-    // Keep a fixed-memory, application-input estimate. A 100 ms minimum
-    // window avoids converting same-tick bursts into an artificial line-rate
-    // spike while still following normal live bitrate changes quickly.
+    // Observe the bytes charged by the pacer on the framed path. A 100 ms
+    // minimum window keeps same-tick bursts from looking like line-rate input.
     constexpr std::uint64_t minimum_window_microseconds = 100'000U;
     if (!input_window_started_) {
         input_window_start_microseconds_ = enqueue_microseconds;
         input_window_started_ = true;
     }
-    const auto bytes = static_cast<std::uint64_t>(payload_bytes);
-    const auto room = std::numeric_limits<std::uint64_t>::max()
-        - input_window_bytes_;
-    input_window_bytes_ += std::min(bytes, room);
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    input_window_bytes_ += std::min(static_cast<std::uint64_t>(payload_bytes),
+        maximum - input_window_bytes_);
+    input_window_bytes_ +=
+        std::min(framing_bytes, maximum - input_window_bytes_);
     if (enqueue_microseconds <= input_window_start_microseconds_
         || enqueue_microseconds - input_window_start_microseconds_
             < minimum_window_microseconds) {
@@ -102,9 +101,8 @@ void LiveRateController::observe_input(
     }
     const std::uint64_t elapsed =
         enqueue_microseconds - input_window_start_microseconds_;
-    const std::uint64_t measured = input_window_bytes_
-        > std::numeric_limits<std::uint64_t>::max() / 1'000'000U
-        ? std::numeric_limits<std::uint64_t>::max()
+    const std::uint64_t measured = input_window_bytes_ > maximum / 1'000'000U
+        ? maximum
         : input_window_bytes_ * 1'000'000U / elapsed;
     estimated_input_bandwidth_ = estimated_input_bandwidth_ == 0U
         ? measured

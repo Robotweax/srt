@@ -238,7 +238,8 @@ public:
     [[nodiscard]] Error queue_message(std::span<const std::byte> message,
         PacketTimestamp timestamp, bool in_order = true,
         std::uint64_t enqueue_microseconds = 0,
-        std::uint64_t expiration_microseconds = 0) noexcept;
+        std::uint64_t expiration_microseconds = 0,
+        std::size_t input_framing_per_packet = 0) noexcept;
     [[nodiscard]] Error queue_group_message(
         std::span<const std::byte> message,
         SequenceNumber first_sequence,
@@ -288,9 +289,9 @@ public:
     [[nodiscard]] Error retire_group_prefix(
         SequenceNumber confirmed_sequence) noexcept;
     [[nodiscard]] StreamEnqueueResult queue_stream(
-        std::span<const std::byte> bytes,
-        PacketTimestamp timestamp,
-        std::uint64_t enqueue_microseconds = 0) noexcept;
+        std::span<const std::byte> bytes, PacketTimestamp timestamp,
+        std::uint64_t enqueue_microseconds = 0,
+        std::size_t input_framing_per_packet = 0) noexcept;
     [[nodiscard]] std::optional<OutboundPacket> next_data_packet(
         std::uint64_t now_microseconds = 0) noexcept
     {

@@ -55,7 +55,8 @@ public:
 
     explicit LiveRateController(Configuration configuration) noexcept;
     void observe_input(std::size_t payload_bytes,
-        std::uint64_t enqueue_microseconds) noexcept;
+        std::uint64_t enqueue_microseconds,
+        std::uint64_t framing_bytes = 0) noexcept;
     void observe_payload(std::size_t payload_bytes) noexcept;
     void set_input_bandwidth(std::uint64_t bytes_per_second) noexcept;
     void set_minimum_input_bandwidth(

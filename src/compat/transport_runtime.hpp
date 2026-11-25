@@ -928,6 +928,7 @@ private:
         std::span<const std::byte> message,
         std::int64_t source_time_microseconds, bool in_order,
         std::int32_t ttl_milliseconds) noexcept;
+    [[nodiscard]] std::size_t live_input_framing_per_packet() const noexcept;
     [[nodiscard]] MessageIoResult try_receive_message_locked(
         std::span<std::byte> destination, std::uint64_t now) noexcept;
     [[nodiscard]] RuntimePollResult poll_locked() noexcept;

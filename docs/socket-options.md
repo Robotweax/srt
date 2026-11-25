@@ -371,8 +371,14 @@ Only `SRTO_MAXBW=0` uses `SRTO_INPUTBW` (or automatic estimation) plus
 without resetting the input estimator. This follows the
 [Haivision SRT 1.5.7 option contract](https://github.com/Haivision/srt/blob/899348d8318eb9a3c5a5b6ec43c4a1114288773a/docs/API/API-socket-options.md#srto_maxbw).
 
+On an unfiltered, standalone Live connection without null-packet deletion,
+the automatic estimate counts the SRT DATA header and any authentication tag
+for each queued packet. The estimate and the pacer both count SRT datagram
+bytes, excluding IP and UDP headers. `SRTO_OHEADBW` still adds its percentage
+after applying any minimum input bandwidth.
+
 `SRTO_MININPUTBW` is a nonnegative post-connection `int64_t` floor for the
-fixed-memory application-input estimator. It takes effect only in relative
+automatic input estimate. It takes effect only in relative
 LiveCC mode when both `SRTO_MAXBW=0` and `SRTO_INPUTBW=0`; configured input
 bandwidth, an absolute positive maximum, or the `SRTO_MAXBW=-1` one-gigabit
 live ceiling retain their documented precedence. Groups derive and propagate

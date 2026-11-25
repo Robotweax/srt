@@ -95,6 +95,33 @@ TEST(live_rate_controller_absolute_bandwidth_ignores_relative_inputs)
     REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 125'000'000U);
 }
 
+TEST(live_rate_controller_framed_estimate_preserves_explicit_bandwidth)
+{
+    LiveRateController controller {{}};
+    controller.observe_input(64, 1, 32);
+    controller.observe_input(64, 50'001, 32);
+    controller.observe_input(64, 100'001, 32);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 3'600U);
+
+    // A nonbinding floor leaves the framed estimate selected. A binding floor
+    // applies before overhead, and explicit input, fixed and unlimited win.
+    controller.set_minimum_input_bandwidth(1'000);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 3'600U);
+    controller.set_minimum_input_bandwidth(4'000);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 5'000U);
+    controller.set_input_bandwidth(1'600);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 2'000U);
+    controller.set_maximum_bandwidth(1'200);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 1'200U);
+    controller.set_maximum_bandwidth(-1);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 125'000'000U);
+
+    controller.set_input_bandwidth(0);
+    controller.set_minimum_input_bandwidth(0);
+    controller.set_maximum_bandwidth(0);
+    REQUIRE_EQ(controller.pacing_rate_bytes_per_second(), 3'600U);
+}
+
 TEST(drift_sampler_bounds_each_timebase_correction)
 {
     DriftSampler sampler{4, 5'000};
