@@ -694,8 +694,12 @@ bool ListenerConnectionSetupActor::complete_result() noexcept
         const ListenerConnectionSetupDispatchStatus status =
             source->arm_retry_at(std::chrono::steady_clock::now() + *retry);
         if (status != ListenerConnectionSetupDispatchStatus::completed) {
+            // Once result_pending_ is clear, another worker can end the setup
+            // and stop the source while the retry is armed; a retry result
+            // holds no inbox acknowledgement to prevent it. finish_failure()
+            // leaves an earlier terminal result in place.
             finish_failure(status);
-            return false;
+            return ended_without_failure();
         }
     }
     if (acknowledge_inbox) {
@@ -707,6 +711,11 @@ bool ListenerConnectionSetupActor::complete_result() noexcept
     // The retry timer or the acknowledged inbox can run the next turn on
     // another worker before this request. If that turn ended the setup, its
     // terminal result is queued for the consumer and nothing has failed.
+    return ended_without_failure();
+}
+
+bool ListenerConnectionSetupActor::ended_without_failure() const noexcept
+{
     std::lock_guard lock(mutex_);
     return terminal_
         && failure_ == ListenerConnectionSetupDispatchStatus::completed;
