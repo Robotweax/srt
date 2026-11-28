@@ -2,7 +2,9 @@
 
 Local test date 2026-11-28. Host macOS 27.2.1 (26B131), arm64, AppleClang 21.0.0. CMake 4.4.4, Python 3.15.2. The implementation started from public main `75766e6b4ea8228bd5e4eefb69243cdce1ac55d2`. All Robotweax test builds used the v0.3.5 tag, `fd9dac31675b12022579d28a748abb0839004cde`. The final-tag release workflow concluded successfully at that SHA. The tag matrix records successful FFmpeg, GStreamer, VLC and OBS jobs with job-specific links. The qualification boundaries include decoded video only for the pinned Linux VLC input. The installed GStreamer 1.28.9 and locally built stock-FFmpeg peer have separate rows and providers. [v0.3.5 release][release] · [Final-tag CI][ci]
 
-## Local results
+The [glibc Linux validation](validation-linux.md) records the exact Ubuntu arm64 builds, commands, and results for the same helper.
+
+## Local macOS results
 
 The [compatibility matrix](compatibility-matrix.csv) contains the exact scope and per-trial results. The final smoke passed 8/8 for each of stock Haivision, installed GStreamer and pinned FFmpeg, 24 sessions total. Each receiver's 75 decoded MPEG-2 video frames and 125 decoded MP2 audio frames matched the fixture in order. All four role and direction pairs were tested twice, closing both endpoints and reusing the ports. Rejected run history includes early teardown ordering failures (GStreamer and Haivision) and early readiness/blocked input shutdown failures (FFmpeg). The final helper waits for connection before checking loaded images and signals both endpoints before waiting for process exit.
 
@@ -158,7 +160,7 @@ claude -p --model haiku --permission-mode dontAsk \
 | Customer integration owner | Qualify actual OBS, VLC and commercial devices and versions when available, plus the production FFmpeg/GStreamer package and exact codec, encryption and network profile. Local unavailable cases remain NOT RUN. |
 | Customer security owner and Robotweax security maintainer | Resolve required identity with a compatible peer and suitable security qualification, or defer. Evaluate FEC, groups, GCM and peer authentication as separate target profiles when required. |
 | Customer performance owner | Quantify shard count on target workloads with per-shard CPU, latency, loss and receiver goodput, and verify shared-link Live/File priority. |
-| Skill maintainer | Run the new helper on glibc Linux and collect customer-facing lifecycle results. Existing Linux final-tag jobs use the release's own integration harnesses. |
+| Skill maintainer | Collect customer-facing lifecycle results. The local glibc Linux smoke covers endpoint reuse after both processes exit. |
 
 [release]: https://github.com/Robotweax/srt/releases/tag/v0.3.5
 [ci]: https://github.com/Robotweax/srt/actions/runs/45266706013
