@@ -26,7 +26,7 @@ Install the canonical `robotweax-srt` directory, with all its references and scr
 ```sh
 python3 scripts/smoke_live.py \
   --bridge /path/to/robotweax_srt_udp_bridge \
-  --robotweax-library /trusted/robotweax/lib/librobotweax-srt.0.3.so \
+  --robotweax-library /trusted/robotweax/lib/librobotweax-srt.so.0.3 \
   --robotweax-build 'v0.3.5:fd9dac31675b12022579d28a748abb0839004cde:OpenSSL:shared' \
   --peer gstreamer --peer-bin /path/to/gst-launch-1.0 \
   --peer-library /trusted/haivision/lib/libsrt.so.1.5 \

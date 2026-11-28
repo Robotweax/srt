@@ -29,6 +29,8 @@ All 24 positive trials matched all 75 decoded MPEG-2 video frames and 125 decode
 
 The negative check expected Robotweax bytes for GStreamer's loaded SRT library. The detected image was Ubuntu's Haivision-derived GnuTLS build, so all eight trials recorded a provider mismatch and produced no received media. The [compatibility matrix](compatibility-matrix.csv) records the individual sessions, hashes and exit statuses.
 
+The review follow-up reran the corrected runner in a fresh container from the same local image with external networking disabled. All 24 A/V trials passed again. The verifier accepted the eight genuine provider mismatches and confirmed that they produced no received media. The setup-failure control used the minimal FFmpeg peer as the decoder. It exited 1 during fixture generation and produced zero trials, which the verifier rejected. The complete runner exited 0.
+
 ## Artifact hashes
 
 ```text
@@ -140,7 +142,44 @@ gst_provider_version=$(dpkg-query -W -f='${Version}' "$gst_provider")
 smoke() {
   python3 /lab/skill/smoke_live.py \
     --bridge /lab/rw-build/robotweax_srt_udp_bridge --robotweax-library "$rw_library" \
-    --robotweax-build "v0.3.5:$pin:OpenSSL:shared" --decoder /usr/bin/ffmpeg "$@"
+    --robotweax-build "v0.3.5:$pin:OpenSSL:shared" --decoder "${SMOKE_DECODER:-/usr/bin/ffmpeg}" "$@"
+}
+
+verify_provider_rejections() {
+  local helper_exit=$1 evidence=$2
+  test "$helper_exit" -eq 1 || return 1
+  python3 - "$evidence" "$gst_srt" "$rw_library" <<'PYTHON'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+evidence, actual, expected = map(Path, sys.argv[1:])
+actual = actual.resolve(strict=True)
+def digest(path):
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+actual_hash, expected_hash = digest(actual), digest(expected)
+mismatch = f"peer.log: loaded {actual} ({actual_hash}), expected {expected} ({expected_hash})"
+rows = json.loads((evidence / "results.json").read_text())["results"]
+expected_trials = {
+    (role, direction, session)
+    for role in ("caller", "listener")
+    for direction in ("send", "receive")
+    for session in (1, 2)
+}
+trials = {(row["robotweax_role"], row["robotweax_direction"], row["session"]) for row in rows}
+if (
+    actual_hash == expected_hash
+    or len(rows) != len(expected_trials)
+    or trials != expected_trials
+    or any(row["status"] != "FAIL" or row.get("error") != mismatch for row in rows)
+    or any(evidence.glob("*/received.ts"))
+):
+    sys.exit("Expected eight loader-confirmed provider mismatches and no received media")
+print(f"{evidence.name}: verified {len(rows)} provider mismatches")
+PYTHON
 }
 
 status=0
@@ -156,8 +195,22 @@ smoke --peer ffmpeg --peer-bin /lab/ffmpeg-stock/ffmpeg --peer-library "$ff_srt"
 negative_exit=0
 smoke --peer gstreamer --peer-bin /usr/bin/gst-launch-1.0 --peer-library "$rw_library" \
   --peer-build expected-Robotweax-for-GStreamer --output /evidence/provider-negative || negative_exit=$?
-printf 'negative_exit=%s\n' "$negative_exit"
-test "$negative_exit" -eq 1 || status=1
+verify_provider_rejections "$negative_exit" /evidence/provider-negative || status=1
+
+# The minimal raw-data FFmpeg peer lacks the lavfi fixture generator.
+setup_exit=0
+SMOKE_DECODER=/lab/ffmpeg-stock/ffmpeg smoke --peer gstreamer \
+  --peer-bin /usr/bin/gst-launch-1.0 --peer-library "$rw_library" \
+  --peer-build expected-Robotweax-for-GStreamer --output /evidence/setup-negative \
+  2>/evidence/setup-negative.stderr || setup_exit=$?
+if test "$setup_exit" -eq 1 &&
+   python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1]))["results"] != [])' \
+     /evidence/setup-negative/results.json &&
+   ! verify_provider_rejections "$setup_exit" /evidence/setup-negative; then
+  printf '%s\n' 'setup-negative: zero-trial fixture failure correctly rejected'
+else
+  status=1
+fi
 exit "$status"
 ```
 
