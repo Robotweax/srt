@@ -10,6 +10,11 @@ version returned by `srt_getversion()`.
   relative pacing now counts the SRT DATA header and any AES-GCM authentication
   tag for each accepted packet. Grouped Live, FEC, and null-packet deletion
   retain their existing accounting.
+- Fix a listener dropping a connection whose setup ended on another worker
+  while the listener completed the previous setup step. The listener took the
+  finished setup for a dispatch failure, the caller already held the
+  connection as connected, and a blocking `srt_accept` did not return it. Seen
+  with experimental peer authentication on hosts with two cores.
 
 ## 0.3.5 — Mobile Timer Pacing and Transport Reliability
 

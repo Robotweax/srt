@@ -701,7 +701,15 @@ bool ListenerConnectionSetupActor::complete_result() noexcept
     if (acknowledge_inbox) {
         source->acknowledge_inbox();
     }
-    return request_run() == ListenerConnectionSetupDispatchStatus::completed;
+    if (request_run() == ListenerConnectionSetupDispatchStatus::completed) {
+        return true;
+    }
+    // The retry timer or the acknowledged inbox can run the next turn on
+    // another worker before this request. If that turn ended the setup, its
+    // terminal result is queued for the consumer and nothing has failed.
+    std::lock_guard lock(mutex_);
+    return terminal_
+        && failure_ == ListenerConnectionSetupDispatchStatus::completed;
 }
 
 ListenerConnectionSetupActorSnapshot
