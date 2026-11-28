@@ -218,6 +218,7 @@ Start with the [documentation index](docs/README.md):
 - [Getting started](docs/getting-started.md)
 - [Building and installing](docs/building.md)
 - [Integration guide](docs/integration.md)
+- [Robotweax SRT integration skill](https://github.com/Robotweax/srt/blob/main/skills/robotweax-srt/SKILL.md) for coding agents
 - [FFmpeg integration](docs/ffmpeg-integration.md)
 - [GStreamer integration](docs/gstreamer-integration.md)
 - [VLC integration](docs/vlc-integration.md)
