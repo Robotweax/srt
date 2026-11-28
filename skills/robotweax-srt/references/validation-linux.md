@@ -31,7 +31,9 @@ The negative check expected Robotweax bytes for GStreamer's loaded SRT library. 
 
 The review follow-up reran the corrected runner in a fresh container from the same local image with external networking disabled. All 24 A/V trials passed again. The verifier accepted the eight genuine provider mismatches and confirmed that they produced no received media. The setup-failure control used the minimal FFmpeg peer as the decoder. It exited 1 during fixture generation and produced zero trials, which the verifier rejected. The complete runner exited 0.
 
-## Artifact hashes
+A later bind-diagnostic check reserved the selected SRT port with an independent loopback UDP socket before starting each listener. With Robotweax listening, the trial identified the bridge’s `srt_bind` error. With GStreamer listening, it identified the peer’s `Cannot bind` error. Both results included the selected loopback ports and the endpoint log line. The updated helper SHA-256 was `3933e0393876826bee23177a84fac9e1ea4e0affb9122ff08379486fa52abc4b`.
+
+## Original run artifact hashes
 
 ```text
 c7e0040ef86996b6cf94c3ecb45560accb8d72b643fe2c7f86772e06e49e4bab  /lab/skill/smoke_live.py

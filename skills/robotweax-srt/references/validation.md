@@ -140,6 +140,8 @@ Save this prompt to `prompt.txt`:
 
 Run these in their respective sample checkouts. Compare `acceptance/results.json` to the expected clear matrix and keep the CLI transcript with it.
 
+**Use an isolated disposable account or VM with only the trusted fixture and its required tools.** These acceptance commands let the agents run shell commands with the account's filesystem permissions. Run them in the disposable sample checkout with production credentials and writable project mounts absent.
+
 ```sh
 { printf '%s\n' '$robotweax-srt'; cat prompt.txt; } |
   codex -a never exec -m gpt-5.6-luna -C "$(pwd -P)" \

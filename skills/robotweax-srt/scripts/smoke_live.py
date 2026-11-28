@@ -79,6 +79,7 @@ def start(command, log, stack):
     # deployed search configuration. The loader log identifies loaded paths.
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("DYLD_", "LD_"))}
+    env["LC_ALL"] = "C"
     env.update({"DYLD_PRINT_LIBRARIES": "1"} if sys.platform == "darwin" else {"LD_DEBUG": "libs"})
     output = stack.enter_context(log.open("wb"))
     process = subprocess.Popen(command, stdout=output, stderr=output, env=env)
@@ -133,6 +134,25 @@ def loaded_provider(log, process, expected):
     if actual != trusted:
         raise RuntimeError(f"{log.name}: loaded {loaded} ({actual}), expected {expected} ({trusted})")
     return {"path": str(loaded), "sha256": actual}
+
+
+def trial_error(error, directory, ports):
+    for name in ("robotweax.log", "peer.log"):
+        log = directory / name
+        if not log.is_file():
+            continue
+        for line in log.read_text(errors="replace").splitlines():
+            if re.search(
+                r"address already in use|\bEADDRINUSE\b|\bsrt_bind:|\bcannot bind to\b",
+                line,
+                re.IGNORECASE,
+            ):
+                ingest, playback, srt = ports
+                return (
+                    f"loopback UDP bind failure (ingest={ingest}, playback={playback}, SRT={srt}): "
+                    f"{name}: {line.strip()}"
+                )
+    return str(error)
 
 
 def relay_media(tx, rx, ingest, fixture, received):
@@ -223,7 +243,8 @@ def main():
     parser.add_argument("--robotweax-library", type=Path, required=True)
     parser.add_argument("--robotweax-build", required=True)
     parser.add_argument("--peer", choices=("gstreamer", "haivision", "ffmpeg"), required=True)
-    parser.add_argument("--peer-bin", type=Path, required=True)
+    parser.add_argument("--peer-bin", type=Path, required=True,
+                        help="actual peer executable for same-PID loader verification")
     parser.add_argument("--peer-library", type=Path, required=True)
     parser.add_argument("--peer-build", required=True)
     parser.add_argument("--decoder", type=Path, required=True, help="FFmpeg with MPEG-2 and MP2")
@@ -275,7 +296,7 @@ def main():
                             trial(args, ports, tx, rx, fixture_bytes, expected, directory, result)
                             result["status"] = "PASS"
                         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                            result["error"] = str(error)
+                            result["error"] = trial_error(error, directory, ports)
                             if isinstance(error, subprocess.CalledProcessError):
                                 (directory / "media-error.log").write_text(error.stderr or "")
                         rx.setblocking(False)
