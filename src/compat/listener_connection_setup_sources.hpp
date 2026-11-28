@@ -197,6 +197,7 @@ private:
     static void source_ready(void* context) noexcept;
 
     [[nodiscard]] ListenerConnectionSetupDispatchStatus request_run() noexcept;
+    [[nodiscard]] bool ended_without_failure() const noexcept;
     void run() noexcept;
     void initialize() noexcept;
 #ifdef ROBOTWEAX_SRT_EXPERIMENTAL_PEERAUTH
